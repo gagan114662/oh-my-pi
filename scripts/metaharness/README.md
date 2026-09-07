@@ -1,18 +1,24 @@
 # OMP2 production-process edit adapter
 
-This opt-in Bun adapter launches an explicitly configured OMP binary through its existing `--mode json` interface, copies each input fixture into a fresh workspace, and checks the resulting files in the adapter process. It never accepts the agent's claim of success as a score. It does not replace `omp bench` (the inference-throughput benchmark).
+This opt-in Bun adapter launches an explicitly configured OMP binary through its existing `--mode json` interface, copies each input fixture into a fresh workspace, and checks the resulting files in the adapter process. It never accepts the agent's claim of success as a score. The installed `omp bench arm` command embeds this adapter; ordinary `omp bench MODEL` still runs the inference-throughput benchmark. Bun and Git are explicit host prerequisites. No runtime is installed automatically and no checkout scripts are needed by the installed command.
 
-The adapter is **not yet completion evidence for issue #19**. The checked-in tests execute a clearly labeled fixture executable; they verify adapter plumbing, not OMP production behavior or harness improvement. An actual OMP A/A + A/B run, CI artifact publication, and the requested `omp bench arm` integration remain required. The protected-evaluator authority in #50 remains required before running adversarial candidate code.
+The adapter is **not yet completion evidence for issue #19**. The checked-in tests execute a clearly labeled fixture executable; they verify adapter plumbing, not OMP production behavior or harness improvement. An actual OMP A/A + A/B run, compiled CLI validation and CI artifact publication remain required. The protected-evaluator authority in #50 remains required before running adversarial candidate code.
 
 ## Commands
 
 Run the build wrapper **around a real build**, with binary and provenance paths outside source trees where possible:
 
 ```sh
-bun scripts/metaharness-omp2.ts build /checkout/omp2 /checkout/omp2/target/debug/omp /artifacts/base-build.json -- just build
+omp bench build /checkout/omp2 /checkout/omp2/target/debug/omp /artifacts/base-build.json -- just build
+omp bench arm --manifest /artifacts/experiment.json --same-commit
+# Compare prepared arms; baseline must resolve to HEAD~1 in candidate.source:
+omp bench arm --manifest /artifacts/comparison.json --base HEAD~1
+# Direct development runner uses the same embedded source:
 bun scripts/metaharness-omp2.ts run /artifacts/experiment.json
 bun test scripts/metaharness/adapter.test.ts
 ```
+
+`--same-commit` requires identical source and binary hashes for both prepared arms. `--base REF` verifies the prepared baseline commit against the ref in the candidate checkout; it does not guess build commands or create a worktree. Both switches require a manifest and are mutually exclusive. Every experiment runs an A/A phase before A/B. Use `--bun /absolute/path/to/bun` on either subcommand when Bun is not on PATH.
 
 The wrapper records commit, working-source SHA-256, binary SHA-256 and build argv. It rejects failed builds, source changes during the build, and binaries not freshly emitted by the command. An incremental no-op build deliberately fails freshness validation; rebuild the executable rather than stamping an old one. Every trial checks hashes and source/binary modification ordering again, including after execution. There is no CLI to stamp an existing binary. This is an external build receipt, not a signed compiler attestation.
 

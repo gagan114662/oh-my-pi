@@ -554,11 +554,61 @@ pub enum BenchProfile {
 	Generation,
 }
 
-/// Normal inference benchmark options.
+/// Production harness benchmark operations.
+#[derive(Clone, Debug, Subcommand)]
+pub enum BenchCommand {
+	/// Evaluate prepared production binaries on externally verified edit tasks.
+	Arm(BenchArmArgs),
+	/// Build and record source/binary provenance for a benchmark arm.
+	Build(BenchBuildArgs),
+}
+
+/// Paired edit benchmark options. Requires Bun and Git on the host.
 #[derive(Clone, Debug, Args)]
+pub struct BenchArmArgs {
+	/// Manifest containing fixtures, pinned model, prepared builds and output
+	/// path.
+	#[arg(long)]
+	pub manifest:    PathBuf,
+	/// Require the prepared baseline and candidate to have the same source
+	/// commit.
+	#[arg(long, conflicts_with = "base")]
+	pub same_commit: bool,
+	/// Verify the prepared baseline commit against this ref in candidate source.
+	#[arg(long)]
+	pub base:        Option<Str>,
+	/// Bun executable used for the adapter embedded in this binary.
+	#[arg(long, default_value = "bun")]
+	pub bun:         PathBuf,
+}
+
+/// Fresh build with externally recorded provenance.
+#[derive(Clone, Debug, Args)]
+pub struct BenchBuildArgs {
+	/// Git source checkout to build.
+	pub source:     PathBuf,
+	/// Executable emitted by the build command.
+	pub binary:     PathBuf,
+	/// Destination JSON build receipt.
+	pub provenance: PathBuf,
+	/// Bun executable used for the embedded build recorder.
+	#[arg(long, default_value = "bun")]
+	pub bun:        PathBuf,
+	/// Build command and arguments, after --. Executed without a shell.
+	#[arg(last = true, required = true)]
+	pub command:    Vec<Str>,
+}
+
+/// Inference benchmark options, or a production harness subcommand.
+#[derive(Clone, Debug, Args)]
+#[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
 pub struct BenchArgs {
+	/// Harness evaluation or build provenance operation.
+	#[command(subcommand)]
+	pub command:       Option<BenchCommand>,
 	/// Model key routed through the production inference registry.
-	pub model:         Str,
+	#[arg(required = true)]
+	pub model:         Option<Str>,
 	/// Override the profile data directory containing credentials.
 	#[arg(long, value_name = "PATH")]
 	pub data_dir:      Option<PathBuf>,
@@ -3705,6 +3755,51 @@ mod tests {
 				THIRD_PARTY_NOTICES.trim_end()
 			)
 		);
+	}
+
+	#[test]
+	fn parses_harness_benchmark_and_rejects_ambiguous_modes() {
+		let cli = parse(&["omp", "bench", "arm", "--manifest", "suite.json", "--same-commit"]);
+		let Some(Command::Bench(args)) = cli.command else {
+			panic!("bench command was not parsed");
+		};
+		assert!(args.model.is_none());
+		let Some(BenchCommand::Arm(arm)) = args.command else {
+			panic!("arm command was not parsed");
+		};
+		assert!(arm.same_commit);
+		assert_eq!(arm.manifest, PathBuf::from("suite.json"));
+		assert!(OmpCli::try_parse_from(["omp", "bench"]).is_err());
+		assert!(
+			OmpCli::try_parse_from([
+				"omp",
+				"bench",
+				"arm",
+				"--manifest",
+				"suite.json",
+				"--same-commit",
+				"--base",
+				"HEAD~1"
+			])
+			.is_err()
+		);
+		let cli = parse(&[
+			"omp",
+			"bench",
+			"build",
+			"/source",
+			"/omp",
+			"/proof.json",
+			"--",
+			"just",
+			"build-release",
+		]);
+		let Some(Command::Bench(BenchArgs { command: Some(BenchCommand::Build(build)), .. })) =
+			cli.command
+		else {
+			panic!("build command was not parsed");
+		};
+		assert_eq!(build.command, vec![Str::from("just"), Str::from("build-release")]);
 	}
 
 	#[test]
