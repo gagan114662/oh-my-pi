@@ -6945,8 +6945,22 @@ mod context_settlement_tests {
 			&mut self,
 			request: omp_ai::ChatRequest,
 		) -> Result<omp_ai::ChatStream, omp_ai::Error> {
-			self.0.lock().push(request);
+			let request_number = {
+				let mut requests = self.0.lock();
+				requests.push(request);
+				requests.len()
+			};
 			Ok(omp_ai::ChatStream::ordinary(Box::pin(futures::stream::iter([
+				Ok(omp_ai::ChatEvent::Started(omp_ai::ResponseMeta {
+					request_id:          omp_ai::RequestId::from(format!(
+						"context-proof-{request_number}"
+					)),
+					provider:            omp_ai::ProviderId::from("context-proof"),
+					route:               omp_ai::RouteId::from("context-proof/test"),
+					model:               None,
+					provider_request_id: None,
+					created_at:          std::time::SystemTime::UNIX_EPOCH,
+				})),
 				Ok(omp_ai::ChatEvent::BlockStarted { index: 0, kind: omp_ai::BlockKind::Text }),
 				Ok(omp_ai::ChatEvent::TextDelta { index: 0, text: sf!("real inference response") }),
 				Ok(omp_ai::ChatEvent::Completed(omp_ai::Completion {
