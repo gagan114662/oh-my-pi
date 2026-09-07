@@ -1,7 +1,7 @@
 //! Multiplexed, generation-fenced extension-host invocation routing.
 
 use std::{
-	collections::{BTreeMap, VecDeque},
+	collections::{BTreeMap, BTreeSet, VecDeque},
 	fs, io,
 	path::{Path, PathBuf},
 	str::FromStr,
@@ -685,9 +685,19 @@ impl NestedCallbackDispatcher {
 			data: None,
 			direct_filesystem: None,
 		};
+		let reentrant_parent = omp_agent::context::control::current_context_origin()
+			.filter(|origin| {
+				origin.extension == target.extension
+					&& origin.layer == target.layer
+					&& origin.tier == target.tier
+					&& origin.host_generation == target.host_generation
+					&& origin.session_generation == target.session_generation
+			})
+			.map(|origin| origin.invocation);
 		self
 			.dispatcher
 			.dispatch(target, ControlDispatch {
+				reentrant_parent,
 				operation: sf!(operation),
 				arguments,
 				authority,
@@ -1255,8 +1265,11 @@ struct Pending {
 	response:   flume::Sender<Result<CowBytes<'static>, DispatchError>>,
 }
 
+#[derive(Default)]
 struct ExtensionActor {
-	running: usize,
+	running: BTreeSet<u64>,
+	waiting: BTreeMap<u64, usize>,
+	parents: BTreeMap<u64, u64>,
 	queued:  VecDeque<DispatchRequest>,
 }
 
@@ -1302,6 +1315,10 @@ pub enum DispatchError {
 	/// A terminal frame named no live invocation.
 	#[error("stale worker frame correlation {0}")]
 	StaleCorrelation(u64),
+	/// Reentry requires a live callback suspended on an authenticated CONTROL
+	/// request.
+	#[error("callback parent {0} is not suspended on CONTROL")]
+	InvalidParent(u64),
 	/// The child disconnected before a terminal response.
 	#[error("extension host disconnected")]
 	HostGone,
@@ -1332,8 +1349,59 @@ impl DispatchRouter {
 		extension: impl Into<Str>,
 		request: DispatchRequest,
 	) -> Result<(Option<DispatchRequest>, DispatchPending), DispatchError> {
+		self.dispatch_inner(extension.into(), request, None)
+	}
+
+	/// Admits only descendants of a live, CONTROL-suspended callback.
+	pub fn dispatch_nested(
+		&mut self,
+		extension: impl Into<Str>,
+		request: DispatchRequest,
+		parent: u64,
+	) -> Result<(Option<DispatchRequest>, DispatchPending), DispatchError> {
+		self.dispatch_inner(extension.into(), request, Some(parent))
+	}
+
+	/// Marks a host-authenticated callback as waiting for nested CONTROL work.
+	pub fn begin_control_wait(&mut self, extension: &str, parent: u64) -> Result<(), DispatchError> {
+		let actor = self
+			.actors
+			.get_mut(extension)
+			.ok_or(DispatchError::InvalidParent(parent))?;
+		if !actor.running.contains(&parent) {
+			return Err(DispatchError::InvalidParent(parent));
+		}
+		*actor.waiting.entry(parent).or_default() += 1;
+		Ok(())
+	}
+
+	/// Releases one authenticated CONTROL wait; it grants no unrelated callback
+	/// entry.
+	pub fn end_control_wait(&mut self, extension: &str, parent: u64) {
+		if let Some(actor) = self.actors.get_mut(extension)
+			&& let Some(count) = actor.waiting.get_mut(&parent)
+		{
+			*count = count.saturating_sub(1);
+			if *count == 0 {
+				actor.waiting.remove(&parent);
+			}
+		}
+	}
+
+	fn dispatch_inner(
+		&mut self,
+		extension: Str,
+		request: DispatchRequest,
+		parent: Option<u64>,
+	) -> Result<(Option<DispatchRequest>, DispatchPending), DispatchError> {
 		if request.id == 0 {
 			return Err(DispatchError::ZeroId);
+		}
+		if let Some(parent) = parent
+			&& !self.actors.get(extension.as_str()).is_some_and(|actor| {
+				actor.running.contains(&parent) && actor.waiting.contains_key(&parent)
+			}) {
+			return Err(DispatchError::InvalidParent(parent));
 		}
 		let (tx, rx) = flume::bounded(1);
 		if self.pending.lock().get(request.id).is_some() {
@@ -1344,13 +1412,13 @@ impl DispatchRouter {
 			deadline:   request.deadline,
 			response:   tx,
 		});
-		let actor = self
-			.actors
-			.entry(extension.into())
-			.or_insert_with(|| ExtensionActor { running: 0, queued: VecDeque::new() });
+		let actor = self.actors.entry(extension).or_default();
 		let deadline = request.deadline;
-		if actor.policy_admits(request.policy) {
-			actor.running += 1;
+		if let Some(parent) = parent {
+			actor.parents.insert(request.id, parent);
+		}
+		if actor.policy_admits(request.policy, parent) {
+			actor.running.insert(request.id);
 			Ok((Some(request), DispatchPending { response: rx, deadline }))
 		} else {
 			actor.queued.push_back(request);
@@ -1453,11 +1521,10 @@ impl DispatchRouter {
 		let Some(actor) = self.actors.get_mut(extension) else {
 			return Ok(None);
 		};
-		actor.running = actor.running.saturating_sub(1);
-		let next = actor.queued.pop_front();
-		if next.is_some() {
-			actor.running += 1;
-		}
+		actor.running.remove(&id);
+		actor.waiting.remove(&id);
+		actor.parents.remove(&id);
+		let next = actor.next_ready();
 		Ok(next)
 	}
 
@@ -1476,6 +1543,7 @@ impl DispatchRouter {
 			return Ok(false);
 		};
 		actor.queued.remove(position);
+		actor.parents.remove(&id);
 		if let Some(record) = self.pending.lock().remove(id) {
 			let _ = record.response.send(Err(DispatchError::Cancelled));
 		}
@@ -1511,10 +1579,37 @@ impl DispatchRouter {
 }
 
 impl ExtensionActor {
-	fn policy_admits(&self, policy: CallbackConcurrency) -> bool {
-		policy.admits(self.running)
+	fn policy_admits(&self, policy: CallbackConcurrency, parent: Option<u64>) -> bool {
+		let mut suspended = 0;
+		let mut ancestor = parent;
+		while let Some(parent) = ancestor {
+			if !self.running.contains(&parent) || !self.waiting.contains_key(&parent) {
+				return false;
+			}
+			suspended += 1;
+			ancestor = self.parents.get(&parent).copied();
+		}
+		policy.admits(self.running.len().saturating_sub(suspended))
+	}
+
+	fn next_ready(&mut self) -> Option<DispatchRequest> {
+		let position = self
+			.queued
+			.iter()
+			.enumerate()
+			.find_map(|(index, request)| {
+				let parent = self.parents.get(&request.id).copied();
+				// Descendants may pass unrelated callbacks blocked by their waiting
+				// parent; ordinary queued callbacks retain FIFO order.
+				((index == 0 || parent.is_some()) && self.policy_admits(request.policy, parent))
+					.then_some(index)
+			})?;
+		let next = self.queued.remove(position)?;
+		self.running.insert(next.id);
+		Some(next)
 	}
 }
+
 #[cfg(test)]
 mod tests {
 	use omp_proto::ui::v1::{

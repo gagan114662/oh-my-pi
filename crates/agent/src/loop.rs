@@ -1831,9 +1831,8 @@ impl<C: Inference> Kernel<C> {
 				LoopDecision::Continue { .. } => continue,
 				LoopDecision::Yield => {
 					// An extension may block the stop and demand another turn.
-					if let Some(hooks) = &self.lifecycle_hooks
-						&& hooks
-							.agent_settled(serde_json::json!({
+					if let Some(hooks) = self.lifecycle_hooks.clone() {
+						let settling = hooks.agent_settled(serde_json::json!({
 								"submission_id": turn.to_string(),
 								"reason": if was_steered { "stop" } else { "stop" },
 								"committed_turns": requests_started,
@@ -1841,10 +1840,33 @@ impl<C: Inference> Kernel<C> {
 								"pending_jobs": self.dispatcher.jobs().list().iter().map(|job| job.id.clone()).collect::<Vec<_>>(),
 								"continuations_used": 0,
 								"incomplete_todos": [],
-							}))
-							.await == crate::AgentSettled::Continue
-					{
-						continue;
+							}));
+						tokio::pin!(settling);
+						let decision = loop {
+							tokio::select! {
+								biased;
+								() = control.cancelled() => {
+									turn_cancel.cancel_turn();
+									return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
+								},
+								message = self.mailbox_rx.recv_async() => {
+									if let Ok(message) = message {
+													 if matches!(message, Up::Interrupt | Up::Cancel) {
+														  turn_cancel.cancel_turn();
+														  return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
+													 }
+													 self.handle_idle_control(session, message).await?;
+												}
+								},
+								decision = &mut settling => break decision,
+							}
+						};
+						if let crate::AgentSettled::Continue(continuation) = decision
+							&& session.continue_from_settlement(&continuation)?
+						{
+							self.apply_live_components(session)?;
+							continue;
+						}
 					}
 					let stop = if was_steered {
 						TurnStop::Steered
@@ -2194,15 +2216,15 @@ impl<C: Inference> Kernel<C> {
 				}
 				let outcome = request.guard.outcome.clone();
 				let control = RunControl::new(request.guard.cancellation.clone(), None);
-				let result = self
-					.compact_with_guard(
-						session,
-						request.focus,
-						"extension",
-						control,
-						Some(request.guard),
-					)
-					.await;
+				let compacting = self.compact_with_guard(
+					session,
+					request.focus,
+					"extension",
+					control,
+					Some(request.guard),
+				);
+				let result =
+					crate::context::control::with_context_origin(request.origin, compacting).await;
 				let result = match result {
 					Ok(true) => outcome.lock().take().ok_or_else(|| {
 						crate::context::control::ContextControlError::new(

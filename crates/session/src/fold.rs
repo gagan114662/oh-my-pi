@@ -505,7 +505,18 @@ impl Session {
 							.with_prop(PropId::Summary, Value::Str(summary))
 							.with_prop(PropId::Method, Value::Str(Str::new_static("handoff"))),
 					},
-					None => Op::Ins { parent, after: sibling, node },
+					None => {
+						let node = if node.props.iter().any(|(key, _)| {
+							key == &PropKey::Custom(Str::new_static(crate::continuation::OWNER_PROP))
+						}) {
+							node
+								.with_prop(PropId::Id, Value::Str(Str::new(entry.id.to_string())))
+								.with_prop(PropId::Order, Value::Str(Str::new(entry.id.to_string())))
+						} else {
+							node
+						};
+						Op::Ins { parent, after: sibling, node }
+					},
 				},
 				other => other,
 			})

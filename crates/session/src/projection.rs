@@ -360,6 +360,12 @@ fn project_window(dom: &Dom, window: Window, items: &mut Vec<Item>) {
 			let Some(node) = dom.get(*child) else {
 				continue;
 			};
+			if matches!(
+				node.prop(&PropKey::Custom(Str::new_static(crate::continuation::COLLAPSED_PROP))),
+				Some(Value::Bool(true))
+			) {
+				continue;
+			}
 			if !element_in_window(node, window) {
 				continue;
 			}
@@ -393,6 +399,12 @@ fn project_window(dom: &Dom, window: Window, items: &mut Vec<Item>) {
 				Tag::Known(KnownTag::User | KnownTag::Developer | KnownTag::Assistant)
 			) {
 				local = false;
+			}
+			if matches!(
+				node.prop(&PropKey::Custom(Str::new_static(crate::continuation::COLLAPSED_PROP))),
+				Some(Value::Bool(true))
+			) {
+				continue;
 			}
 			if !element_in_window(node, window) {
 				continue;

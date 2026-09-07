@@ -9,7 +9,10 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .agents import Continue
 
 from _omp import Duration, LifecyclePhase, Principal, WorkspaceUri
 
@@ -22,6 +25,10 @@ from .provider import Effort, ModelRef, RouteRef
 _EMPTY_SETTINGS: Mapping[str, object] = MappingProxyType({})
 _log_sink: contextvars.ContextVar[Callable[..., None] | None] = contextvars.ContextVar(
     "omp_context_log_sink", default=None
+)
+
+_pending_continuation: contextvars.ContextVar[Continue | None] = contextvars.ContextVar(
+    "omp_pending_continuation", default=None
 )
 
 
@@ -100,6 +107,11 @@ class Context:
         except RuntimeError as error:
             raise LookupError("no active omp invocation context") from error
         return cls.from_scope(scope)
+
+    @property
+    def pending_continuation(self) -> Continue | None:
+        """Read the earlier winning continuation during settlement resolution."""
+        return _pending_continuation.get()
 
     async def convar(self, name: str) -> object:
         """Read one live control-plane variable by canonical name."""

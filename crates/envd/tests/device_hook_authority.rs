@@ -89,3 +89,117 @@ async fn queued_hook_callback_cancellation_is_exact() {
 	);
 	assert_eq!(queued.response().await, Err(DispatchError::Cancelled));
 }
+
+#[tokio::test]
+async fn completing_one_concurrent_callback_does_not_admit_a_queued_serialized_callback() {
+	let mut router = DispatchRouter::new(HostKey::new("project", "trusted", "hooks"), 7);
+	let request = |id, policy| DispatchRequest {
+		id,
+		policy,
+		deadline: EventDeadline { at: Instant::now() + Duration::from_secs(5) },
+		payload: CowBytes::from(Vec::new()),
+	};
+	for id in [1, 2] {
+		let (ready, _) = router
+			.dispatch("hooks", request(id, CallbackConcurrency::Concurrent { limit: 2 }))
+			.expect("concurrent");
+		assert!(ready.is_some());
+	}
+	let (ready, queued) = router
+		.dispatch("hooks", request(3, CallbackConcurrency::Serialized))
+		.expect("queued");
+	assert!(ready.is_none());
+	assert!(
+		router
+			.complete("hooks", 1, 7, Ok(CowBytes::from(Vec::new())))
+			.expect("first completes")
+			.is_none(),
+		"second callback still occupies the serialized actor"
+	);
+	let ready = router
+		.complete("hooks", 2, 7, Ok(CowBytes::from(Vec::new())))
+		.expect("second completes")
+		.expect("now admitted");
+	assert_eq!(ready.id, 3);
+	router
+		.complete("hooks", 3, 7, Ok(CowBytes::from(Vec::new())))
+		.expect("third completes");
+	assert!(queued.response().await.is_ok());
+}
+
+#[tokio::test]
+async fn nested_callback_reentry_excludes_unrelated_and_sibling_callbacks() {
+	let mut router = DispatchRouter::new(HostKey::new("project", "trusted", "hooks"), 7);
+	let request = |id| DispatchRequest {
+		id,
+		policy: CallbackConcurrency::Serialized,
+		deadline: EventDeadline { at: Instant::now() + Duration::from_secs(5) },
+		payload: CowBytes::from(Vec::new()),
+	};
+	assert!(
+		router
+			.dispatch("hooks", request(1))
+			.expect("parent")
+			.0
+			.is_some()
+	);
+	assert!(
+		router
+			.dispatch("hooks", request(2))
+			.expect("unrelated")
+			.0
+			.is_none()
+	);
+	assert!(
+		matches!(
+			router.dispatch_nested("hooks", request(3), 1),
+			Err(DispatchError::InvalidParent(1))
+		),
+		"running alone is not a reentry permit"
+	);
+	router
+		.begin_control_wait("hooks", 1)
+		.expect("authenticated wait");
+	assert!(
+		router
+			.dispatch_nested("hooks", request(3), 1)
+			.expect("descendant")
+			.0
+			.is_some()
+	);
+	assert!(
+		router
+			.dispatch_nested("hooks", request(4), 1)
+			.expect("sibling")
+			.0
+			.is_none(),
+		"sibling cannot overlap serialized child"
+	);
+	let next = router
+		.complete("hooks", 3, 7, Ok(CowBytes::from(Vec::new())))
+		.expect("child complete")
+		.expect("sibling admitted");
+	assert_eq!(next.id, 4, "unrelated callback remains blocked by parent");
+	assert!(
+		router
+			.complete("hooks", 4, 7, Ok(CowBytes::from(Vec::new())))
+			.expect("sibling complete")
+			.is_none()
+	);
+	router.end_control_wait("hooks", 1);
+	assert!(
+		matches!(
+			router.dispatch_nested("hooks", request(5), 1),
+			Err(DispatchError::InvalidParent(1))
+		),
+		"completed CONTROL wait grants no reentry"
+	);
+	assert_eq!(
+		router
+			.complete("hooks", 1, 7, Ok(CowBytes::from(Vec::new())))
+			.expect("parent complete")
+			.expect("unrelated admitted")
+			.id,
+		2
+	);
+}

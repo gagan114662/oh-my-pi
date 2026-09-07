@@ -10,6 +10,42 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{SessionMutation, Up, loop_::ContextProjector};
 
+/// Host-authenticated parent callback for a nested context operation.
+/// Never decoded from CONTROL operation arguments.
+#[derive(Clone, Debug)]
+pub struct ContextControlOrigin {
+	/// Exact parent invocation, issued by the host runtime.
+	pub invocation:         Str,
+	/// Authenticated extension identity.
+	pub extension:          Str,
+	/// Authenticated deployment layer.
+	pub layer:              Str,
+	/// Authenticated trust tier.
+	pub tier:               Str,
+	/// Live worker generation.
+	pub host_generation:    u64,
+	/// Live session generation.
+	pub session_generation: u64,
+}
+
+tokio::task_local! {
+	static CONTEXT_ORIGIN: Option<ContextControlOrigin>;
+}
+
+/// Scopes descendant hook dispatch to its trusted CONTROL caller.
+pub async fn with_context_origin<T>(
+	origin: Option<ContextControlOrigin>,
+	future: impl std::future::Future<Output = T>,
+) -> T {
+	CONTEXT_ORIGIN.scope(origin, future).await
+}
+
+/// Returns only a host-scoped parent, never an argument-supplied identity.
+#[must_use]
+pub fn current_context_origin() -> Option<ContextControlOrigin> {
+	CONTEXT_ORIGIN.try_with(Clone::clone).ok().flatten()
+}
+
 /// Typed context rejection returned unchanged through the environment owner.
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{code}: {message}")]
@@ -85,9 +121,10 @@ impl ContextCommitGuard {
 }
 
 pub(crate) struct PendingContextCompaction {
-	pub(crate) focus: Option<Str>,
-	pub(crate) guard: ContextCommitGuard,
-	pub(crate) reply: flume::Sender<Result<Value, ContextControlError>>,
+	pub(crate) focus:  Option<Str>,
+	pub(crate) origin: Option<ContextControlOrigin>,
+	pub(crate) guard:  ContextCommitGuard,
+	pub(crate) reply:  flume::Sender<Result<Value, ContextControlError>>,
 }
 
 /// A one-shot request for the real kernel compaction director.
@@ -134,6 +171,7 @@ impl ContextControlLease {
 /// The existing kernel mailbox plus its current live projection recipe.
 #[derive(Clone)]
 pub struct ContextControl {
+	origin:    Option<ContextControlOrigin>,
 	sender:    flume::Sender<Up>,
 	projector: Arc<RwLock<Option<ContextProjector>>>,
 	live:      ContextControlLease,
@@ -141,12 +179,24 @@ pub struct ContextControl {
 
 impl ContextControl {
 	pub(crate) fn new(sender: flume::Sender<Up>) -> Self {
-		Self { sender, projector: Arc::new(RwLock::new(None)), live: ContextControlLease::admitted() }
+		Self {
+			origin: None,
+			sender,
+			projector: Arc::new(RwLock::new(None)),
+			live: ContextControlLease::admitted(),
+		}
 	}
 
 	/// Revokes queued requests when this kernel binding is replaced.
 	pub fn revoke(&self) {
 		self.live.revoke();
+	}
+
+	/// Derives invocation scope from the authenticated environment owner.
+	#[must_use]
+	pub fn for_invocation(mut self, origin: Option<ContextControlOrigin>) -> Self {
+		self.origin = origin;
+		self
 	}
 
 	pub(crate) fn refresh(&self, projector: ContextProjector) {
@@ -193,6 +243,7 @@ impl ContextControl {
 				.map(Str::new);
 			let pending = PendingContextCompaction {
 				focus,
+				origin: self.origin.clone(),
 				guard: ContextCommitGuard {
 					live,
 					connection: lease,

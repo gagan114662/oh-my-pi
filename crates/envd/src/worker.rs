@@ -1209,11 +1209,12 @@ impl LifecycleHost for FrozenControlLifecycleHost {
 		use std::time::Instant;
 
 		let dispatch = ControlDispatch {
-			operation: sf!("omp.lifecycle.freeze"),
-			arguments: serde_json::Map::new(),
-			authority: self.authority("freeze", InvocationPhase::Open, LifecyclePhase::Frozen),
-			policy:    CallbackConcurrency::Serialized,
-			deadline:  EventDeadline { at: Instant::now() + Duration::from_secs(10) },
+			reentrant_parent: None,
+			operation:        sf!("omp.lifecycle.freeze"),
+			arguments:        serde_json::Map::new(),
+			authority:        self.authority("freeze", InvocationPhase::Open, LifecyclePhase::Frozen),
+			policy:           CallbackConcurrency::Serialized,
+			deadline:         EventDeadline { at: Instant::now() + Duration::from_secs(10) },
 		};
 		async move {
 			let mut frozen = self
@@ -1322,6 +1323,7 @@ impl LifecycleHost for FrozenControlLifecycleHost {
 			self
 				.control
 				.dispatch(ControlDispatch {
+					reentrant_parent: None,
 					operation: sf!("omp.lifecycle.activate"),
 					arguments,
 					authority,
@@ -1398,6 +1400,7 @@ async fn freeze_control_registry(
 	authority.event = Some(sf!("freeze"));
 	let mut payload = control
 		.dispatch(ControlDispatch {
+			reentrant_parent: None,
 			operation: sf!("omp.lifecycle.freeze"),
 			arguments: serde_json::Map::new(),
 			authority,
@@ -2423,6 +2426,7 @@ impl ExtHostSupervisor {
 		};
 		let result = self
 			.dispatch_extension_callback(target, ControlDispatch {
+				reentrant_parent: None,
 				operation,
 				arguments,
 				authority,
@@ -3746,6 +3750,7 @@ async fn run_control_supervisor(
 					})
 				});
 				let dispatch = ControlDispatch {
+					reentrant_parent: None,
 					operation: sf!("omp.devices.call"),
 					arguments,
 					authority: ControlInvocationAuthority {
@@ -4116,6 +4121,7 @@ async fn dispatch_control_prompt(
 	let result = activation
 		.python_route
 		.dispatch(ControlDispatch {
+			reentrant_parent: None,
 			operation: sf!("omp.prompts.render"),
 			arguments,
 			authority,
@@ -4163,6 +4169,7 @@ async fn dispatch_control_service(
 	let result = activation
 		.python_route
 		.dispatch(ControlDispatch {
+			reentrant_parent: None,
 			operation: sf!("omp.services.dispatch"),
 			arguments: serde_json::Map::from_iter([
 				("request_id".to_owned(), serde_json::Value::from(request_id)),

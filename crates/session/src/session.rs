@@ -29,6 +29,9 @@ use crate::{
 /// Failure to append, decode, or fold a session entry.
 #[derive(Debug, Error)]
 pub enum SessionError {
+	/// The durable settlement continuation ledger is malformed.
+	#[error("invalid durable continuation state")]
+	InvalidContinuationState,
 	/// A durable context retry key was reused for another operation or payload.
 	#[error("context request identity conflicts with an earlier acknowledgement")]
 	ContextRequestConflict,

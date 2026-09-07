@@ -140,6 +140,15 @@ async fn configured_composition_routes_every_owned_namespace() {
 		("omp.devices.invoke", "devices"),
 		("omp.hooks.dispatch", "hooks"),
 		("omp.state_dir", "auxiliary"),
+		("omp.context.view", "auxiliary"),
+		("omp.context.usage", "auxiliary"),
+		("omp.context.epoch", "auxiliary"),
+		("omp.context.pin", "auxiliary"),
+		("omp.context.unpin", "auxiliary"),
+		("omp.context.compact", "auxiliary"),
+		("omp.context.message.parts", "auxiliary"),
+		("omp.context.message.verdict", "auxiliary"),
+		("omp.context.message.raw_args", "auxiliary"),
 		("omp.sessions.get", "sessions"),
 		("omp.artifacts.stat", "artifacts"),
 		("omp.creds.list", "credentials"),
@@ -175,7 +184,7 @@ async fn configured_composition_routes_every_owned_namespace() {
 		assert_eq!(result["session_generation"], 11);
 	}
 	assert!(!authority.handles("omp.registry.freeze"));
-	assert!(!authority.handles("omp.context.view"));
+	assert!(authority.handles("omp.context.view"));
 	assert!(!authority.handles("omp.journal.append"));
 	assert!(!authority.handles("omp.state.latest"));
 	assert!(!authority.handles("omp.regimes.start"));
