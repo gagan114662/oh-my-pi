@@ -253,9 +253,29 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  roster_coverage:
+    name: Native tool roster source coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inventory every native tool implementation
+        run: python3 scripts/check-tool-roster.py --self-test
+      - name: Publish full family coverage table
+        if: always()
+        run: cat target/tool-roster/coverage.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload roster source coverage
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-tool-roster-coverage
+          path: target/tool-roster/
+          if-no-files-found: error
+          retention-days: 14
+
   rust:
     name: Rust workspace and acceptance proofs
-    needs: [format, adr_status, runtime_spec, licenses]
+    needs: [format, adr_status, runtime_spec, licenses, roster_coverage]
     runs-on: macos-15
     timeout-minutes: 120
     steps:
@@ -309,6 +329,21 @@ jobs:
         run: cargo nextest run --profile ci --workspace --exclude omp-e2e --locked
       # nextest cannot run doctests; omp has them in 25+ modules, so they need
       # their own libtest pass or the coverage silently disappears.
+      - name: Publish compiled tool roster policy proof
+        run: |
+          set -o pipefail
+          mkdir -p target/tool-roster
+          cargo nextest run --profile ci -p omp-envd --locked --no-tests fail --success-output immediate -E 'test(every_environment_family_has_one_advertised_surface_in_each_policy)' 2>&1 | tee target/tool-roster/policy.log
+          cat target/tool-roster/policy.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload compiled roster proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-tool-roster-policy-proof
+          path: target/tool-roster/policy.log
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Test doctests
         run: cargo test --doc --workspace --exclude omp-e2e --locked
 

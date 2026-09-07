@@ -6160,6 +6160,107 @@ mod tests {
 	}
 
 	#[test]
+	fn every_environment_family_has_one_advertised_surface_in_each_policy() {
+		let inputs = EnvironmentDeclarationInputs {
+			read_policy:      omp_tools::read::ReadPolicy::default(),
+			selected_edit:    omp_tools::edit::hashline_spec().rev,
+			eval_description: Some(sf!("Evaluate code.")),
+			shell_snapshot:   Some(omp_tools::shell::ShellPromptSnapshot {
+				sibling_tools:       Arc::default(),
+				platform:            sf!("linux"),
+				command_prefix:      false,
+				embedded_builtins:   true,
+				devices:             true,
+				interceptor_enabled: false,
+				interceptor_rules:   Arc::default(),
+				acp_routing:         false,
+			}),
+			memory:           omp_memory::Capabilities {
+				writable:   true,
+				searchable: true,
+				resolvable: true,
+				editable:   true,
+				lifecycle:  true,
+				embeddings: false,
+			},
+			managed_skills:   true,
+		};
+		let identities = omp_tools::builtin_tool_identities()
+			.iter()
+			.map(|identity| identity.name)
+			.collect::<BTreeSet<_>>();
+		assert_eq!(
+			identities.len(),
+			omp_tools::builtin_tool_identities().len(),
+			"duplicate builtin identities"
+		);
+		let mut settings = ToolSettings::default();
+		for name in &identities {
+			settings.enabled.insert(Str::from(*name), true);
+		}
+		let browser = BrowserSettings { enabled: true, ..BrowserSettings::default() };
+		println!("| Policy | Environment family | Advertised surface |");
+		println!("| --- | --- | --- |");
+		for policy in [ToolsPolicy::Auto, ToolsPolicy::ToolOnly, ToolsPolicy::DeviceOnly] {
+			let mut registry = Registry::new();
+			declare_remote_environment(&mut registry, &settings, &browser, &inputs, false, policy)
+				.expect("production declarations");
+			let slots = registry
+				.advertise(omp_tool::LoweringCaps {
+					strict_schema:  false,
+					grammar:        omp_catalog::GrammarBits::empty(),
+					maximum_tools:  None,
+					maximum_strict: None,
+				})
+				.expect("lower actual wire slots")
+				.into_iter()
+				.map(|tool| tool.identity.name)
+				.collect::<BTreeSet<_>>();
+			let devices = registry
+				.devices()
+				.map(|device| device.name.clone())
+				.collect::<BTreeSet<_>>();
+			for name in registry.live_names() {
+				assert!(
+					identities.contains(name.as_str()),
+					"registered family {name} missing from builtin listing"
+				);
+				assert_ne!(
+					slots.contains(&name),
+					devices.contains(&name),
+					"{name} must have exactly one advertised surface"
+				);
+				println!(
+					"| {policy:?} | {name} | {} |",
+					if slots.contains(&name) {
+						"slot"
+					} else {
+						"dyn device"
+					}
+				);
+			}
+			for name in ["lsp", "browser"] {
+				assert!(registry.live_identity(name).is_some(), "enabled {name} absent");
+			}
+			let disabled_browser = BrowserSettings { enabled: false, ..browser.clone() };
+			let mut disabled = settings.clone();
+			for name in &identities {
+				disabled.enabled.insert(Str::from(*name), false);
+			}
+			let disabled_inputs = EnvironmentDeclarationInputs {
+				memory: omp_memory::Capabilities::default(),
+				managed_skills: false,
+				..inputs.clone()
+			};
+			assert!(
+				environment_declarations(&disabled, &disabled_browser, &disabled_inputs, false, policy)
+					.is_empty(),
+				"disabled capabilities must not be advertised"
+			);
+		}
+	}
+
+	#[test]
 	fn default_roster_has_exactly_five_slots_and_keeps_long_tail_devices_live() {
 		let inputs = EnvironmentDeclarationInputs {
 			read_policy:      omp_tools::read::ReadPolicy::default(),
