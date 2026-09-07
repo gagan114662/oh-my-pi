@@ -4,7 +4,7 @@
 use std::{
 	collections::{BTreeMap, BTreeSet},
 	fs::{self, Metadata, OpenOptions},
-	io::{self, Write as _},
+	io::{self, Read as _, Write as _},
 	path::{Path, PathBuf},
 	sync::{
 		Arc,
@@ -14,7 +14,7 @@ use std::{
 
 use bytes::BytesMut;
 use omp_agent::{GateError, HookEvent, HookGate, HookPatch};
-use omp_core::Str;
+use omp_core::{Hash32, Str};
 use omp_proto::toolhost::v1::HookEventId;
 use omp_tools::manage_skill::{
 	Action, AuthorityError, ManagedSkillAuthority, MutationOutcome, MutationRequest,
@@ -22,7 +22,9 @@ use omp_tools::manage_skill::{
 use parking_lot::Mutex;
 use serde::Serialize;
 
-use crate::managed_skills_domain::{CandidateError, ManagedSkillCandidate, is_valid_name};
+use crate::managed_skills_domain::{
+	CandidateError, MAX_SKILL_BYTES, ManagedSkillCandidate, is_valid_name,
+};
 
 #[derive(Serialize)]
 struct ManagedResourceRef<'a> {
@@ -128,8 +130,17 @@ impl ManagedSkills {
 		name: &Str,
 		request: MutationRequest<'_>,
 	) -> Result<MutationOutcome, AuthorityError> {
+		match (request.action, request.expected_version) {
+			(Action::Create, Some(_)) => return Err(AuthorityError::UnexpectedVersion),
+			(Action::Update | Action::Delete, None) => {
+				return Err(AuthorityError::MissingExpectedVersion);
+			},
+			_ => {},
+		}
 		self.ensure_root()?;
 		let directory = self.root.join(name.as_str());
+		let mut previous_version = None;
+		let mut version = None;
 		match request.action {
 			Action::Create => {
 				if self.authored_names.contains(name) {
@@ -138,20 +149,23 @@ impl ManagedSkills {
 				let candidate = self.candidate(request)?;
 				self.ensure_skill_directory(&directory, true)?;
 				let file = directory.join("SKILL.md");
-				write_exclusive(&file, candidate.serialize().as_bytes())?;
+				let bytes = candidate.serialize();
+				write_exclusive(&file, bytes.as_bytes())?;
+				version = Some(Hash32::sum(bytes.as_bytes()));
 			},
 			Action::Update => {
 				let candidate = self.candidate(request)?;
 				self.ensure_skill_directory(&directory, false)?;
 				let file = directory.join("SKILL.md");
-				self.atomic_replace(&directory, &file, candidate.serialize().as_bytes())?;
+				previous_version = Some(check_version(&file, request.expected_version)?);
+				let bytes = candidate.serialize();
+				self.atomic_replace(&directory, &file, bytes.as_bytes())?;
+				version = Some(Hash32::sum(bytes.as_bytes()));
 			},
 			Action::Delete => {
 				self.ensure_skill_directory(&directory, false)?;
 				let file = directory.join("SKILL.md");
-				if let Ok(metadata) = fs::symlink_metadata(&file) {
-					ensure_regular_unlinked(&metadata)?;
-				}
+				previous_version = Some(check_version(&file, request.expected_version)?);
 				fs::remove_dir_all(&directory).map_err(map_io)?;
 			},
 		}
@@ -164,6 +178,8 @@ impl ManagedSkills {
 			name: name.clone(),
 			path: Str::from(format!("{}/SKILL.md", name.as_str())),
 			revision,
+			previous_version,
+			version,
 		})
 	}
 
@@ -301,6 +317,40 @@ impl Drop for NameLock<'_> {
 	}
 }
 
+/// Compare exact SKILL.md bytes while the authority's per-name lock is held.
+/// The lock serializes this authority, not independent filesystem writers.
+fn check_version(path: &Path, expected: Option<Hash32>) -> Result<Hash32, AuthorityError> {
+	let expected = expected.ok_or(AuthorityError::MissingExpectedVersion)?;
+	ensure_regular_unlinked(&fs::symlink_metadata(path).map_err(map_update_io)?)?;
+	let mut options = OpenOptions::new();
+	options.read(true);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt as _;
+		options.custom_flags(libc::O_NOFOLLOW);
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::OpenOptionsExt as _;
+		options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+	}
+	let file = options.open(path).map_err(map_update_io)?;
+	ensure_regular_unlinked(&file.metadata().map_err(map_io)?)?;
+	let mut bytes = Vec::new();
+	file
+		.take(MAX_SKILL_BYTES as u64 + 1)
+		.read_to_end(&mut bytes)
+		.map_err(map_io)?;
+	if bytes.len() > MAX_SKILL_BYTES {
+		return Err(AuthorityError::TooLarge);
+	}
+	let actual = Hash32::sum(&bytes);
+	if actual != expected {
+		return Err(AuthorityError::VersionConflict { expected, actual });
+	}
+	Ok(actual)
+}
+
 fn write_exclusive(path: &Path, bytes: &[u8]) -> Result<(), AuthorityError> {
 	let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
 		Ok(file) => file,
@@ -367,21 +417,184 @@ mod tests {
 			Arc::new(HookGate::channel().0),
 		);
 		let shadowed = authority.mutate(MutationRequest {
-			action:      Action::Create,
-			name:        "authored",
-			description: Some("when useful"),
-			body:        Some("body"),
+			action:           Action::Create,
+			name:             "authored",
+			description:      Some("when useful"),
+			body:             Some("body"),
+			expected_version: None,
 		});
 		assert_eq!(shadowed, Err(AuthorityError::AuthoredShadow));
 		let created = authority
 			.mutate(MutationRequest {
-				action:      Action::Create,
-				name:        "new-skill",
-				description: Some("when useful"),
-				body:        Some("body"),
+				action:           Action::Create,
+				name:             "new-skill",
+				description:      Some("when useful"),
+				body:             Some("body"),
+				expected_version: None,
 			})
 			.unwrap();
 		assert_eq!(created.revision, 1);
 		assert!(root.join("new-skill/SKILL.md").is_file());
+	}
+	fn request(
+		action: Action,
+		body: Option<&str>,
+		expected_version: Option<Hash32>,
+	) -> MutationRequest<'_> {
+		MutationRequest {
+			action,
+			name: "shared-skill",
+			description: Some("when useful"),
+			body,
+			expected_version,
+		}
+	}
+
+	#[test]
+	fn stale_edit_and_delete_leave_bytes_unchanged_and_digest_survives_restart() {
+		let tree = tempfile::tempdir().unwrap();
+		let root = tree.path().join("managed-skills");
+		let make =
+			|| ManagedSkills::new(root.clone(), BTreeSet::new(), Arc::new(HookGate::channel().0));
+		let authority = make();
+		for action in [Action::Update, Action::Delete] {
+			assert_eq!(
+				authority.mutate(request(action, Some("old client"), None)),
+				Err(AuthorityError::MissingExpectedVersion)
+			);
+			assert!(!root.exists(), "missing version is refused before filesystem effects");
+		}
+		assert_eq!(
+			authority.mutate(request(Action::Create, Some("body"), Some(Hash32::default()))),
+			Err(AuthorityError::UnexpectedVersion)
+		);
+		assert!(!root.exists());
+		let created = authority
+			.mutate(request(Action::Create, Some("original"), None))
+			.unwrap();
+		let file = root.join("shared-skill/SKILL.md");
+		let original = fs::read(&file).unwrap();
+		assert_eq!(created.version, Some(Hash32::sum(&original)));
+		assert_eq!(created.previous_version, None);
+		let first = authority
+			.mutate(request(Action::Update, Some("editor one"), created.version))
+			.unwrap();
+		let current = fs::read(&file).unwrap();
+		assert_ne!(current, original);
+		assert_eq!(first.previous_version, created.version);
+		assert_eq!(first.version, Some(Hash32::sum(&current)));
+		for action in [Action::Update, Action::Delete] {
+			assert_eq!(
+				authority.mutate(request(action, Some("stale editor"), created.version)),
+				Err(AuthorityError::VersionConflict {
+					expected: created.version.unwrap(),
+					actual:   first.version.unwrap(),
+				})
+			);
+			assert_eq!(fs::read(&file).unwrap(), current);
+			assert_eq!(
+				authority.revision.load(Ordering::Acquire),
+				2,
+				"refusals emit no inventory revision"
+			);
+			assert_eq!(
+				authority.mutate(request(action, Some("old client"), None)),
+				Err(AuthorityError::MissingExpectedVersion)
+			);
+			assert_eq!(fs::read(&file).unwrap(), current);
+		}
+		assert_eq!(
+			fs::read_dir(file.parent().unwrap()).unwrap().count(),
+			1,
+			"refused changes left no staged files"
+		);
+		drop(authority);
+		let restarted = make();
+		let same = restarted
+			.mutate(request(Action::Update, Some("editor one"), first.version))
+			.unwrap();
+		assert_eq!(same.version, first.version, "exact content version survives authority restart");
+		assert_eq!(same.previous_version, first.version);
+		assert_eq!(same.revision, 1, "inventory sequence is explicitly process local");
+		let deleted = restarted
+			.mutate(request(Action::Delete, None, same.version))
+			.unwrap();
+		assert_eq!(deleted.previous_version, same.version);
+		assert_eq!(deleted.version, None);
+		assert!(!file.parent().unwrap().exists());
+	}
+
+	#[test]
+	fn simultaneous_editors_cannot_both_replace_the_same_version() {
+		let tree = tempfile::tempdir().unwrap();
+		let authority = ManagedSkills::new(
+			tree.path().join("managed-skills"),
+			BTreeSet::new(),
+			Arc::new(HookGate::channel().0),
+		);
+		let version = authority
+			.mutate(request(Action::Create, Some("original"), None))
+			.unwrap()
+			.version;
+		let barrier = std::sync::Barrier::new(2);
+		let outcomes = std::thread::scope(|scope| {
+			let one = scope.spawn(|| {
+				barrier.wait();
+				authority.mutate(request(Action::Update, Some("first editor"), version))
+			});
+			let two = scope.spawn(|| {
+				barrier.wait();
+				authority.mutate(request(Action::Update, Some("second editor"), version))
+			});
+			[one.join().unwrap(), two.join().unwrap()]
+		});
+		assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+		let winner = outcomes
+			.iter()
+			.find_map(|outcome| outcome.as_ref().ok())
+			.unwrap();
+		let loser = outcomes
+			.iter()
+			.find_map(|outcome| outcome.as_ref().err())
+			.unwrap();
+		assert_eq!(loser, &AuthorityError::VersionConflict {
+			expected: version.unwrap(),
+			actual:   winner.version.unwrap(),
+		});
+		assert_eq!(
+			winner.version,
+			Some(Hash32::sum(&fs::read(authority.root.join("shared-skill/SKILL.md")).unwrap()))
+		);
+		assert_eq!(authority.revision.load(Ordering::Acquire), 2);
+	}
+	#[cfg(unix)]
+	#[test]
+	fn version_check_does_not_follow_a_managed_skill_link() {
+		let tree = tempfile::tempdir().unwrap();
+		let root = tree.path().join("managed-skills");
+		let authority =
+			ManagedSkills::new(root.clone(), BTreeSet::new(), Arc::new(HookGate::channel().0));
+		let created = authority
+			.mutate(request(Action::Create, Some("original"), None))
+			.unwrap();
+		let file = root.join("shared-skill/SKILL.md");
+		let outside = tree.path().join("authored.md");
+		let bytes = fs::read(&file).unwrap();
+		fs::write(&outside, &bytes).unwrap();
+		fs::remove_file(&file).unwrap();
+		std::os::unix::fs::symlink(&outside, &file).unwrap();
+		for action in [Action::Update, Action::Delete] {
+			assert_eq!(
+				authority.mutate(request(action, Some("replacement"), created.version)),
+				Err(AuthorityError::UnsafePath)
+			);
+			assert_eq!(fs::read(&outside).unwrap(), bytes);
+			assert!(
+				fs::symlink_metadata(&file)
+					.unwrap()
+					.file_type()
+					.is_symlink()
+			);
+		}
 	}
 }

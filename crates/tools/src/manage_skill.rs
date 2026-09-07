@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_stream::stream;
 use futures::Stream;
-use omp_core::{Str, StrMut, sf};
+use omp_core::{Hash32, Str, StrMut, sf};
 use omp_tool::{
 	ArgIssue, ArgIssueKind, CommitError, Constraint, DocEffects, Effects, Ev, IncomingParams,
 	ParamError, Part, PromptCaps, Rev, Tool, ToolSpec, ToolTerminal,
@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 
 const DESCRIPTION: &str = "Create, update, or delete a reusable generated skill in the isolated \
                            managed-skills root. Create and update require both description and \
-                           body. Managed skills never override authored skills.";
+                           body. Update/delete require expected_version from the current SKILL.md \
+                           SHA-256 receipt; create omits it. Managed skills never override \
+                           authored skills.";
 
 /// Managed skill mutation action.
 #[derive(
@@ -36,52 +38,67 @@ const DESCRIPTION: &str = "Create, update, or delete a reusable generated skill 
 pub enum Action {
 	/// Exclusively create a new managed skill.
 	Create,
-	/// Atomically replace an existing managed skill.
+	/// Replace an existing managed skill only at its expected content version.
 	Update,
 	/// Delete an existing managed skill directory.
 	Delete,
 }
 
-/// Arguments accepted by `manage_skill@1`.
+/// Arguments accepted by `manage_skill@2`.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// Mutation action.
-	pub action:      Action,
+	pub action:           Action,
 	/// Kebab-case skill name.
-	pub name:        Str,
+	pub name:             Str,
 	/// Prompt-safe one-line use-case description. Required for create/update.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub description: Option<Str>,
+	pub description:      Option<Str>,
 	/// Markdown body without frontmatter. Required for create/update.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub body:        Option<Str>,
+	pub body:             Option<Str>,
+	/// Exact current SKILL.md SHA-256 (64 lowercase hex); required for
+	/// update/delete, omitted for create.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	#[schemars(with = "Option<String>")]
+	pub expected_version: Option<Hash32>,
 }
 
 /// Borrowed request delivered to the Environment-owned managed-skill authority.
 #[derive(Clone, Copy, Debug)]
 pub struct MutationRequest<'a> {
 	/// Mutation action.
-	pub action:      Action,
+	pub action:           Action,
 	/// Raw model-supplied name; the authority normalizes and validates it.
-	pub name:        &'a str,
+	pub name:             &'a str,
 	/// Description for create/update.
-	pub description: Option<&'a str>,
+	pub description:      Option<&'a str>,
 	/// Markdown body for create/update.
-	pub body:        Option<&'a str>,
+	pub body:             Option<&'a str>,
+	/// Expected exact content version for update/delete; absent for create.
+	pub expected_version: Option<Hash32>,
 }
 
-/// Durable managed-skill mutation receipt.
+/// Managed-skill content receipt with a process-local inventory sequence.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct MutationOutcome {
 	/// Completed action.
-	pub action:   Action,
+	pub action:           Action,
 	/// Normalized managed-skill name.
-	pub name:     Str,
+	pub name:             Str,
 	/// Path relative to the isolated managed root.
-	pub path:     Str,
-	/// Monotonic inventory revision after refresh.
-	pub revision: u64,
+	pub path:             Str,
+	/// Process-local inventory revision after refresh; resets when the authority
+	/// restarts.
+	pub revision:         u64,
+	/// Exact content SHA-256 before update/delete; absent for create.
+	#[schemars(with = "Option<String>")]
+	pub previous_version: Option<Hash32>,
+	/// Exact published SKILL.md SHA-256; absent after delete. Stable across
+	/// restart.
+	#[schemars(with = "Option<String>")]
+	pub version:          Option<Hash32>,
 }
 
 /// Typed refusal from the Environment managed-skill authority.
@@ -109,6 +126,20 @@ pub enum AuthorityError {
 	/// Update/delete could not find the named managed skill.
 	#[error("managed skill does not exist")]
 	NotFound,
+	/// Update/delete must identify the content the editor observed.
+	#[error("update/delete requires expected_version from the current SKILL.md content")]
+	MissingExpectedVersion,
+	/// Exclusive create must not claim an existing content version.
+	#[error("create must omit expected_version")]
+	UnexpectedVersion,
+	/// Another authorized mutation changed the content since it was observed.
+	#[error("managed skill version conflict: expected {expected}, current {actual}")]
+	VersionConflict {
+		/// Content version supplied by the editor.
+		expected: Hash32,
+		/// Content version currently owned by the managed-skill authority.
+		actual:   Hash32,
+	},
 	/// Root, directory, symlink, hardlink, or regular-file checks failed.
 	#[error("managed skill path failed containment or link safety checks")]
 	UnsafePath,
@@ -147,11 +178,11 @@ pub struct ManageSkillTool<A> {
 	spec:      ToolSpec,
 }
 
-/// Builds the host-free `manage_skill@1` declaration.
+/// Builds the host-free `manage_skill@2` declaration.
 pub fn spec() -> ToolSpec {
 	ToolSpec {
 		name:            sf!("manage_skill"),
-		rev:             Rev { family: Str::default(), n: 1 },
+		rev:             Rev { family: Str::default(), n: 2 },
 		description:     sf!(DESCRIPTION),
 		schema:          omp_tool::schema::<Params>(),
 		constraint:      Constraint::Schema {
@@ -174,7 +205,7 @@ pub fn spec() -> ToolSpec {
 	}
 }
 
-/// Creates `manage_skill@1` over Environment-owned publication authority.
+/// Creates `manage_skill@2` over Environment-owned publication authority.
 pub fn tool<A: ManagedSkillAuthority>(authority: Arc<A>) -> ManageSkillTool<A> {
 	ManageSkillTool { authority, spec: spec() }
 }
@@ -199,8 +230,9 @@ impl<A: ManagedSkillAuthority> Tool for ManageSkillTool<A> {
 				Err(error) => { yield param_event(error); return; },
 			};
 			let fields_valid = match params.action {
-				Action::Create | Action::Update => params.description.is_some() && params.body.is_some(),
-				Action::Delete => true,
+				Action::Create => params.description.is_some() && params.body.is_some() && params.expected_version.is_none(),
+					 Action::Update => params.description.is_some() && params.body.is_some() && params.expected_version.is_some(),
+					 Action::Delete => params.expected_version.is_some(),
 			};
 			if !fields_valid {
 				yield Ev::Args(cross_field_issue());
@@ -215,6 +247,7 @@ impl<A: ManagedSkillAuthority> Tool for ManageSkillTool<A> {
 				name: params.name.as_str(),
 				description: params.description.as_deref(),
 				body: params.body.as_deref(),
+					 expected_version: params.expected_version,
 			}).map_err(|source| Fault::Authority { source });
 			yield done(result);
 		}
@@ -241,6 +274,11 @@ fn render_outcome(outcome: &MutationOutcome) -> Str {
 	text.push_str("\" (managed-skills/");
 	text.push_str(outcome.path.as_str());
 	text.push_str("). Registry refreshed.");
+	if let Some(version) = outcome.version {
+		text.push_str(" Version: ");
+		text.push_str(version.to_hex().as_str());
+		text.push('.');
+	}
 	text.freeze()
 }
 
@@ -280,9 +318,68 @@ fn protocol_issue(message: Str) -> ArgIssue {
 fn cross_field_issue() -> ArgIssue {
 	ArgIssue {
 		path:     Vec::new(),
-		expected: sf!("description and body for create/update; name only for delete"),
+		expected: sf!(
+			"description/body for create/update; expected_version required for update/delete and \
+			 omitted for create"
+		),
 		kind:     ArgIssueKind::Malformed,
 		example:  None,
 		found:    None,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	use futures::{StreamExt as _, executor::block_on};
+
+	use super::*;
+
+	struct RecordingAuthority(AtomicUsize);
+	impl ManagedSkillAuthority for RecordingAuthority {
+		fn mutate(&self, request: MutationRequest<'_>) -> Result<MutationOutcome, AuthorityError> {
+			self.0.fetch_add(1, Ordering::SeqCst);
+			assert_eq!(request.action, Action::Update);
+			assert_eq!(request.expected_version, Some(Hash32::sum(b"observed content")));
+			Ok(MutationOutcome {
+				action:           request.action,
+				name:             Str::new(request.name),
+				path:             sf!("skill/SKILL.md"),
+				revision:         1,
+				previous_version: request.expected_version,
+				version:          Some(Hash32::sum(b"new content")),
+			})
+		}
+	}
+
+	#[test]
+	fn old_update_delete_clients_are_rejected_before_authority_and_exact_version_is_forwarded() {
+		let authority = Arc::new(RecordingAuthority(AtomicUsize::new(0)));
+		let tool = tool(Arc::clone(&authority));
+		let invoke = |arguments: serde_json::Value| {
+			let (feed, incoming) = IncomingParams::channel();
+			feed
+				.args_committed(Str::new(arguments.to_string()))
+				.unwrap();
+			block_on(tool.call(incoming).collect::<Vec<_>>())
+		};
+		for action in ["update", "delete"] {
+			let events = invoke(
+				serde_json::json!({"action": action, "name": "skill", "description": "when useful", "body": "new"}),
+			);
+			assert!(matches!(events.as_slice(), [Ev::Args(_)]));
+		}
+		let invalid = invoke(
+			serde_json::json!({"action":"update", "name":"skill", "description":"when useful", "body":"new", "expected_version":"not-a-digest"}),
+		);
+		assert!(matches!(invalid.as_slice(), [Ev::Args(_)]));
+		assert_eq!(authority.0.load(Ordering::SeqCst), 0);
+		let events = invoke(
+			serde_json::json!({"action":"update", "name":"skill", "description":"when useful", "body":"new", "expected_version":Hash32::sum(b"observed content")}),
+		);
+		assert!(matches!(events.as_slice(), [Ev::Done(ToolTerminal::Done { result: Ok(_), .. })]));
+		assert_eq!(authority.0.load(Ordering::SeqCst), 1);
+		assert_eq!(spec().rev.n, 2);
 	}
 }
