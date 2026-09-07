@@ -364,6 +364,8 @@ jobs:
     needs: format
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      ENVD_PROOF_DIR: ${{ github.workspace }}/target/envd-proof-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
 
@@ -426,6 +428,47 @@ jobs:
           name: linux-xattr-proof
           path: target/linux-xattr-proof.log
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Prove Linux environment host contracts
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          mkdir -p "$ENVD_PROOF_DIR"
+          set +e
+          cargo nextest run --profile ci --locked -p omp-envd --lib --tests --no-tests fail 2>&1 | tee "$ENVD_PROOF_DIR"/nextest.log
+          test_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > "$ENVD_PROOF_DIR"/nextest.exit
+          cargo test --doc --locked -p omp-envd 2>&1 | tee "$ENVD_PROOF_DIR"/doctests.log
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$doc_status" > "$ENVD_PROOF_DIR"/doctests.exit
+          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+
+      - name: Summarize Linux environment host evidence
+        if: always()
+        run: |
+          python3 - <<'PY_SUMMARY'
+          import json, os, pathlib, re
+          root = pathlib.Path(os.environ['ENVD_PROOF_DIR'])
+          root.mkdir(parents=True, exist_ok=True)
+          log = (root/'nextest.log').read_text(errors='replace') if (root/'nextest.log').exists() else ''
+          counts = re.findall(r'Summary[^\n]*?([0-9]+) tests run:', log)
+          exits = {name: int((root/(name+'.exit')).read_text()) if (root/(name+'.exit')).exists() else None for name in ('nextest','doctests')}
+          result = {'revision': os.environ['GITHUB_SHA'], 'tests_run': int(counts[-1]) if counts else None, 'exit_codes': exits}
+          (root/'summary.json').write_text(json.dumps(result, indent=2)+'\n')
+          text = '# Linux environment host evidence\n\n```json\n'+json.dumps(result, indent=2)+'\n```\n\nAll envd library/integration tests and doctests are requested. Missing execution is unknown, never a pass.\n'
+          (root/'summary.md').write_text(text)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as stream: stream.write(text)
+          if not result['tests_run'] or any(code != 0 for code in exits.values()): raise SystemExit(1)
+          PY_SUMMARY
+
+      - name: Publish Linux environment host evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: envd-contracts-linux
+          path: ${{ env.ENVD_PROOF_DIR }}/
+          if-no-files-found: error
           retention-days: 14
 
       - name: Run terminal proof P7 on Linux PTY
