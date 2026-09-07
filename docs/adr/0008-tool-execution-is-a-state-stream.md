@@ -118,4 +118,4 @@ document bytes.
 - 0003 (session tree), 0005 (projections), 0009 (bounding), 0010 (job primitive), 0011
   (cancellation), 0031 (typed component model for the projections)
 - `crates/tool/src/lib.rs` (`Ev`, `ToolTerminal`, `CallOutcome`), `crates/tool/src/incoming.rs`
-  (`IncomingParams`), `crates/agent/src/batch.rs` (`SpeculativeCall`)
+  (`IncomingParams`), `crates/agent/src/dispatch.rs` (tool dispatch)

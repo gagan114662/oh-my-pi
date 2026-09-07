@@ -1,5 +1,9 @@
 # Durable state, sessions, and the URL namespace
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 `omp.journal` · `omp.state` · `omp.sessions` · `omp.artifacts` · `omp.urls` · `omp.state_dir`
 
 ## Purpose

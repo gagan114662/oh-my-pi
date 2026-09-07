@@ -120,12 +120,4 @@ mod tests {
 	fn named_pipe_client_is_a_document_transport_stream() {
 		assert_stream_capabilities::<NamedPipeClient>();
 	}
-
-	#[test]
-	fn listener_type_is_shared_with_environment_data_transport() {
-		fn same_type(_: Option<OwnerPipeListener>) -> Option<OwnerPipeListener> {
-			None
-		}
-		let _ = same_type(None);
-	}
 }

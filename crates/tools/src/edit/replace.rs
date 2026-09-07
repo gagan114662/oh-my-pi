@@ -470,7 +470,13 @@ impl<D: EditDocuments, P: ReplaceArguments> Tool for ReplaceTool<D, P> {
 					}
 					for work in &works { self.documents.reset_noop(work.prepared.path()); }
 					for pending in pending_blackbox {
-						self.observer.record_committed(pending).await;
+						if let Err(error) = self.observer.record_committed(pending).await {
+							tracing::warn!(%error, "edit committed but audit recording failed");
+							yield Ev::Diag(omp_tool::Diag::warn(
+								omp_tool::DiagKind::AuditFailed,
+								"Edit committed, but its syntax-regression audit record could not be saved.",
+							));
+						}
 					}
 					for projection in &projections {
 						for diag in &projection.diags {

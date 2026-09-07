@@ -3042,6 +3042,8 @@ fn bound_parts(
 			Part::Blob { alt, .. } => alt.as_ref().map_or(0, Str::len),
 		})
 	});
+	// Complete output bypasses central clamps, but a transport spill still
+	// means upstream output was omitted and must remain visible as such.
 	if options.notrunc && source_bytes <= inline_limit {
 		let parts = parts.to_vec();
 		let inline_bytes = u64::try_from(source_bytes).unwrap_or(u64::MAX);

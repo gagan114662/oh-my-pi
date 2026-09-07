@@ -252,7 +252,13 @@ omp_con::cmd! {
 	pin(?target: Str, ?account: Str) = |ctx, args| {
 		let words = rest(args, 0);
 		call(ctx, PanelCall::new(move |cx| {
-			let providers = cx.services.providers().unwrap_or_default();
+			if words.as_deref().is_none_or(|words| words.trim().is_empty()) {
+				return pin_session(cx, None);
+			}
+			let providers = match cx.services.providers() {
+				Ok(providers) => providers,
+				Err(error) => return PanelEvent::Notice(sf!("Cannot resolve pin target: {error}")),
+			};
 			match pin_target(words.clone(), &providers) {
 				PinTarget::CurrentSession => pin_session(cx, None),
 				PinTarget::Session(id) => pin_session(cx, Some(id.as_str())),

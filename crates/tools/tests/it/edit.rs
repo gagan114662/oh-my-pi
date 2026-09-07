@@ -711,3 +711,33 @@ async fn copied_read_elision_is_ignored_and_emits_an_advisory_diag() {
 		diag.native_kind() == Some(DiagKind::Advisory) && diag.severity == Severity::Warn
 	}));
 }
+
+#[tokio::test]
+async fn committed_edit_surfaces_audit_failure_without_claiming_rollback() {
+	let dir = tempfile::tempdir().expect("temporary directory");
+	let fake =
+		Fake::with_files(&[("example.ts", b"export function value(): number { return 1; }\n")]);
+	let observer = EditObserver::new(
+		edit::observer::EditBlackboxConfig {
+			path: Some(dir.path().to_path_buf()),
+			..edit::observer::EditBlackboxConfig::default()
+		},
+		None,
+	);
+	let tool = legacy_replace_tool_with_observer(
+		fake.clone(),
+		FormatPolicy::BestEffort,
+		observer,
+		true,
+		false,
+		false,
+	);
+	let raw = r#"{"edits":[{"path":"example.ts","old":"return 1;","new":"return (;"}]}"#;
+	let (feed, incoming) = IncomingParams::channel();
+	feed.arg_text(raw.into()).expect("stream arguments");
+	feed.args_committed(raw.into()).expect("commit arguments");
+	let events = tool.call(incoming).collect::<Vec<_>>().await;
+	assert!(matches!(events.last(), Some(Ev::Done(ToolTerminal::Done { result: Ok(_), .. }))));
+	assert_eq!(fake.state.lock().commits.len(), 1);
+	assert!(events.iter().any(|event| matches!(event, Ev::Diag(diag) if diag.native_kind() == Some(DiagKind::AuditFailed) && diag.severity == Severity::Warn)));
+}

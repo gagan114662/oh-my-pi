@@ -51,7 +51,7 @@ Five consequences follow and bind the rest of the records:
 
 ## Status in omp
 
-**Implemented.** Primary implementation: `crates/driver/src/headless/kernel.rs`. P0–P7 production modes share the journal-first composition; final P7 integration rerun is tracked in `PLAN.md`.
+**Implemented.** Primary implementation: `crates/driver/src/headless/kernel.rs`. P0–P7 production modes share the journal-first composition; joined-system proofs are tracked in `crates/e2e/tests`. Historical rerun notes in private `PLAN.md` are not available in a clean clone and do not establish a passing result.
 
 ## References
 

@@ -53,7 +53,7 @@ pub struct RuntimeDurationMetadata {
 	pub public_name:       &'static str,
 	/// Default used when persisted settings omit the key.
 	pub default_value:     Duration,
-	/// Dot-qualified persisted settings key.
+	/// Canonical persisted convar name.
 	pub configuration_key: &'static str,
 	/// Exact nanosecond telemetry attribute.
 	pub telemetry_ns:      &'static str,
@@ -1212,7 +1212,7 @@ pub const fn runtime_symbols() -> &'static [RuntimeSymbolSpec] {
 pub static RUNTIME_DURATION_METADATA: &[RuntimeDurationMetadata] = &[RuntimeDurationMetadata {
 	public_name:       "omp.params.interrupt_grace",
 	default_value:     DEFAULT_INTERRUPT_GRACE,
-	configuration_key: "runtime.interrupt_grace",
+	configuration_key: "sv_interrupt_grace",
 	telemetry_ns:      "omp.runtime.interrupt_grace.ns",
 	telemetry_unit:    "omp.runtime.interrupt_grace.unit",
 }];

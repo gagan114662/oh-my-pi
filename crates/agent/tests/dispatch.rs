@@ -111,7 +111,6 @@ async fn central_truncation_spills_and_notrunc_explicitly_opts_out() {
 		!dispatcher.policy().spill.has(&spilled),
 		"the launch-session CAS is never a fallback after navigation"
 	);
-	assert_eq!(result_text(&bounded, "bounded"), ["abcde"]);
 	let projected = project_thread(bounded.dom())
 		.into_iter()
 		.find_map(|item| match item.kind? {
@@ -981,4 +980,80 @@ async fn worker_routed_tools_use_the_injected_external_executor() {
 		},
 	}]);
 	assert_journal_cause(&session, entry);
+}
+
+/// A shell transport that omitted output before the dispatcher received it.
+struct SpilledShell {
+	artifact: omp_journal::blob::BlobRef,
+}
+
+impl ExternalToolExecutor for SpilledShell {
+	fn invoke(&self, _request: ExternalDispatchRequest) -> ExternalDispatchStream {
+		let outcome = CallOutcome::Ok(serde_json::json!({
+			"status": { "spilled_output": omp_tool::BlobRef {
+				hash: Str::new(self.artifact.to_hex()),
+				media_type: Str::new_static("text/plain"),
+				byte_len: self.artifact.size,
+			}},
+		}));
+		Box::pin(futures::stream::iter([ExternalDispatchEvent::Done {
+			outcome,
+			parts: vec![Part::Text { text: Str::new_static("abcde") }],
+			is_error: false,
+			source_artifact: None,
+		}]))
+	}
+}
+
+#[tokio::test]
+async fn notrunc_keeps_transport_omission_visible_and_preserves_its_artifact() {
+	let directory = tempfile::tempdir().expect("temporary directory");
+	let journal_path = directory.path().join("transport-spill.oms");
+	let mut active = session(&journal_path);
+	let artifact = active
+		.blobs()
+		.put(b"abcdefghij")
+		.expect("transport artifact");
+	let mut tools = omp_tool::Registry::new();
+	tools
+		.register_worker(tool_spec("bash", 1), Presentation::Slot, Claims {
+			precedence: Precedence::CORE,
+			claimant:   Str::new_static("omp-agent/tests"),
+			replaces:   None,
+		})
+		.expect("shell registers");
+	let tools = Arc::new(tools);
+	let identity = tools.resolved_identity("bash").expect("shell identity");
+	let dispatcher = Dispatcher::new(
+		tools,
+		DispatchPolicy::new(active.blobs().clone()).with_limits(2, 2, Duration::from_secs(5)),
+	)
+	.with_external_executor(Arc::new(SpilledShell { artifact }));
+	let (entry, args) = call(&mut active, &identity, "shell-spill");
+	let report = dispatcher
+		.dispatch(
+			&mut active,
+			request(
+				entry,
+				identity,
+				args,
+				ToolCancellation::ReadOnly(CancelTree::new().begin_turn().read_only_tool()),
+				true,
+			),
+		)
+		.await
+		.expect("shell dispatch");
+	assert_eq!(report.spilled, Some(artifact));
+	assert_eq!(report.lines_clamped, 0);
+	let texts = result_text(&active, "shell-spill");
+	assert_eq!(texts.len(), 2);
+	assert_eq!(texts[0], "abcde", "notrunc disables the central byte and line clamps");
+	assert!(texts[1].contains("kind=\"output_bounded\""));
+	assert!(texts[1].contains(&format!("artifact://sha256/{}", artifact.to_hex())));
+	assert_eq!(active.blobs().get(&artifact).expect("full output").as_ref(), b"abcdefghij");
+	drop(active);
+	let replayed =
+		omp_session::Session::open(&journal_path, omp_session::ComponentRegistry::default())
+			.expect("journal replays");
+	assert_eq!(result_text(&replayed, "shell-spill"), texts);
 }

@@ -35,9 +35,8 @@ pub const PALETTE: &[PaletteEntry] = &[
 	PaletteEntry { name: "handoff", icon: Icon::Handoff },
 ];
 
-/// The TS implementation has `/compact` mode words; OMP has one local summary
-/// path, so a mode word is accepted and the remainder is the focus.
-const COMPACT_MODES: [&str; 3] = ["soft", "remote", "snapcompact"];
+/// Mode words reserved for compaction paths that are not implemented.
+const UNSUPPORTED_COMPACT_MODES: [&str; 3] = ["soft", "remote", "snapcompact"];
 
 /// Parses a journal entry id argument (`/fork 01J…`).
 fn entry_id(text: &str) -> Result<EntryId, ConError> {
@@ -50,23 +49,18 @@ fn usage(message: &'static str) -> ConError {
 	ConError::Usage(Str::new_static(message))
 }
 
-/// Splits `/compact [mode] [focus]` into its focus.
+/// Parses `/compact [focus]`, rejecting unavailable reserved mode words.
 pub fn compact_focus(words: Option<Str>) -> Result<Option<Str>, ConError> {
 	let Some(words) = words else {
 		return Ok(None);
 	};
 	let text = words.as_str().trim();
-	let (first, remainder) = text
-		.split_once(char::is_whitespace)
-		.map_or((text, ""), |(first, remainder)| (first, remainder.trim_start()));
-	if COMPACT_MODES.contains(&first) {
-		if first == "snapcompact" && !remainder.is_empty() {
-			return Err(usage(
-				"/compact snapcompact does not take focus instructions (it archives history without \
-				 an LLM summary).",
-			));
-		}
-		return Ok((!remainder.is_empty()).then(|| Str::new(remainder)));
+	let first = text.split_whitespace().next().unwrap_or_default();
+	if UNSUPPORTED_COMPACT_MODES.contains(&first) {
+		return Err(usage(
+			"Compaction modes soft, remote, and snapcompact are unavailable. Use /compact [focus] \
+			 for an LLM summary.",
+		));
 	}
 	Ok((!text.is_empty()).then(|| Str::new(text)))
 }
@@ -227,8 +221,8 @@ omp_con::cmd! {
 		post(ctx, CommandAction::Queue { prompt })
 	};
 
-	/// Compacts the context now: `/compact [soft|remote|snapcompact] [focus]`.
-	compact(?mode: Str, ?focus: Str) = |ctx, args| {
+	/// Summarizes the context with an LLM now: `/compact [focus]`.
+	compact(?focus: Str, ?instructions: Str) = |ctx, args| {
 		let focus = compact_focus(rest(args, 0))?;
 		post(ctx, CommandAction::Compact { method: CompactionMethod::Compact, focus })
 	};
@@ -253,13 +247,12 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn compact_words_split_a_known_mode_from_the_focus() {
+	fn compact_rejects_unavailable_modes_and_preserves_focus() {
 		assert_eq!(compact_focus(None).unwrap(), None);
-		assert_eq!(
-			compact_focus(Some(Str::new_static("soft keep the API notes"))).unwrap(),
-			Some(Str::new_static("keep the API notes"))
-		);
-		assert_eq!(compact_focus(Some(Str::new_static("remote"))).unwrap(), None);
+		for mode in UNSUPPORTED_COMPACT_MODES {
+			assert!(compact_focus(Some(Str::new(mode))).is_err());
+			assert!(compact_focus(Some(Str::new(format!("{mode} keep notes")))).is_err());
+		}
 		assert_eq!(
 			compact_focus(Some(Str::new_static("keep the API notes"))).unwrap(),
 			Some(Str::new_static("keep the API notes"))

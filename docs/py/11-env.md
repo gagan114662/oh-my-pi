@@ -1,5 +1,9 @@
 # `omp.env` — the DATA socket
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 ## Purpose
 
 `omp.env` is the only door to the world. Every byte an extension reads, every process it starts,
@@ -1745,11 +1749,11 @@ once the edge exists*.
 | `env/v1` typed client, request correlation, `RunGuard` | `crates/env/src/client.rs`, `crates/env/src/guard.rs` | Complete. `RunGuard::relinquish` already models detached work; drop already queues cancellation on a separate unbounded control channel so drop never blocks. |
 | `env/v1` server dispatch, UDS + in-process serving, hello/retire, connection ownership tables | `crates/app/src/envd/server.rs` | Complete for the frames that exist. `MIN_SCHEMA_REV = 4`, 64 MiB frame limit, 300 s default tool deadline, 250 ms native cancel grace. |
 | Exec host: persistent sessions, PTY, per-command `ExecRun` with TERM-then-KILL drop, spawn-observed process groups, named processes with restart and readiness | `crates/app/src/envd/exec.rs` | Complete. `ExecRun::drop` → `cancel(250 ms)`; `SpawnBook` implements `SpawnObserver` so every process group is tracked from birth. |
-| In-process bash: full AST, expansion, 51 Bash builtins, 58 coreutils, 8 process builtins, job control | `crates/shell-engine/src/builtins/factory.rs`, `crates/shell-builtins/src/factory.rs` | Complete. `sh.parse` is a thin projection of `parser::ast`. Counts are registration-site names, several platform-gated (`exec`, `ulimit`, `umask`, `errno` are Unix-only; `kill`/`printf` Unix-or-Windows). |
+| In-process bash: full AST, expansion, 51 Bash builtins, 58 coreutils, 8 process builtins, job control | `crates/shell/src/builtins/factory.rs`, `crates/shell-builtins/src/factory.rs` | Complete. `sh.parse` is a thin projection of `parser::ast`. Counts are registration-site names, several platform-gated (`exec`, `ulimit`, `umask`, `errno` are Unix-only; `kill`/`printf` Unix-or-Windows). |
 | Document authority: leases, `Revision` (BLAKE3-256 + sequence), transactions, fuzzy 3-way rebase, LSP mux, formatting roundtrip, `workspace/applyEdit` lowering, native watches, tree-sitter summaries, hashline/replace edit adapters | `crates/envd/src/docserver/` | Complete, over `document/v1`. |
 | Env-side document client with revision-pinned lease type whose `Drop` sends a best-effort close | `crates/app/src/envd/docs.rs` | Complete. `DocumentLease`, `DocumentHost::{open,read,summarize,commit,commit_transaction,close}` — this is exactly the Rust shape `omp.env.docs` mirrors. |
 | Walker: cached, gitignore-layered, parallel, cancellation-heartbeat, glob filters, ranking | `crates/walker/` | Complete. `WorkspaceHost` in `crates/app/src/envd/workspace.rs` already enforces root containment by canonicalization. |
-| Grep engine: ripgrep regex with PCRE2 fallback, bounded leading-window reads, binary detection, context | `crates/grep/` | Complete. |
+| Grep engine: ripgrep regex with PCRE2 fallback, bounded leading-window reads, binary detection, context | `crates/envd/src/grep.rs` | Complete. |
 | Blob store over `omp.blob.v1`, streaming put/get with commit-gated visibility | `crates/proto/proto/omp/blob/v1/blob.proto`, `crates/app/src/envd/blobs.rs` | Complete. |
 | Hashline: `#TAG` as `{:04X}` of `normalized_file_xxh32(bytes) & 0xffff` with the UTF-8 BOM stripped and pre-newline whitespace ignored, full op vocabulary, strict/partial apply, named registers, numbered diff | `crates/edit/src/store.rs`, `crates/edit/src/modes/hashline/apply.rs`, `crates/edit/src/modes/hashline/clipboard.rs` | Complete. |
 | Free-threaded CPython 3.14t embedding and the child-worker re-exec pattern | `crates/py/`, `crates/tools/src/eval/kernel.rs` | Complete. |

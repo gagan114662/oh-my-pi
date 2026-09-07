@@ -537,3 +537,18 @@ fn oversized_projection_remains_complete_for_central_dispatch() {
 	);
 	assert!(zero.is_empty());
 }
+
+#[test]
+fn repaired_regex_emits_warning_even_when_no_matches_exist() {
+	let workspace =
+		fake(grep::SearchResult { pattern_rewritten: true, ..grep::SearchResult::default() });
+	let invocation = invoke(&workspace, r#"{"pattern":"[","path":"src"}"#);
+	assert_eq!(prompt(&workspace, &invocation.outcome), "No matches found");
+	assert!(
+		invocation
+			.diags
+			.iter()
+			.any(|diag| diag.native_kind() == Some(DiagKind::ContentNormalized)
+				&& diag.severity == Severity::Warn)
+	);
+}

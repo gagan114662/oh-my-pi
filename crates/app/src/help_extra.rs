@@ -98,5 +98,9 @@ pub fn render() -> String {
 		.map(|tool| tool.name)
 		.collect::<Vec<_>>();
 	output.push_str(&names.join(", "));
+	output.push_str(
+		"\n\nAdditional tools when enabled:\n  lsp (language-server operations)\n  browser \
+		 (requires browser support and the browser tool to be enabled)\n",
+	);
 	output
 }

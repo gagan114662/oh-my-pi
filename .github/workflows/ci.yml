@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, omp2]
     paths:
       - ".cargo/**"
+      - ".config/**"
       - ".github/workflows/ci.yml"
       - "about.toml"
       - "deny.toml"
@@ -14,7 +15,8 @@ on:
       - "crates/**"
       - "examples/**"
       - "fixtures/**"
-      - "docs/py/**"
+      - "docs/**"
+      - "tools/**"
       - "scripts/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -22,25 +24,12 @@ on:
       - "rust-toolchain.toml"
       - "rustfmt.toml"
   pull_request:
-    branches: [main]
-    paths:
-      - ".cargo/**"
-      - ".github/workflows/ci.yml"
-      - "about.toml"
-      - "deny.toml"
-      - "justfile"
-      - "LICENSE*"
-      - "THIRD-PARTY-NOTICES.txt"
-      - "crates/**"
-      - "examples/**"
-      - "fixtures/**"
-      - "scripts/**"
-      - "docs/py/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "clippy.toml"
-      - "rust-toolchain.toml"
-      - "rustfmt.toml"
+    # No `paths:` filter here, deliberately. Once these jobs are required
+    # contexts on a protected branch, a PR touching only unlisted paths
+    # (docs/adr/**, AGENTS.md, elastic/**, .pr/**) triggers no run, the
+    # required contexts stay "Expected", and the PR can never merge.
+    # `push.paths` above is kept: pushes to main are upstream syncs.
+    branches: [main, omp2]
   workflow_dispatch:
 
 permissions:
@@ -65,6 +54,20 @@ jobs:
         run: rustup show active-toolchain
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Check current ADR paths
+        run: python3 scripts/check-adr-paths.py
+
+      - name: Enforce model data ownership
+        run: cargo run --release --locked --manifest-path tools/lintx/Cargo.toml -- --only model-gate --only model-table crates/ai/src
+
+      - name: Publish format and source-contract result
+        if: always()
+        env:
+          CHECK_STATUS: ${{ job.status }}
+        run: |
+          echo "Format, current ADR paths, and model ownership: $CHECK_STATUS" >> "$GITHUB_STEP_SUMMARY"
+          echo "See this job's individual step logs for failures." >> "$GITHUB_STEP_SUMMARY"
 
   runtime_spec:
     name: Runtime symbol and dependency contracts
@@ -167,6 +170,14 @@ jobs:
             --test p4_schema_isolation \
             --test p5_prefix_stability \
             --test p6_crash_resume
+
+      - name: Run acceptance proofs P9-P10 and tool sources
+        run: |
+          cargo nextest run --profile ci -p omp-e2e --locked \
+            --test p9_isolation \
+            --test p9_extension_control \
+            --test p10_lift_idempotence \
+            --test tool_sources
 
       - name: Run terminal proof P7
         env:

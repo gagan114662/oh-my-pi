@@ -144,6 +144,8 @@ pub struct GrepMatch {
 /// Aggregated result of an in-memory or filesystem search.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GrepResult {
+	/// The authored pattern was repaired or interpreted literally.
+	pub pattern_rewritten:  bool,
 	/// Returned content matches or matching-file markers.
 	pub matches:            Vec<GrepMatch>,
 	/// Matches observed across searched files before the global output cap.
@@ -251,6 +253,8 @@ pub enum GrepStreamStatus {
 /// Statistics from a streaming search.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GrepStreamSummary {
+	/// The authored pattern was repaired or interpreted literally.
+	pub pattern_rewritten:  bool,
 	/// Number of match records delivered to the sink.
 	pub matches:            u64,
 	/// Number of searched files containing at least one match.
@@ -346,15 +350,23 @@ where
 /// Compilation is performed once and the resulting matcher can be shared
 /// across file workers.
 pub struct CompiledGrep {
-	matcher: CompiledMatcher,
+	matcher:           CompiledMatcher,
+	pattern_rewritten: bool,
 }
 
 impl CompiledGrep {
 	/// Compile `pattern`, falling back to PCRE2 when Rust regex rejects it.
 	pub fn new(pattern: &str, options: RegexOptions) -> Result<Self, GrepError> {
 		let multiline = infer_multiline(pattern, options.multiline);
-		let matcher = build_matcher(pattern, options.ignore_case, multiline)?;
-		Ok(Self { matcher })
+		let (matcher, pattern_rewritten) = build_matcher(pattern, options.ignore_case, multiline)?;
+		Ok(Self { matcher, pattern_rewritten })
+	}
+
+	/// Whether compilation repaired the authored pattern or interpreted it
+	/// literally.
+	#[must_use]
+	pub const fn pattern_rewritten(&self) -> bool {
+		self.pattern_rewritten
 	}
 
 	/// Emit exact matches from one borrowed byte slice in offset order.
@@ -365,7 +377,9 @@ impl CompiledGrep {
 		options: StreamOptions,
 		sink: &mut S,
 	) -> Result<GrepStreamSummary, GrepStreamError<S::Error>> {
-		stream_search_slice(&self.matcher, path, content, options, sink)
+		let mut summary = stream_search_slice(&self.matcher, path, content, options, sink)?;
+		summary.pattern_rewritten = self.pattern_rewritten;
+		Ok(summary)
 	}
 
 	/// Read and search one file with the crate's bounded full-read/prefix
@@ -386,12 +400,14 @@ impl CompiledGrep {
 			GrepControl::Stop => {
 				return Ok(GrepStreamSummary {
 					status: GrepStreamStatus::Stopped,
+					pattern_rewritten: self.pattern_rewritten,
 					..GrepStreamSummary::default()
 				});
 			},
 			GrepControl::Cancel => {
 				return Ok(GrepStreamSummary {
 					status: GrepStreamStatus::Cancelled,
+					pattern_rewritten: self.pattern_rewritten,
 					..GrepStreamSummary::default()
 				});
 			},
@@ -409,12 +425,14 @@ impl CompiledGrep {
 					GrepControl::Stop => {
 						return Ok(GrepStreamSummary {
 							status: GrepStreamStatus::Stopped,
+							pattern_rewritten: self.pattern_rewritten,
 							..GrepStreamSummary::default()
 						});
 					},
 					GrepControl::Cancel => {
 						return Ok(GrepStreamSummary {
 							status: GrepStreamStatus::Cancelled,
+							pattern_rewritten: self.pattern_rewritten,
 							..GrepStreamSummary::default()
 						});
 					},
@@ -427,7 +445,11 @@ impl CompiledGrep {
 			Ok(ReadFile::Skipped) | Err(_) => {},
 		}
 		if !searched {
-			return Ok(GrepStreamSummary { skipped_oversized, ..GrepStreamSummary::default() });
+			return Ok(GrepStreamSummary {
+				skipped_oversized,
+				pattern_rewritten: self.pattern_rewritten,
+				..GrepStreamSummary::default()
+			});
 		}
 		let mut summary = self.search_slice(display_path, &buffer, options, sink)?;
 		summary.files_searched = 1;
@@ -782,12 +804,18 @@ fn grep_stream_inner<S: GrepSink>(
 	.map_err(GrepStreamError::Grep)?;
 	if !metadata.is_file() && !metadata.is_dir() {
 		tracing::Span::current().record("candidate_count", 0);
-		let summary = GrepStreamSummary::default();
+		let summary = GrepStreamSummary {
+			pattern_rewritten: matcher.pattern_rewritten(),
+			..GrepStreamSummary::default()
+		};
 		record_stream_summary(&summary);
 		return Ok(summary);
 	}
 
-	let mut summary = GrepStreamSummary::default();
+	let mut summary = GrepStreamSummary {
+		pattern_rewritten: matcher.pattern_rewritten(),
+		..GrepStreamSummary::default()
+	};
 	let candidates = if metadata.is_file() {
 		vec![FileCandidate {
 			path:     target,
@@ -1115,16 +1143,16 @@ fn build_matcher(
 	pattern: &str,
 	ignore_case: bool,
 	multiline: bool,
-) -> Result<CompiledMatcher, GrepError> {
+) -> Result<(CompiledMatcher, bool), GrepError> {
 	let sanitized = sanitize_braces(pattern);
 	let regex_error = match build_regex_matcher(sanitized.as_ref(), ignore_case, multiline) {
-		Ok(matcher) => return Ok(CompiledMatcher::Rust(matcher)),
+		Ok(matcher) => return Ok((CompiledMatcher::Rust(matcher), sanitized.as_ref() != pattern)),
 		Err(error) => error,
 	};
 	let pcre2_error = match build_pcre_matcher(sanitized.as_ref(), ignore_case, multiline) {
 		Ok(matcher) => {
 			tracing::debug!("using PCRE2 regex fallback");
-			return Ok(CompiledMatcher::Pcre2(matcher));
+			return Ok((CompiledMatcher::Pcre2(matcher), sanitized.as_ref() != pattern));
 		},
 		Err(error) => error,
 	};
@@ -1135,11 +1163,11 @@ fn build_matcher(
 		if escaped.as_ref() != sanitized.as_ref() {
 			if let Ok(matcher) = build_regex_matcher(escaped.as_ref(), ignore_case, multiline) {
 				tracing::warn!("repaired invalid regex parentheses");
-				return Ok(CompiledMatcher::Rust(matcher));
+				return Ok((CompiledMatcher::Rust(matcher), true));
 			}
 			if let Ok(matcher) = build_pcre_matcher(escaped.as_ref(), ignore_case, multiline) {
 				tracing::warn!("repaired invalid regex parentheses with PCRE2");
-				return Ok(CompiledMatcher::Pcre2(matcher));
+				return Ok((CompiledMatcher::Pcre2(matcher), true));
 			}
 		}
 	}
@@ -1147,7 +1175,7 @@ fn build_matcher(
 	match build_regex_matcher(&regex::escape(pattern), ignore_case, multiline) {
 		Ok(matcher) => {
 			tracing::warn!("using literal fallback for invalid regex");
-			Ok(CompiledMatcher::Rust(matcher))
+			Ok((CompiledMatcher::Rust(matcher), true))
 		},
 		Err(_) => Err(GrepError::InvalidRegex {
 			regex: Str::from(message),
@@ -1304,6 +1332,7 @@ impl AggregateGrepCollector {
 
 	fn finish(self, summary: GrepStreamSummary) -> GrepResult {
 		GrepResult {
+			pattern_rewritten:  summary.pattern_rewritten,
 			matches:            self.matches,
 			total_matches:      clamp_u32(self.total_matches),
 			files_with_matches: clamp_u32(self.files_with_matches),
@@ -1586,8 +1615,24 @@ mod tests {
 	}
 
 	#[test]
+	fn repaired_patterns_report_provenance_even_without_matches() {
+		for pattern in ["foo.*(bar", "[", "foo{bar"] {
+			let result = search(b"unrelated\n", &options(pattern)).unwrap();
+			assert!(result.pattern_rewritten, "{pattern}");
+			assert!(result.matches.is_empty());
+		}
+		for pattern in ["needle", r"foo(?=bar)"] {
+			assert!(
+				!search(b"foobar\n", &options(pattern))
+					.unwrap()
+					.pattern_rewritten
+			);
+		}
+	}
+
+	#[test]
 	fn pcre2_fallback_handles_lookaround() {
-		let matcher = build_matcher(r"foo(?=bar)", false, false).unwrap();
+		let (matcher, _) = build_matcher(r"foo(?=bar)", false, false).unwrap();
 		assert!(matches!(matcher, CompiledMatcher::Pcre2(_)));
 		let result = search(b"foobar\nfoobaz\n", &options(r"foo(?=bar)")).unwrap();
 		assert_eq!(result.total_matches, 1);
@@ -1597,7 +1642,8 @@ mod tests {
 	fn pcre2_fallback_honors_case_and_cross_line_options() {
 		let mut options = options(r"(?<=alpha)\nbeta");
 		options.ignore_case = true;
-		let matcher = build_matcher(options.pattern.as_str(), options.ignore_case, true).unwrap();
+		let (matcher, _) =
+			build_matcher(options.pattern.as_str(), options.ignore_case, true).unwrap();
 		assert!(matches!(matcher, CompiledMatcher::Pcre2(_)));
 		let result = search(b"ALPHA\nBETA\n", &options).unwrap();
 		assert_eq!(result.total_matches, 1);
@@ -1621,7 +1667,7 @@ mod tests {
 			("+++", &b"a+++b"[..], &b"ab"[..]),
 			("fail)", &b"(1 fail)"[..], &b"failure"[..]),
 		] {
-			let matcher = build_matcher(pattern, false, false)
+			let (matcher, _) = build_matcher(pattern, false, false)
 				.unwrap_or_else(|error| panic!("`{pattern}` should be literal: {error}"));
 			assert!(matcher.is_match(haystack).expect("match succeeds"));
 			assert!(!matcher.is_match(miss).expect("miss succeeds"));
@@ -1631,7 +1677,7 @@ mod tests {
 	#[test]
 	fn stray_parenthesis_retry_preserves_surrounding_regex() {
 		assert_eq!(escape_unescaped_parentheses(r"foo\(bar\)").as_ref(), r"foo\(bar\)");
-		let matcher = build_matcher("foo.*(bar", false, false).expect("parenthesis retry");
+		let (matcher, _) = build_matcher("foo.*(bar", false, false).expect("parenthesis retry");
 		assert!(matcher.is_match(b"fooXYZ(bar").expect("match succeeds"));
 		assert!(!matcher.is_match(b"foobar").expect("miss succeeds"));
 	}

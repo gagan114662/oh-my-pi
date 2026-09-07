@@ -1,5 +1,9 @@
 # Call outcomes, projections, and revisions
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 `omp.CallOutcome` · `omp.Payload` · `omp.Fault` · `omp.PolicyDenied` · `omp.Postcondition` ·
 `prompt(view, caps)` · `omp.PromptCaps` · `@omp.renderer` · `lift(from_rev, call)` ·
 `family@rev` · `schema_rev` vs `artifact_digest` · the spill gate
@@ -1975,7 +1979,7 @@ per registry mutation, and it turns "projections changed" from an invisible cach
 event into a loud one. That is the right trade; the alternative is a class of bug that
 manifests as unexplained cache misses and subtly different history weeks later.
 
-#### 7. Per-rev metrics and AutoQA attribution (`crates/telemetry`)
+#### 7. Per-rev metrics and AutoQA attribution (`crates/observability`)
 
 Feature-map `observability.md:101` records `pi.omp.agent.tool.calls` partitioned by *tool
 name and status* and `observability.md:193` records a `tool_calls` table keyed on tool name.

@@ -98,6 +98,8 @@ pub enum DiagKind {
 	SyntaxRepaired,
 	/// An edit left the document unparseable.
 	SyntaxBroken,
+	/// The edit committed, but its optional audit record could not be saved.
+	AuditFailed,
 	/// Anchors drifted from the authored text and were remapped.
 	AnchorDrift,
 	/// Non-blocking advice from a structural tool.

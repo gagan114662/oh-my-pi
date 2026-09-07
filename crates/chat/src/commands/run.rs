@@ -138,9 +138,15 @@ impl Presenter {
 			CommandAction::Loop { limit, prompt } => self.loop_mode(limit, prompt),
 			CommandAction::Queue { prompt } => {
 				let active = self.turn_active;
-				let _ = self
+				if self
 					.commands
-					.send(HostCommand::Queue { prompt, attachments: Vec::new() });
+					.send(HostCommand::Queue { prompt, attachments: Vec::new() })
+					.is_err()
+				{
+					return Ok(
+						self.notice("Command was not sent: the session controller is unavailable.")
+					);
+				}
 				self.notice(if active {
 					"Queued message for when the agent yields"
 				} else {
@@ -150,11 +156,19 @@ impl Presenter {
 			CommandAction::Prompt { text } => self.submit(text),
 			CommandAction::SkillPrompt { prompt } => self.submit_skill_prompt(prompt),
 			CommandAction::Force { tool, prompt } => {
-				let _ = self.commands.send(HostCommand::Director {
-					id:     Str::new_static(FORCE),
-					engage: true,
-					args:   vec![tool.clone()],
-				});
+				if self
+					.commands
+					.send(HostCommand::Director {
+						id:     Str::new_static(FORCE),
+						engage: true,
+						args:   vec![tool.clone()],
+					})
+					.is_err()
+				{
+					return Ok(
+						self.notice("Command was not sent: the session controller is unavailable.")
+					);
+				}
 				let routed = self.notice(format!("Next turn forced to use {tool}."));
 				match prompt {
 					Some(prompt) => routed.max(self.submit(prompt)),
@@ -221,9 +235,15 @@ impl Presenter {
 				Routed::Repaint
 			},
 			CommandAction::Rename { title } => {
-				let _ = self
+				if self
 					.commands
-					.send(HostCommand::Rename { title: title.clone() });
+					.send(HostCommand::Rename { title: title.clone() })
+					.is_err()
+				{
+					return Ok(
+						self.notice("Command was not sent: the session controller is unavailable.")
+					);
+				}
 				self.notice(format!("Session renamed to \"{title}\"."))
 			},
 			CommandAction::Session(op) => self.session(op)?,
@@ -339,10 +359,22 @@ impl Presenter {
 			return self.notice(EXIT_VIBE_FIRST);
 		}
 		if self.plan_engaged() {
-			let _ = self.commands.send(HostCommand::PlanMode { engage: false });
+			if self
+				.commands
+				.send(HostCommand::PlanMode { engage: false })
+				.is_err()
+			{
+				return self.notice("Command was not sent: the session controller is unavailable.");
+			}
 			return self.notice("Plan mode paused.");
 		}
-		let _ = self.commands.send(HostCommand::PlanMode { engage: true });
+		if self
+			.commands
+			.send(HostCommand::PlanMode { engage: true })
+			.is_err()
+		{
+			return self.notice("Command was not sent: the session controller is unavailable.");
+		}
 		let routed = self.notice(format!("Plan mode enabled. Plan file: {DEFAULT_PLAN}"));
 		match prompt {
 			Some(prompt) => routed.max(self.submit(prompt)),
@@ -371,11 +403,17 @@ impl Presenter {
 		if !self.plan_engaged() {
 			return self.notice("Plan mode is not active.");
 		}
-		let _ = self.commands.send(HostCommand::Director {
-			id:     Str::new_static("plan"),
-			engage: false,
-			args:   Vec::new(),
-		});
+		if self
+			.commands
+			.send(HostCommand::Director {
+				id:     Str::new_static("plan"),
+				engage: false,
+				args:   Vec::new(),
+			})
+			.is_err()
+		{
+			return self.notice("Command was not sent: the session controller is unavailable.");
+		}
 		if let Some(role) = role
 			&& let Some((_, model, _)) = self.cycle.iter().find(|(name, ..)| *name == role)
 			&& let Err(error) = omp_agent::AI_MODEL.set(&self.con, model.clone())
@@ -383,12 +421,18 @@ impl Presenter {
 			return self.notice(format!("Could not switch to the {role} model: {error}"));
 		}
 		if compact {
-			let _ = self.commands.send(HostCommand::Compact {
-				method: CompactionMethod::Compact,
-				hint:   Some(Str::new_static(
-					"Keep every decision and open question from the approved plan.",
-				)),
-			});
+			if self
+				.commands
+				.send(HostCommand::Compact {
+					method: CompactionMethod::Compact,
+					hint:   Some(Str::new_static(
+						"Keep every decision and open question from the approved plan.",
+					)),
+				})
+				.is_err()
+			{
+				return self.notice("Command was not sent: the session controller is unavailable.");
+			}
 		}
 		let prompt = if keep {
 			"Execute the approved plan at local://PLAN.md, keeping the full planning context in mind."

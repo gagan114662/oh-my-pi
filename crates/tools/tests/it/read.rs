@@ -2047,3 +2047,19 @@ async fn unknown_scheme_is_a_typed_fault() {
 		.unwrap_or_else(|| panic!("expected typed unknown-scheme fault: {events:?}"));
 	assert_eq!(scheme.as_str(), "custom");
 }
+
+#[tokio::test]
+async fn multi_target_read_warns_for_failed_sections_and_preserves_successful_content() {
+	let sources = Sources::default();
+	sources.file("one.txt", "alpha");
+	let (output, diags) =
+		text_with_diags(sources, r#"{"path":"one.txt:raw;missing.txt:raw"}"#).await;
+	assert!(output.contains("alpha"), "{output}");
+	assert!(output.contains("Could not read missing.txt:raw"), "{output}");
+	assert!(
+		diags
+			.iter()
+			.any(|diag| diag.native_kind() == Some(DiagKind::FetchFailed)
+				&& diag.severity == Severity::Warn)
+	);
+}

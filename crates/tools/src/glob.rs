@@ -1,10 +1,10 @@
 //! Workspace path matching with mtime-ranked grouped output.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use async_stream::stream;
 use futures::Stream;
-use omp_core::{Str, sf};
+use omp_core::{FastHashSet, Str, sf};
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, CommitError, Constraint, Diag, DiagKind, DocEffects, Effects, Ev,
 	IncomingParams, InterruptWaitError, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
@@ -276,6 +276,12 @@ impl<W: WorkspaceSearch> Tool for Glob<W> {
 					return;
 				},
 			};
+			if arguments.limit.is_some_and(|requested| requested.floor() > MAX_LIMIT as f64) {
+				yield Ev::Diag(Diag::warn(
+					DiagKind::Advisory,
+					sf!("Requested limit exceeds the maximum of {MAX_LIMIT}; using limit={MAX_LIMIT}"),
+				));
+			}
 			let path = arguments.path.unwrap_or_else(|| sf!("."));
 			span.record("pattern", tracing::field::display(tracing_path_metadata(&path)));
 			if path.trim().is_empty() {
@@ -414,7 +420,7 @@ fn payload(mut result: WalkResult, limit: u64, timeout_ms: u64) -> Payload {
 			.cmp(&left.modified_ms)
 			.then_with(|| left.path.cmp(&right.path))
 	});
-	let mut seen = HashSet::with_capacity(result.matches.len());
+	let mut seen = FastHashSet::with_capacity_and_hasher(result.matches.len(), Default::default());
 	result
 		.matches
 		.retain(|entry| seen.insert(entry.path.clone()));
@@ -467,8 +473,12 @@ fn payload_diags(payload: &Payload) -> impl Iterator<Item = Diag> {
 		)
 	});
 	let limit = payload.result_limit_reached.map(|limit| {
-		let diag = Diag::info(DiagKind::LimitReached, sf!("{limit} result limit reached"))
-			.continuation(sf!("limit={}", limit.saturating_mul(2)));
+		let diag = Diag::info(DiagKind::LimitReached, sf!("{limit} result limit reached"));
+		let diag = if limit < MAX_LIMIT {
+			diag.continuation(sf!("limit={}", limit.saturating_mul(2).min(MAX_LIMIT)))
+		} else {
+			diag.continuation("Narrow `path` to a more specific directory or pattern")
+		};
 		let omitted = payload
 			.partial_match_count
 			.saturating_sub(u64::try_from(payload.matches.len()).unwrap_or(u64::MAX));

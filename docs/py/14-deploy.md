@@ -1,5 +1,9 @@
 # 14 — Deployment: packaging, distribution, resolution, trust, layering
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 > **Scope.** How extension code *gets* to an interpreter: sources, layers across
 > client and remote, package format, the index, dependency resolution, lockfiles,
 > install/upgrade/pin/GC, integrity and revocation, install-time capability

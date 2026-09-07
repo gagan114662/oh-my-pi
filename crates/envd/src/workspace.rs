@@ -80,6 +80,8 @@ impl<'pattern> WorkspaceSearchOptions<'pattern> {
 /// Statistics from one streamed workspace search.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WorkspaceSearchOutcome {
+	/// The authored regex was repaired or interpreted literally.
+	pub pattern_rewritten: bool,
 	/// Candidate files actually searched before the operation stopped.
 	pub files_scanned:     u64,
 	/// Matches delivered to the workspace sink.
@@ -240,7 +242,11 @@ impl WorkspaceHost {
 			return Err(WorkspaceError::Cancelled);
 		}
 		if options.limit == Some(0) {
-			return Ok(WorkspaceSearchOutcome { limited: true, ..Default::default() });
+			return Ok(WorkspaceSearchOutcome {
+				limited: true,
+				pattern_rewritten: matcher.pattern_rewritten(),
+				..Default::default()
+			});
 		}
 
 		let mut candidates = request
@@ -248,7 +254,10 @@ impl WorkspaceHost {
 			.map_err(map_walk_error)?;
 		candidates.sort_unstable_by(|left, right| left.relative.cmp(&right.relative));
 
-		let mut outcome = WorkspaceSearchOutcome::default();
+		let mut outcome = WorkspaceSearchOutcome {
+			pattern_rewritten: matcher.pattern_rewritten(),
+			..Default::default()
+		};
 		let in_flight = thread::available_parallelism()
 			.map_or(1, num::NonZeroUsize::get)
 			.clamp(1, 8);

@@ -1,5 +1,9 @@
 # Eval prelude helpers
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 `@omp.prelude` lets an extension publish a small, named Python helper into every new eval namespace. The eval-side name is a synchronous function even when the extension implementation is `async def`.
 
 A prelude helper is **not a tool**. It is not inserted into the tool `Registry`, advertised to the model as a tool schema, included in the tool prompt, available as `tool.<name>`, or routed through the `dyn` shell builtin. Use it for an operation that should read naturally inside Python eval code and whose arguments and result have a JSON representation.
