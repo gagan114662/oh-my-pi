@@ -284,6 +284,15 @@ async fn attach_existing_page(cdp: &mut Peer, tab_id: i64) -> String {
 		.to_owned()
 }
 
+// A local response fences initial command registration on the same socket.
+// It does not wait for outstanding extension RPCs to finish.
+async fn fence_cdp_registration(cdp: &mut Peer) {
+	let id = next_id();
+	cdp.send(json!({"id":id,"method":"Browser.getVersion"}))
+		.await;
+	assert!(cdp.reply(id).await.get("result").is_some());
+}
+
 async fn claim_tab(ext: &mut Peer, cdp: &mut Peer, tab_id: i64) -> String {
 	let session = attach_page(ext, cdp, tab_id).await;
 	let id = next_id();
@@ -1263,6 +1272,7 @@ async fn duplicate_runtime_enable_shares_root_failure() {
 	let root_disable = harness.ext.rpc("send").await;
 	cdp.send(json!({"id":second,"sessionId":session,"method":"Runtime.enable"}))
 		.await;
+	fence_cdp_registration(&mut cdp).await;
 	nack(&mut harness.ext, &root_disable, "root enable failed").await;
 	assert!(cdp.reply(first).await.get("error").is_some());
 	assert!(cdp.reply(second).await.get("error").is_some());
@@ -1284,6 +1294,7 @@ async fn latest_runtime_disable_survives_failed_enables() {
 	let latest = next_id();
 	cdp.send(json!({"id":latest,"sessionId":session,"method":"Runtime.enable"}))
 		.await;
+	fence_cdp_registration(&mut cdp).await;
 	nack(&mut harness.ext, &root, "failed root cycle").await;
 	assert!(cdp.reply(latest).await.get("error").is_some());
 	harness.ext.send(json!({"t":"cdpEvent","tabId":1,"method":"Runtime.executionContextCreated","params":{"context":{"id":91}}})).await;
