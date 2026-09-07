@@ -586,7 +586,7 @@ RetireSuccess(batchEnd) ≜                              \* in-order retirement 
     ∧ FinalizedRange(c + 1, batchEnd)                  \* ... ALL of them finalized
     ∧ RetirementRequested                              \* only under flush or pressure
     ∧ history' =
-           history ∘ RetirementRows(c + 1, batchEnd, final, emitted[c + 1])
+           history
     \* ledger += head's unstreamed suffix, then later finals in full
     \* (emitted[c+1] is the only possibly-nonzero emitted counter)
     ∧ native' =
