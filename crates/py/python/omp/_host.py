@@ -598,13 +598,7 @@ class Host:
                     key = ("mcp", row.get("server"), row.get("tool"))
                 else:
                     raise HostDisconnected("invalid CONTROL tier snapshot target")
-                # An empty device family is a canonical tool identity. Names,
-                # revisions, and MCP server/tool identities remain non-empty.
-                if any(
-                    not isinstance(item, str)
-                    or (not item and not (kind == "device" and index == 2))
-                    for index, item in enumerate(key[1:], start=1)
-                ):
+                if any(not isinstance(item, str) or not item for item in key[1:]):
                     raise HostDisconnected("invalid CONTROL tier snapshot identity")
                 if key in snapshot:
                     raise HostDisconnected("duplicate CONTROL tier snapshot identity")
