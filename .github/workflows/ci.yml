@@ -349,8 +349,9 @@ jobs:
           test -f vendor/python/pyo3-config.txt
           crates/py/scripts/ld64.lld --version
 
-      - name: Cache Cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Restore Cargo build cache
+        id: cargo-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry/index
@@ -460,6 +461,19 @@ jobs:
           path: ${{ env.TEST_INVENTORY_DIR }}
           if-no-files-found: error
           retention-days: 14
+
+      # A failed test must not discard the expensive, fingerprinted build.
+      # Evidence remains separately regenerated and validated for each run.
+      - name: Preserve Cargo build cache after checks
+        if: ${{ always() && !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   p7_linux:
     name: Terminal proof P7 (Linux PTY)
