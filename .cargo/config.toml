@@ -23,7 +23,7 @@ CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 # crates remain. Eight is rustc's best-tested setting; Cargo's jobserver prevents
 # oversubscription while many crates compile. Requires the pinned nightly.
 rustflags = [
-	"-C", "link-arg=--ld-path=/opt/homebrew/bin/ld64.lld",
+	"-C", "link-arg=--ld-path=/opt/homebrew/opt/lld@22/bin/ld64.lld",
 	"-Z", "threads=8",
 ]
 # Store each crate's metadata only in its .rmeta instead of duplicating it into

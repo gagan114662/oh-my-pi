@@ -69,7 +69,7 @@ class DoctorTests(unittest.TestCase):
         self.provision()
         seen = []
         result = self.results('arm64-darwin', executable=lambda p: seen.append(p) or False)
-        self.assertEqual(seen, ['/opt/homebrew/bin/ld64.lld'])
+        self.assertEqual(seen, ['/opt/homebrew/opt/lld@22/bin/ld64.lld'])
         self.assertFalse(result['configured Apple Silicon linker'][0])
         self.assertNotIn('configured Apple Silicon linker', self.results())
 

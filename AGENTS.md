@@ -561,7 +561,7 @@ generated inputs.
   `vendor/python/pyo3-config.txt`, fast dev links). Release links
   `vendor/python-release` (`just build-release`); its pgo+lto pbs variant =
   LLVM-22 LTO bitcode, auto-routes through Homebrew LLD 22
-  (`brew install lld`, via `crates/py/scripts/ld64.lld`; `needs-lld` marker).
+  (`brew install lld@22`, via `crates/py/scripts/ld64.lld`; `needs-lld` marker).
   Enforced loudly by omp-py's build script:
   1. `PYO3_CONFIG_FILE` MUST point at `vendor/python/pyo3-config.txt` before
      cargo runs (repo `.cargo/config.toml` covers members; external crates set

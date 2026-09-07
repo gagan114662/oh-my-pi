@@ -8,8 +8,8 @@ share a two-second deadline. A successful doctor means prerequisites were
 detected, not that a clean workspace build or test sweep passed.
 
 On Apple Silicon macOS, install Xcode Command Line Tools (`xcode-select
---install`) and `brew install just python cmake ninja lld uv`. The checked-in
-Rust flags require **`/opt/homebrew/bin/ld64.lld` for development links too**.
+--install`) and `brew install just python cmake ninja lld@22 uv`. The checked-in
+Rust flags require **`/opt/homebrew/opt/lld@22/bin/ld64.lld` for development links too**.
 Run `rustup show` in the checkout to install the pinned toolchain and components,
 then install nextest (`cargo install cargo-nextest --locked`) and run
 `just setup-python` to prepare the embedded CPython bundle and frozen packages.

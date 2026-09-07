@@ -113,7 +113,7 @@ Start with `just doctor` for offline prerequisite checks; see
 [build prerequisites](docs/building.md) for installation and proof limits.
 
 On Apple Silicon, `.cargo/config.toml` currently requires Homebrew LLD at
-`/opt/homebrew/bin/ld64.lld` (`brew install lld`). Run `just setup-python`
+`/opt/homebrew/opt/lld@22/bin/ld64.lld` (`brew install lld@22`). Run `just setup-python`
 before builds that link embedded Python.
 
 Pinned nightly toolchain via `rust-toolchain.toml`; edition 2024, hard-tab

@@ -42,9 +42,9 @@ def inspect(root, host, path, environ=None, executable=None):
     for name, remedy in commands.items():
         check(name, available[name], remedy)
     if host == 'arm64-darwin':
-        linker = '/opt/homebrew/bin/ld64.lld'
+        linker = '/opt/homebrew/opt/lld@22/bin/ld64.lld'
         check('configured Apple Silicon linker', executable(linker),
-              'Run brew install lld; .cargo/config.toml requires ' + linker + '.')
+              'Run brew install lld@22; .cargo/config.toml requires ' + linker + '.')
 
     def probe(name, args):
         if not available[name]:
