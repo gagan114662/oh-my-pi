@@ -1025,12 +1025,19 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	assert!(!shell_release.exists(), "the fixture never released the running command");
 	let (_, result) = slow_shell_record(&interrupted_journal);
 	let result = result.expect("slow-shell has a correlated terminal");
-	let omp_journal::data::ToolResult::Outcome { outcome, .. } = result else {
-		panic!("slow-shell produced a tool fault instead of cooperative cancellation");
+	// DispatchCommitter::commit_abort passes is_error=true to commit_terminal,
+	// which journals the typed aborted CallOutcome in Fault. The inner outcome
+	// distinguishes real cooperative cancellation from command faults or unknown
+	// effects.
+	let fault = match result {
+		omp_journal::data::ToolResult::Fault { fault, .. } => fault,
+		omp_journal::data::ToolResult::Outcome { outcome, .. } => {
+			panic!("slow-shell must cancel, never succeed or detach: terminal={}", outcome.get());
+		},
 	};
-	let terminal: omp_tool::CallOutcome<Value, Value> = serde_json::from_str(outcome.get())
+	let terminal: omp_tool::CallOutcome<Value, Value> = serde_json::from_str(fault.get())
 		.unwrap_or_else(|error| {
-			panic!("slow-shell must cancel, never detach: {error}; terminal={}", outcome.get())
+			panic!("slow-shell must have a typed cancellation: {error}; terminal={}", fault.get())
 		});
 	assert!(
 		matches!(terminal, omp_tool::CallOutcome::Aborted {
