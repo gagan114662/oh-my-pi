@@ -138,6 +138,8 @@ jobs:
         run: >-
           python3 scripts/check-tla.py --download --output target/tlc
           --timeout 600 --heap-mb 4096 --disk-mb 4096
+      - name: Regenerate original-model traces for Rust correspondence
+        run: python3 scripts/generate-elastic-refinement.py --jar target/tlc-tools/tla2tools-1.8.0.jar --output target/tlc/refinement --check
       - name: Publish TLC evidence status
         if: always()
         env:
@@ -192,6 +194,32 @@ jobs:
           path: target/rust-license-data.json
           if-no-files-found: warn
           retention-days: 14
+
+  elastic_refinement:
+    name: Production Slots model correspondence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Replay TLC traces through the production Slots renderer
+        run: |
+          set -o pipefail
+          mkdir -p target/elastic-refinement
+          cargo nextest run --profile ci --locked -p omp-tui --test elastic_refinement --no-tests fail --success-output immediate 2>&1 | tee target/elastic-refinement/replay.log
+          cat target/elastic-refinement/replay.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Rust model correspondence evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: elastic-model-rust-correspondence
+          path: target/elastic-refinement/
+          if-no-files-found: warn
+          retention-days: 14
+
 
   http_contracts:
     name: HTTP bounded stream contracts
