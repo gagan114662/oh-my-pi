@@ -29,6 +29,15 @@ use crate::{
 /// Failure to append, decode, or fold a session entry.
 #[derive(Debug, Error)]
 pub enum SessionError {
+	/// Compaction would remove an item protected by an extension pin.
+	#[error("compaction would remove pinned context item {id}")]
+	PinnedContext {
+		/// Stable item identity.
+		id: Str,
+	},
+	/// Durable context protection state is malformed; compaction fails closed.
+	#[error("invalid durable context pin state")]
+	InvalidContextPins,
 	/// Journal persistence or framing failed.
 	#[error(transparent)]
 	Journal(#[from] JournalError),
@@ -922,6 +931,7 @@ impl Session {
 	/// maintenance facts, and bounded snapcompact frame references.
 	pub fn compaction(&mut self, compaction: Compaction) -> Result<EntryId, SessionError> {
 		let by = self.turn_cause()?;
+		crate::context::validate_compaction_pins(self.dom(), compaction.boundary)?;
 		self.validate_compaction_frames(&compaction)?;
 		if !self
 			.chain_indices(self.head.ok_or(SessionError::NoActiveTurn)?)?
@@ -1014,7 +1024,7 @@ impl Session {
 		self.next_sid = 0;
 	}
 
-	fn chain_indices(&self, target: EntryId) -> Result<Vec<usize>, SessionError> {
+	pub(crate) fn chain_indices(&self, target: EntryId) -> Result<Vec<usize>, SessionError> {
 		let mut reverse = Vec::new();
 		let mut index = *self
 			.entry_index

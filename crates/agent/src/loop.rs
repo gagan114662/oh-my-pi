@@ -2088,6 +2088,9 @@ impl<C: Inference> Kernel<C> {
 				.map_or(0.8, |con| crate::AI_COMPACT_THRESHOLD.get(con)),
 			prompt_hash:        Str::new(prompt_hash_of(&messages)),
 			prompt_head_tokens: crate::context::prompt_head_tokens(&messages),
+			origins:            session
+				.context_origins(&items[crate::context::prompt_head_len(&messages)..])
+				.map_err(|_| omp_session::SessionError::InvalidContextPins)?,
 		};
 		let caps = route.lowering_caps();
 		let registry = self.dispatcher.registry();

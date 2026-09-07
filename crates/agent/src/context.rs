@@ -43,12 +43,20 @@ pub struct ContextFacts {
 	pub prompt_hash:        Str,
 	/// Estimated tokens of the system prefix.
 	pub prompt_head_tokens: u64,
+	/// Journal-backed origins in body projection order.
+	pub origins:            Vec<Option<omp_session::context::ContextOrigin>>,
 }
 
 /// A `ContextPatch` that cannot be applied structurally (Python
 /// `PatchRejected`); nothing is applied.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ContextPatchError {
+	/// A patch attempted to remove or alter a durably protected item.
+	#[error("context patch modifies pinned item {id}")]
+	PinnedItem {
+		/// Stable item id.
+		id: Str,
+	},
 	/// An operation named an item that is not in the projection.
 	#[error("context patch names unknown item {id}")]
 	UnknownItem {
@@ -115,7 +123,7 @@ pub async fn gate_thread_projection(
 		Err(error) => return Err(error),
 	};
 	let mut working = messages[head..].to_vec();
-	match apply_context_patch(&mut working, &effective) {
+	match apply_context_patch_with_origins(&mut working, &effective, &facts.origins) {
 		Ok(outcome) => {
 			messages.truncate(head);
 			messages.extend(working);
@@ -129,14 +137,25 @@ pub async fn gate_thread_projection(
 }
 
 /// The body-free `ContextView` of the conversation `messages` (prompt head
-/// excluded): one `MessageRef` per projected message, ids being the
-/// projection sequence numbers.
+/// excluded): one `MessageRef` per projected message. Production facts carry
+/// journal-backed stable ids; standalone working-copy callers without origins
+/// use local projection sequence ids.
 #[must_use]
 pub fn context_view(facts: &ContextFacts, messages: &[Message]) -> JsonValue {
 	let refs = messages
 		.iter()
 		.enumerate()
-		.map(|(seq, message)| message_ref(seq, message))
+		.map(|(seq, message)| {
+			let mut reference = message_ref(seq, message);
+			if let Some(Some(origin)) = facts.origins.get(seq) {
+				reference["id"] = JsonValue::String(origin.id.to_string());
+				reference["event"] = origin.event.into();
+				reference["turn_id"] = serde_json::json!(origin.turn_id);
+				reference["created_at_ms"] = origin.created_at_ms.into();
+				reference["pinned"] = origin.pinned.into();
+			}
+			reference
+		})
 		.collect::<Vec<_>>();
 	let message_tokens = refs
 		.iter()
@@ -198,6 +217,14 @@ pub fn apply_context_patch(
 	messages: &mut Vec<Message>,
 	patch: &JsonValue,
 ) -> Result<ProjectionOutcome, ContextPatchError> {
+	apply_context_patch_with_origins(messages, patch, &[])
+}
+
+fn apply_context_patch_with_origins(
+	messages: &mut Vec<Message>,
+	patch: &JsonValue,
+	origins: &[Option<omp_session::context::ContextOrigin>],
+) -> Result<ProjectionOutcome, ContextPatchError> {
 	let ops = |field: &'static str| -> Result<&[JsonValue], ContextPatchError> {
 		match patch.get(field) {
 			None | Some(JsonValue::Null) => Ok(&[]),
@@ -210,6 +237,23 @@ pub fn apply_context_patch(
 	let replace = ops("replace")?;
 	let insert = ops("insert")?;
 	let reorder = ops("reorder")?;
+	for (field, operations) in
+		[("prune.ids", prune), ("drop_parts.ids", drop_parts), ("replace.ids", replace)]
+	{
+		for op in operations {
+			for id in ids_of(op, field)? {
+				if origins
+					.iter()
+					.flatten()
+					.any(|origin| origin.pinned && Some(origin.id.as_str()) == id.as_str())
+				{
+					return Err(ContextPatchError::PinnedItem {
+						id: Str::new(id.as_str().unwrap_or_default()),
+					});
+				}
+			}
+		}
+	}
 	let note = patch
 		.get("note")
 		.and_then(JsonValue::as_str)
@@ -237,7 +281,17 @@ pub fn apply_context_patch(
 		|rows: &[(Option<usize>, Message)], id: &JsonValue| -> Result<usize, ContextPatchError> {
 			let seq = id
 				.as_str()
-				.and_then(|id| id.parse::<usize>().ok())
+				.and_then(|id| {
+					if origins.is_empty() {
+						id.parse::<usize>().ok()
+					} else {
+						origins.iter().position(|origin| {
+							origin
+								.as_ref()
+								.is_some_and(|origin| origin.id.as_str() == id)
+						})
+					}
+				})
 				.filter(|seq| *seq < bound)
 				.ok_or_else(|| ContextPatchError::UnknownItem {
 					id: Str::new(id.as_str().unwrap_or("")),
@@ -507,6 +561,41 @@ mod tests {
 		assert_eq!(view["messages"][1]["role"], "assistant");
 		assert_eq!(view["usage"]["context_window"], 1000);
 		assert_eq!(view["usage"]["reserve_tokens"], 150);
+	}
+
+	#[test]
+	fn journal_ids_resolve_after_projection_moves_and_pins_reject_mutation() {
+		let origins = vec![Some(omp_session::context::ContextOrigin {
+			id:            Str::new_static("durable-entry:0"),
+			event:         17,
+			turn_id:       Some(Str::new_static("turn")),
+			created_at_ms: 1234,
+			pinned:        true,
+		})];
+		let facts = ContextFacts { origins: origins.clone(), ..ContextFacts::default() };
+		let view = context_view(&facts, &[user("protected")]);
+		assert_eq!(view["messages"][0]["id"], "durable-entry:0");
+		assert_eq!(view["messages"][0]["event"], 17);
+		assert_eq!(view["messages"][0]["pinned"], true);
+		for operation in ["prune", "drop_parts", "replace"] {
+			let mut messages = vec![user("protected")];
+			let patch = serde_json::json!({(operation): [{"ids": ["durable-entry:0"]}]});
+			assert!(matches!(
+				apply_context_patch_with_origins(&mut messages, &patch, &origins),
+				Err(ContextPatchError::PinnedItem { .. })
+			));
+			assert_eq!(texts(&messages), ["protected"]);
+		}
+		let mut unpinned = origins;
+		unpinned[0].as_mut().expect("origin").pinned = false;
+		let mut messages = vec![user("protected")];
+		apply_context_patch_with_origins(
+			&mut messages,
+			&serde_json::json!({"prune": [{"ids": ["durable-entry:0"], "keep_placeholder": false}]}),
+			&unpinned,
+		)
+		.expect("stable id resolves");
+		assert!(messages.is_empty());
 	}
 
 	#[test]
