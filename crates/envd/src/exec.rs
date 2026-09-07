@@ -2553,7 +2553,7 @@ async fn finish_session_command(
 	});
 	// Yield under terminal backpressure so the consumer can drain this
 	// same runtime. Never discard the terminal event when the queue is full.
-	let _ = command.events.send_async(event).await;
+	let _ = command.events.send(event);
 }
 
 #[derive(Clone, Eq, PartialEq)]
