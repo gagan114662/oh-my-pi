@@ -27,10 +27,10 @@ CONSTANTS N, H, MaxResizes, MaxLive, RowValues, SnapshotValues,
 \* OverflowMarker: synthetic viewport row summarizing hidden older blocks
 
 ASSUME
-    ∧ N ∈ ℕ \ {0}                                  \* at least one block
-    ∧ H ∈ ℕ \ {0}                                  \* viewport can be nonempty
-    ∧ MaxResizes ∈ ℕ                               \* zero resizes is allowed
-    ∧ MaxLive ∈ ℕ \ {0}                            \* pressure threshold >= 1
+    ∧ N ∈ Nat \ {0}                                  \* at least one block
+    ∧ H ∈ Nat \ {0}                                  \* viewport can be nonempty
+    ∧ MaxResizes ∈ Nat                               \* zero resizes is allowed
+    ∧ MaxLive ∈ Nat \ {0}                            \* pressure threshold >= 1
     ∧ IsFiniteSet(RowValues)                           \* finite row alphabet
     ∧ RowValues ≠ {}                                   \* ... and nonempty
     ∧ IsFiniteSet(SnapshotValues)                      \* finite snapshot universe

@@ -16,6 +16,7 @@ on:
       - "examples/**"
       - "fixtures/**"
       - "docs/**"
+      - "elastic/**"
       - "tools/**"
       - "scripts/**"
       - "Cargo.toml"
@@ -115,6 +116,43 @@ jobs:
         with:
           name: adr-status-evidence
           path: target/adr-status.json
+          if-no-files-found: error
+          retention-days: 14
+
+  tlc:
+    name: tlc ElasticSlots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Java runtime
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Test model-check runner failure paths
+        run: python3 scripts/check-tla-test.py
+      - name: Check every TLA+ and PlusCal variant
+        timeout-minutes: 32
+        run: >-
+          python3 scripts/check-tla.py --download --output target/tlc
+          --timeout 600 --heap-mb 4096 --disk-mb 4096
+      - name: Publish TLC evidence status
+        if: always()
+        env:
+          CHECK_STATUS: ${{ job.status }}
+        run: |
+          mkdir -p target/tlc
+          echo "TLC job status: $CHECK_STATUS" >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -f target/tlc/summary.md ]; then
+            echo "TLC did not finish its summary. The check is incomplete; retained logs are diagnostic evidence only." | tee target/tlc/incomplete.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload all model-check evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tlc-output
+          path: target/tlc/
           if-no-files-found: error
           retention-days: 14
 
