@@ -52,6 +52,7 @@ env:
 
 jobs:
   format:
+    if: false # This isolated negative control runs only the Rust correspondence check.
     name: Rust format
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -83,6 +84,7 @@ jobs:
           echo "See this job's individual step logs for failures." >> "$GITHUB_STEP_SUMMARY"
 
   adr_status:
+    if: false # This isolated negative control runs only the Rust correspondence check.
     name: ADR status lint
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -120,6 +122,7 @@ jobs:
           retention-days: 14
 
   tlc:
+    if: false # This isolated negative control runs only the Rust correspondence check.
     name: tlc ElasticSlots
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -160,6 +163,7 @@ jobs:
           retention-days: 14
 
   runtime_spec:
+    if: false # This isolated negative control runs only the Rust correspondence check.
     name: Runtime symbol and dependency contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -171,6 +175,7 @@ jobs:
         run: cargo -Zscript scripts/check-spec.rs -- target/runtime-symbol-spec.json
 
   licenses:
+    if: false # This isolated negative control runs only the Rust correspondence check.
     name: License policy and release notices
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -222,8 +227,8 @@ jobs:
 
 
   http_contracts:
+    if: false # This isolated negative control runs only the Rust correspondence check.
     name: HTTP bounded stream contracts
-    if: github.event_name == 'workflow_dispatch' && inputs.http_tests
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -282,6 +287,7 @@ jobs:
           retention-days: 14
 
   rust:
+    if: false # This isolated negative control runs only the Rust correspondence check.
     name: Rust workspace and acceptance proofs
     needs: [format, adr_status, runtime_spec, licenses]
     runs-on: macos-15
@@ -388,6 +394,7 @@ jobs:
           retention-days: 14
 
   p7_linux:
+    if: false # This isolated negative control runs only the Rust correspondence check.
     name: Terminal proof P7 (Linux PTY)
     needs: format
     runs-on: ubuntu-24.04

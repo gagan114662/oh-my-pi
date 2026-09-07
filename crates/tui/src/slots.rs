@@ -772,7 +772,7 @@ impl Slots {
 			let id = planned.logical.block;
 			let expected = self.block(id).emitted;
 			assert_eq!(planned.logical.ordinal as usize, expected, "non-contiguous delivery");
-			self.history.push(planned.logical.clone());
+			// NEGATIVE CONTROL: deliberately omit the committed history append.
 			self.block_mut(id).emitted += 1;
 		}
 		self.advance_frontier();
