@@ -37,6 +37,8 @@ const BUILTIN_TOOL_IDENTITIES: &[BuiltinToolIdentity] = &[
 	BuiltinToolIdentity { name: "hub", hidden: false },
 	BuiltinToolIdentity { name: "github", hidden: false },
 	BuiltinToolIdentity { name: "debug", hidden: false },
+	BuiltinToolIdentity { name: "lsp", hidden: false },
+	BuiltinToolIdentity { name: "browser", hidden: false },
 	BuiltinToolIdentity { name: "checkpoint", hidden: false },
 	BuiltinToolIdentity { name: "ast_grep", hidden: false },
 	BuiltinToolIdentity { name: "ast_edit", hidden: false },
@@ -54,6 +56,10 @@ const BUILTIN_TOOL_IDENTITIES: &[BuiltinToolIdentity] = &[
 ];
 
 /// Returns the stable native builtin and hidden identity set.
+///
+/// This is a family catalog, not a promise of current availability or a fixed
+/// model-visible slot list. Production policy exposes enabled families as
+/// slots, dynamic devices, or explicitly selected hidden tools.
 pub const fn builtin_tool_identities() -> &'static [BuiltinToolIdentity] {
 	BUILTIN_TOOL_IDENTITIES
 }
