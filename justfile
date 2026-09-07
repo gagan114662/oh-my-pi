@@ -332,3 +332,13 @@ clean:
 # Reproduce the CI "format" + "rust" jobs locally before pushing (skips macOS/Linux-only Python-toolchain verification steps).
 [group('housekeeping')]
 ci: fmt-check-rust clippy test e2e
+
+# Execute all elastic-slot TLA+/PlusCal variants with pinned TLC and retained evidence.
+[group('proof')]
+tlc *args='':
+    python3 scripts/check-tla.py --download --output target/tlc {{ args }}
+
+# Verify failure handling in the model-check runner (does not replace TLC).
+[group('proof')]
+tlc-test:
+    python3 scripts/check-tla-test.py
