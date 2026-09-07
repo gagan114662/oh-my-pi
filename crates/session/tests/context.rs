@@ -150,3 +150,45 @@ fn pins_reject_stale_ids_and_overflow_without_journaling() {
 			.is_empty()
 	);
 }
+
+#[test]
+fn pin_acknowledgement_replays_without_appending_and_rejects_reused_arguments() {
+	use omp_session::context::ContextRequestKey;
+	let directory = tempfile::tempdir().expect("directory");
+	let path = directory.path().join("receipts.oms");
+	let mut session = Session::create(&path, ComponentRegistry::default()).expect("session");
+	session.begin_turn().expect("turn");
+	let entry = session
+		.user("retained history", Vec::new())
+		.expect("history");
+	let items = [(Str::new(format!("{entry}:0")), 8)];
+	let request = ContextRequestKey {
+		owner:       Str::new_static("owner"),
+		key:         Str::new_static("key"),
+		fingerprint: Str::new_static("pin-arguments"),
+	};
+	assert_eq!(
+		session
+			.pin_context_request("owner", &items, "keep", 100, Some(&request))
+			.expect("pin"),
+		1
+	);
+	let accepted = session.head();
+	drop(session);
+	let mut session = Session::open(&path, ComponentRegistry::default()).expect("reopen");
+	assert_eq!(
+		session
+			.pin_context_request("owner", &items, "keep", 100, Some(&request))
+			.expect("replay"),
+		1,
+		"return original acknowledgement, not zero newly added pins"
+	);
+	assert_eq!(session.head(), accepted, "retry does not append");
+	let conflict =
+		ContextRequestKey { fingerprint: Str::new_static("different-arguments"), ..request };
+	assert!(matches!(
+		session.pin_context_request("owner", &items, "changed", 100, Some(&conflict)),
+		Err(ContextPinError::IdempotencyConflict)
+	));
+	assert_eq!(session.head(), accepted);
+}

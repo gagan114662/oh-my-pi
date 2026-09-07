@@ -539,6 +539,9 @@ pub enum DirectorError {
 	/// Compaction completed without producing summary text.
 	#[error("compaction inference produced no summary text")]
 	EmptyCompactionSummary,
+	/// History changed while a compaction hook or inference was awaited.
+	#[error("compaction source history changed before commit")]
+	CompactionSourceChanged,
 	/// An extension Director callback failed or returned an invalid result.
 	#[error("extension Director callback failed")]
 	ExtensionCallback,

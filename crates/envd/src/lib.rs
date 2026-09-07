@@ -1375,8 +1375,12 @@ impl ProjectEnvironment {
 
 	/// Binds checkpoint and staged-preview CONTROL to the active Agent Journal
 	/// until the returned sole-owner lease is dropped.
-	pub fn bind_agent_control(&self, sender: KernelSender) -> AgentControlBinding {
-		self.lifecycle.server.bind_agent_control(sender)
+	pub fn bind_agent_control(
+		&self,
+		sender: KernelSender,
+		context: omp_agent::context::control::ContextControl,
+	) -> AgentControlBinding {
+		self.lifecycle.server.bind_agent_control(sender, context)
 	}
 
 	/// Installs the project-lifetime backend which attaches or starts durable

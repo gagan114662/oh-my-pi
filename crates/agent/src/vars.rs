@@ -78,6 +78,13 @@ omp_con::var! {
 		suggest: ["plan", "vibe", "autoresearch"],
 		flags: session,
 	};
+	/// Maximum context-window fraction protected by extension pins.
+	pub static AI_CONTEXT_PIN_FRACTION = ai_context_pin_fraction: f64 {
+		default: 0.25,
+		min: 0.0,
+		max: 1.0,
+		flags: archive | session,
+	};
 	/// Context-window fraction at which context maintenance begins.
 	pub static AI_COMPACT_THRESHOLD = ai_compact_threshold: f64 {
 		default: 0.80,

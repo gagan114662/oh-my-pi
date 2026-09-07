@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+pub mod control;
+
 use omp_ai::{ContentPart, Message, Role};
 use omp_core::{Str, sf};
 use omp_proto::toolhost::v1::HookEventId;
@@ -220,7 +222,7 @@ pub fn apply_context_patch(
 	apply_context_patch_with_origins(messages, patch, &[])
 }
 
-fn apply_context_patch_with_origins(
+pub(crate) fn apply_context_patch_with_origins(
 	messages: &mut Vec<Message>,
 	patch: &JsonValue,
 	origins: &[Option<omp_session::context::ContextOrigin>],

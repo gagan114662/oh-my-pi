@@ -29,6 +29,9 @@ use crate::{
 /// Failure to append, decode, or fold a session entry.
 #[derive(Debug, Error)]
 pub enum SessionError {
+	/// An extension generation or request was revoked before durable admission.
+	#[error("context request was revoked before the journal append")]
+	ContextAdmissionRevoked,
 	/// Compaction would remove an item protected by an extension pin.
 	#[error("compaction would remove pinned context item {id}")]
 	PinnedContext {

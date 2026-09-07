@@ -167,6 +167,8 @@ pub enum Up {
 	Cancel,
 	/// Runs a one-shot authoritative session mutation on the kernel actor.
 	SessionMutation(SessionMutation),
+	/// Runs acknowledged compaction on the authoritative kernel owner.
+	ContextCompact(crate::context::control::ContextCompactRequest),
 	/// Delivers an environment observation or host-authority request.
 	Env(crate::EnvEvent),
 	/// Commits an automatic peer response observation before its producer

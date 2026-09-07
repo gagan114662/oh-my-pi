@@ -10,6 +10,23 @@ use thiserror::Error;
 use crate::{Session, SessionError};
 
 const PINS_PROP: &str = "omp/context-pins";
+const RECEIPTS_PROP: &str = "omp/context-receipts";
+
+/// Durable request identity and canonical argument digest supplied by CONTROL.
+pub struct ContextRequestKey {
+	/// Authenticated extension owner.
+	pub owner:       Str,
+	/// Caller idempotency key.
+	pub key:         Str,
+	/// Digest including the operation and normalized arguments.
+	pub fingerprint: Str,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ContextReceipt {
+	fingerprint: Str,
+	count:       usize,
+}
 
 /// Durable provenance for one model-facing projection item.
 #[derive(Clone, Debug)]
@@ -67,6 +84,9 @@ pub struct ContextPin {
 /// Context pin admission failure; every failure leaves the journal unchanged.
 #[derive(Debug, Error)]
 pub enum ContextPinError {
+	/// A durable request key was reused for a different operation or arguments.
+	#[error("context idempotency key was reused with different arguments")]
+	IdempotencyConflict,
 	/// The item is no longer in the selected live projection.
 	#[error("context item is no longer live: {id}")]
 	ContextGone {
@@ -258,6 +278,25 @@ impl Session {
 		reason: &str,
 		budget_tokens: u64,
 	) -> Result<usize, ContextPinError> {
+		self.pin_context_request(owner, items, reason, budget_tokens, None)
+	}
+
+	/// Pins and records the original acknowledgement in one journal transaction.
+	pub fn pin_context_request(
+		&mut self,
+		owner: &str,
+		items: &[(Str, u64)],
+		reason: &str,
+		budget_tokens: u64,
+		request: Option<&ContextRequestKey>,
+	) -> Result<usize, ContextPinError> {
+		if let Some(count) = request
+			.map(|request| self.context_request_count(request))
+			.transpose()?
+			.flatten()
+		{
+			return Ok(count);
+		}
 		let mut pins = context_pins(self.dom())?;
 		let live = crate::project_thread(self.dom());
 		for (id, _) in items {
@@ -289,8 +328,8 @@ impl Session {
 		if total.is_none_or(|total| total > budget_tokens) {
 			return Err(ContextPinError::BudgetExceeded);
 		}
-		if added != 0 {
-			self.write_context_pins(&pins)?;
+		if added != 0 || request.is_some() {
+			self.write_context_pins(&pins, request.map(|request| (request, added)))?;
 		}
 		Ok(added)
 	}
@@ -298,6 +337,24 @@ impl Session {
 	/// Atomically releases only the authenticated owner's pins. Mixed-owner
 	/// requests fail before deleting any pin.
 	pub fn unpin_context(&mut self, owner: &str, ids: &[Str]) -> Result<usize, ContextPinError> {
+		self.unpin_context_request(owner, ids, None)
+	}
+
+	/// Unpins and records the original acknowledgement in one journal
+	/// transaction.
+	pub fn unpin_context_request(
+		&mut self,
+		owner: &str,
+		ids: &[Str],
+		request: Option<&ContextRequestKey>,
+	) -> Result<usize, ContextPinError> {
+		if let Some(count) = request
+			.map(|request| self.context_request_count(request))
+			.transpose()?
+			.flatten()
+		{
+			return Ok(count);
+		}
 		let mut pins = context_pins(self.dom())?;
 		for id in ids {
 			if pins.get(id).is_some_and(|pin| pin.owner.as_str() != owner) {
@@ -305,8 +362,8 @@ impl Session {
 			}
 		}
 		let removed = ids.iter().filter(|id| pins.remove(*id).is_some()).count();
-		if removed != 0 {
-			self.write_context_pins(&pins)?;
+		if removed != 0 || request.is_some() {
+			self.write_context_pins(&pins, request.map(|request| (request, removed)))?;
 		}
 		Ok(removed)
 	}
@@ -314,19 +371,64 @@ impl Session {
 	fn write_context_pins(
 		&mut self,
 		pins: &BTreeMap<Str, ContextPin>,
+		request: Option<(&ContextRequestKey, usize)>,
 	) -> Result<(), ContextPinError> {
 		let data =
 			serde_json::value::to_raw_value(pins).map_err(|_| ContextPinError::InvalidState)?;
 		let cause = self.head().ok_or(ContextPinError::InvalidState)?;
-		self.patch(Txn {
-			cause,
-			label: Some(Str::new_static("context.pins")),
-			ops: vec![Op::Set {
+		let mut ops = vec![Op::Set {
+			h:     self.dom().meta(),
+			prop:  PropKey::Custom(Str::new_static(PINS_PROP)),
+			value: Value::Json(data),
+		}];
+		if let Some((request, count)) = request {
+			let mut receipts = self.context_receipts()?;
+			receipts.insert(receipt_key(request), ContextReceipt {
+				fingerprint: request.fingerprint.clone(),
+				count,
+			});
+			ops.push(Op::Set {
 				h:     self.dom().meta(),
-				prop:  PropKey::Custom(Str::new_static(PINS_PROP)),
-				value: Value::Json(data),
-			}],
-		})?;
+				prop:  PropKey::Custom(Str::new_static(RECEIPTS_PROP)),
+				value: Value::Json(
+					serde_json::value::to_raw_value(&receipts)
+						.map_err(|_| ContextPinError::InvalidState)?,
+				),
+			});
+		}
+		self.patch(Txn { cause, label: Some(Str::new_static("context.pins")), ops })?;
 		Ok(())
 	}
+
+	fn context_receipts(&self) -> Result<BTreeMap<String, ContextReceipt>, ContextPinError> {
+		match self
+			.dom()
+			.get(self.dom().meta())
+			.and_then(|node| node.prop(&PropKey::Custom(Str::new_static(RECEIPTS_PROP))))
+		{
+			None => Ok(BTreeMap::new()),
+			Some(Value::Json(raw)) => {
+				serde_json::from_str(raw.get()).map_err(|_| ContextPinError::InvalidState)
+			},
+			Some(_) => Err(ContextPinError::InvalidState),
+		}
+	}
+
+	/// Returns the original acknowledgement for an exact durable request retry.
+	pub fn context_request_count(
+		&self,
+		request: &ContextRequestKey,
+	) -> Result<Option<usize>, ContextPinError> {
+		match self.context_receipts()?.get(&receipt_key(request)) {
+			Some(receipt) if receipt.fingerprint != request.fingerprint => {
+				Err(ContextPinError::IdempotencyConflict)
+			},
+			Some(receipt) => Ok(Some(receipt.count)),
+			None => Ok(None),
+		}
+	}
+}
+
+fn receipt_key(request: &ContextRequestKey) -> String {
+	serde_json::json!([request.owner, request.key]).to_string()
 }

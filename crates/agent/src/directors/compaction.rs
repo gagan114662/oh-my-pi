@@ -43,11 +43,12 @@ const SUMMARY_INSTRUCTION: &str = include_str!("../../prompts/compaction/handoff
 /// the threshold.
 #[derive(Clone, Debug, Default)]
 pub struct CompactionDirector {
-	focus:  Option<Str>,
-	manual: bool,
+	focus:         Option<Str>,
+	manual:        bool,
 	/// Journaled `method` for a manual run (`manual`, `handoff`); `None`
 	/// uses the automatic/manual default.
-	method: Option<Str>,
+	method:        Option<Str>,
+	context_guard: Option<crate::context::control::ContextCommitGuard>,
 }
 
 /// Effective compaction settings.
@@ -124,6 +125,23 @@ struct Plan {
 	target_tokens:  u64,
 }
 
+/// Immutable source snapshot for one asynchronous compaction attempt.
+pub(crate) struct CompactionPreparation {
+	plan:            Plan,
+	thread:          Vec<omp_proto::thread::v1::Item>,
+	kept:            Vec<Message>,
+	payload:         serde_json::Value,
+	summary_request: ChatRequest,
+	context_window:  u64,
+}
+
+pub(crate) struct CompactionSummary {
+	prepared:       CompactionPreparation,
+	summary:        Str,
+	warning:        Option<Str>,
+	from_extension: bool,
+}
+
 /// The extension verdict on one prepared compaction.
 enum Verdict {
 	Proceed {
@@ -138,13 +156,21 @@ impl CompactionDirector {
 	/// Creates the standard automatic compaction director.
 	#[must_use]
 	pub const fn new() -> Self {
-		Self { focus: None, manual: false, method: None }
+		Self { focus: None, manual: false, method: None, context_guard: None }
 	}
 
 	/// Creates a one-shot manual compaction request with optional summary focus.
 	#[must_use]
 	pub const fn manual(focus: Option<Str>) -> Self {
-		Self { focus, manual: true, method: None }
+		Self { focus, manual: true, method: None, context_guard: None }
+	}
+
+	pub(crate) fn with_context_guard(
+		mut self,
+		guard: Option<crate::context::control::ContextCommitGuard>,
+	) -> Self {
+		self.context_guard = guard;
+		self
 	}
 
 	/// Labels the journaled compaction method (`/handoff` journals
@@ -162,13 +188,14 @@ impl CompactionDirector {
 			.unwrap_or_else(|| Str::new_static(if self.manual { "manual" } else { "auto" }))
 	}
 
-	async fn compact(
+	/// Snapshot only: no Session borrow survives hook or inference awaits.
+	pub(crate) fn prepare(
 		&self,
-		cx: &mut MutDirectorCx<'_>,
+		cx: &MutDirectorCx<'_>,
 		request: &ChatRequest,
-	) -> Result<Prepared, DirectorError> {
+	) -> Result<Option<CompactionPreparation>, DirectorError> {
 		let Some(head) = cx.session.head() else {
-			return Ok(Prepared::Unchanged);
+			return Ok(None);
 		};
 		let dom = cx.session.dom();
 		let settings = Settings::resolve(cx.con, dom);
@@ -186,7 +213,7 @@ impl CompactionDirector {
 				|| context_tokens <= target_tokens
 				|| (!settings.mid_turn_enabled && turn_has_inference(dom, cx.turn))
 			{
-				return Ok(Prepared::Unchanged);
+				return Ok(None);
 			}
 		}
 		let Some(cut) = cut_point(
@@ -197,12 +224,12 @@ impl CompactionDirector {
 			settings.keep_recent_tokens,
 			!self.manual,
 		) else {
-			return Ok(Prepared::Unchanged);
+			return Ok(None);
 		};
 		let hidden = Message::from_thread_items(&project_thread_through(dom, cut.boundary))?;
 		if hidden.is_empty() {
 			// Nothing to summarize is a no-op.
-			return Ok(Prepared::Unchanged);
+			return Ok(None);
 		}
 		// Thread items map one-to-one onto request messages, so whatever the
 		// request holds before the projected thread is the live system prompt;
@@ -215,76 +242,134 @@ impl CompactionDirector {
 			.min(thread.len());
 		let kept = Message::from_thread_items(&thread[kept_from..])?;
 		let plan = Plan { cut, epoch: compaction_count(dom), context_tokens, target_tokens };
-		let (summary, warning) = match cx.hooks {
-			Some(hooks) => {
-				let payload = self.hook_event(
-					dom,
-					&plan,
-					&hidden,
-					&kept,
-					previous.as_ref().map(|marker| marker.summary.as_str()),
-				);
-				match gate_compaction(hooks, payload).await? {
-					Verdict::Cancel => return Ok(Prepared::Unchanged),
-					Verdict::Proceed { summary, warning } => (summary, warning),
-				}
+
+		let payload = self.hook_event(
+			dom,
+			&plan,
+			&hidden,
+			&kept,
+			previous.as_ref().map(|marker| marker.summary.as_str()),
+		);
+		let summary_request = summary_request(
+			&request.messages[..system_prefix],
+			previous.as_ref().map(|marker| marker.summary.clone()),
+			&hidden,
+			self.focus.as_deref(),
+		);
+		Ok(Some(CompactionPreparation {
+			plan,
+			thread,
+			kept,
+			payload,
+			summary_request,
+			context_window,
+		}))
+	}
+
+	pub(crate) async fn summarize_prepared(
+		&self,
+		prepared: CompactionPreparation,
+		inference: &mut dyn crate::director::ErasedInference,
+		hooks: Option<&LifecycleHooks>,
+		events: Option<&crate::KernelEvents>,
+	) -> Result<Option<CompactionSummary>, DirectorError> {
+		let (summary, warning) = match hooks {
+			Some(hooks) => match gate_compaction(hooks, prepared.payload.clone()).await? {
+				Verdict::Cancel => return Ok(None),
+				Verdict::Proceed { summary, warning } => (summary, warning),
 			},
 			None => (None, None),
 		};
 		let from_extension = summary.is_some();
-
-		// The gauge tick pulses while the summary is produced and settles once
-		// the boundary lands (or the run fails).
-		cx.notify(KernelEvent::CompactionSpeculating {
-			percent: occupancy_percent(context_tokens, context_window),
-		});
-		let summarized = if let Some(summary) = summary {
-			Ok(summary)
+		if let Some(events) = events {
+			events.publish(KernelEvent::CompactionSpeculating {
+				percent: occupancy_percent(prepared.plan.context_tokens, prepared.context_window),
+			});
+		}
+		let summary = if let Some(summary) = summary {
+			summary
 		} else {
-			let summary_request = summary_request(
-				&request.messages[..system_prefix],
-				previous.as_ref().map(|marker| marker.summary.clone()),
-				&hidden,
-				self.focus.as_deref(),
-			);
-			self.summarize(cx, summary_request).await
+			self
+				.summarize(inference, prepared.summary_request.clone())
+				.await?
 		};
-		cx.notify(KernelEvent::CompactionSettled { applied: summarized.is_ok() });
-		let summary = summarized?;
+		Ok(Some(CompactionSummary { prepared, summary, warning, from_extension }))
+	}
+
+	pub(crate) fn commit_prepared(
+		&self,
+		session: &mut omp_session::Session,
+		summarized: CompactionSummary,
+		hooks: Option<&LifecycleHooks>,
+	) -> Result<Prepared, DirectorError> {
+		let CompactionSummary { prepared, summary, warning, from_extension } = summarized;
+		// Pin-only journal patches are allowed. Any changed projected body or
+		// compaction generation invalidates the summary's source snapshot.
+		if project_thread(session.dom()) != prepared.thread
+			|| compaction_count(session.dom()) != prepared.plan.epoch
+		{
+			return Err(DirectorError::CompactionSourceChanged);
+		}
+		let plan = prepared.plan;
 		let tokens_after = estimate_text_tokens(summary.as_str()).saturating_add(
-			kept
+			prepared
+				.kept
 				.iter()
 				.map(estimate_message_tokens)
 				.fold(0_u64, u64::saturating_add),
 		);
-		let blob = cx.session.blobs().put(summary.as_bytes())?;
-		let summary_bytes = u64_len(summary.len());
-		cx.session.compaction(Compaction {
-			summary:       blob,
-			boundary:      plan.cut.boundary,
-			method:        Some(self.method()),
-			tokens_before: Some(context_tokens),
-			tokens_after:  Some(tokens_after),
-			warning:       warning.clone(),
-			frames:        Vec::new(),
-		})?;
-		if let Some(hooks) = cx.hooks {
-			hooks.notify(
-				HookEventId::HookEventCompactionDone,
-				serde_json::json!({
-					"preparation_id": plan.cut.boundary.to_string(),
-					"tiers_run": [self.tier()],
-					"from_extension": from_extension.then_some("hook"),
-					"tokens_before": context_tokens,
-					"tokens_after": tokens_after,
-					"first_kept_id": first_kept_id(cx.session.dom(), plan.cut.first_kept),
-					"epoch": plan.epoch,
-					"summary_bytes": summary_bytes,
-					"warning": warning,
-				}),
-			)?;
+		let blob = session.blobs().put(summary.as_bytes())?;
+		let context_outcome = serde_json::json!({
+			"preparation_id": plan.cut.boundary.to_string(),
+			"tiers_run": [self.tier()],
+			"from_extension": from_extension.then_some("hook"),
+			"tokens_before": plan.context_tokens,
+			"tokens_after": tokens_after,
+			"first_kept_id": first_kept_id(session.dom(), plan.cut.first_kept),
+			"epoch": plan.epoch.saturating_add(1),
+			"summary_bytes": u64_len(summary.len()),
+			"warning": warning,
+		});
+		let compaction = Compaction {
+			summary: blob,
+			boundary: plan.cut.boundary,
+			method: Some(self.method()),
+			tokens_before: Some(plan.context_tokens),
+			tokens_after: Some(tokens_after),
+			warning,
+			frames: Vec::new(),
+		};
+		if let Some(guard) = &self.context_guard {
+			guard.commit(session, compaction, context_outcome.clone())?;
+		} else {
+			session.compaction(compaction)?;
+		}
+		if let Some(hooks) = hooks {
+			hooks.notify(HookEventId::HookEventCompactionDone, context_outcome)?;
 		}
 		Ok(Prepared::Rebuild)
+	}
+
+	async fn compact(
+		&self,
+		cx: &mut MutDirectorCx<'_>,
+		request: &ChatRequest,
+	) -> Result<Prepared, DirectorError> {
+		let Some(prepared) = self.prepare(cx, request)? else {
+			return Ok(Prepared::Unchanged);
+		};
+		let result = self
+			.summarize_prepared(prepared, cx.inference, cx.hooks, cx.events)
+			.await;
+		let result = match result {
+			Ok(Some(summary)) => self.commit_prepared(cx.session, summary, cx.hooks),
+			Ok(None) => Ok(Prepared::Unchanged),
+			Err(error) => Err(error),
+		};
+		cx.notify(KernelEvent::CompactionSettled {
+			applied: matches!(result, Ok(Prepared::Rebuild)),
+		});
+		result
 	}
 
 	/// Python `CompactionEvent`, the `compaction` gate payload.
@@ -332,10 +417,10 @@ impl CompactionDirector {
 
 	async fn summarize(
 		&self,
-		cx: &mut MutDirectorCx<'_>,
+		inference: &mut dyn crate::director::ErasedInference,
 		summary_request: ChatRequest,
 	) -> Result<Str, DirectorError> {
-		let mut stream = cx.inference.execute(summary_request).await?;
+		let mut stream = inference.execute(summary_request).await?;
 		let mut summary = StrMut::new("");
 		while let Some(event) = stream.next().await {
 			if let ChatEvent::TextDelta { text, .. } = event? {

@@ -437,6 +437,10 @@ impl CallControl {
 				request.apply(session);
 				Ok(Received::None)
 			},
+			Up::ContextCompact(request) => {
+				request.reject_busy();
+				Ok(Received::None)
+			},
 			Up::Env(event) => {
 				Ok(journal_env_event(session, event)?.map_or(Received::None, Received::Rewound))
 			},

@@ -2108,6 +2108,7 @@ impl HostControlAuthorityFactory {
 			(ControlDomain::Provider, "provider", &self.envd.provider.provider),
 			(ControlDomain::Services, "services", &self.envd.provider.services),
 			(ControlDomain::Auxiliary, "auxiliary", &self.envd.auxiliary),
+			(ControlDomain::Context, "context", &self.envd.auxiliary),
 			(ControlDomain::Agents, "agents", &agents),
 			(ControlDomain::Mcp, "mcp", &self.external.mcp),
 		];
@@ -2325,6 +2326,7 @@ impl ControlAuthority for DomainEffectAuthority {
 
 #[derive(Clone, Copy)]
 enum ControlDomain {
+	Context,
 	Devices,
 	Hooks,
 	Sessions,
@@ -2345,6 +2347,7 @@ enum ControlDomain {
 impl ControlDomain {
 	fn handles(self, operation: &str) -> bool {
 		match self {
+			Self::Context => operation.starts_with("omp.context."),
 			Self::Devices => operation.starts_with("omp.devices."),
 			Self::Hooks => operation.starts_with("omp.hooks."),
 			Self::Sessions => operation.starts_with("omp.sessions."),
