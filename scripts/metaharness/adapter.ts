@@ -386,8 +386,12 @@ export async function execute(
 		child.stdin.end(input);
 	});
 }
-async function normalized(path: string, verifier: Manifest["verifier"]) {
-	const bytes = await readFile(path);
+async function normalized(
+	path: string,
+	verifier: Manifest["verifier"],
+	captured?: Buffer,
+) {
+	const bytes = captured ?? (await readFile(path));
 	if (verifier.mode === "exact") return bytes;
 	const command = verifier.command;
 	if (
@@ -410,27 +414,53 @@ async function normalized(path: string, verifier: Manifest["verifier"]) {
 		throw new Error(`Formatter failed: ${result.error ?? result.stderr}`);
 	return Buffer.from(result.stdout);
 }
-/** Full tree comparison catches missing/extra files and changes outside the requested edit. */
+/** Capture references before candidate execution; hashes and scores share these bytes. */
+export async function snapshotExpectedFiles(
+	expected: string,
+	verifier: Manifest["verifier"],
+) {
+	const frozen = structuredClone(verifier);
+	const entries = new Map<string, { raw: Buffer; normalized: Buffer }>();
+	const hash = createHash("sha256");
+	for (const name of await files(expected)) {
+		const path = join(expected, name);
+		const raw = await readFile(path);
+		hash.update(name);
+		hash.update("\0");
+		hash.update(digest(raw));
+		hash.update("\0");
+		entries.set(name, { raw, normalized: await normalized(path, frozen, raw) });
+	}
+	return {
+		hash: hash.digest("hex"),
+		async verify(actual: string): Promise<string[]> {
+			const got = await files(actual),
+				failures: string[] = [];
+			for (const name of entries.keys())
+				if (!got.includes(name)) failures.push(`Missing: ${name}`);
+			for (const name of got)
+				if (!entries.has(name)) failures.push(`Unexpected: ${name}`);
+			for (const name of got) {
+				const reference = entries.get(name);
+				if (
+					reference &&
+					!reference.normalized.equals(
+						await normalized(join(actual, name), frozen),
+					)
+				)
+					failures.push(`Different: ${name}`);
+			}
+			return failures;
+		},
+	};
+}
+/** Full tree comparison catches missing/extra files and unrelated changes. */
 export async function verifyFiles(
 	expected: string,
 	actual: string,
 	verifier: Manifest["verifier"],
 ): Promise<string[]> {
-	const want = await files(expected),
-		got = await files(actual),
-		failures: string[] = [];
-	for (const name of want)
-		if (!got.includes(name)) failures.push(`Missing: ${name}`);
-	for (const name of got)
-		if (!want.includes(name)) failures.push(`Unexpected: ${name}`);
-	for (const name of want.filter((n) => got.includes(n)))
-		if (
-			!(await normalized(join(expected, name), verifier)).equals(
-				await normalized(join(actual, name), verifier),
-			)
-		)
-			failures.push(`Different: ${name}`);
-	return failures;
+	return (await snapshotExpectedFiles(expected, verifier)).verify(actual);
 }
 export function ghost(r: Run) {
 	return (
@@ -671,11 +701,20 @@ export async function runExperiment(manifest: Manifest) {
 		baseline: await verifyArm(manifest.baseline),
 		candidate: await verifyArm(manifest.candidate),
 	};
+	const expectedSnapshots = new Map<
+		string,
+		Awaited<ReturnType<typeof snapshotExpectedFiles>>
+	>();
+	for (const task of manifest.tasks)
+		expectedSnapshots.set(
+			task.id,
+			await snapshotExpectedFiles(task.expected, manifest.verifier),
+		);
 	const fixtureHashes = await Promise.all(
 		manifest.tasks.map(async (t) => ({
 			id: t.id,
 			input: await treeHash(t.input),
-			expected: await treeHash(t.expected),
+			expected: expectedSnapshots.get(t.id)!.hash,
 		})),
 	);
 	const answerRecords = manifest.answerVerifier
@@ -748,11 +787,7 @@ export async function runExperiment(manifest: Manifest) {
 		let answer: string | undefined, answerScore: number | undefined;
 		let verification: string[] = [];
 		try {
-			verification = await verifyFiles(
-				item.task.expected,
-				project,
-				manifest.verifier,
-			);
+			verification = await expectedSnapshots.get(item.task.id)!.verify(project);
 		} catch (e) {
 			verification = [String(e)];
 		}
