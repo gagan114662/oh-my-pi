@@ -62,8 +62,17 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Test ADR path diagnostics
+        run: python3 scripts/test-adr-paths.py
       - name: Check current ADR paths
-        run: python3 scripts/check-adr-paths.py
+        run: python3 scripts/check-adr-paths.py --report target/adr-paths/report.json
+      - name: Publish ADR path evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: adr-path-reference-evidence
+          path: target/adr-paths/report.json
+          if-no-files-found: error
 
       - name: Enforce model data ownership
         run: cargo run --release --locked --manifest-path tools/lintx/Cargo.toml -- --only model-gate --only model-table crates/ai/src
