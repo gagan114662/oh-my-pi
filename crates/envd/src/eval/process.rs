@@ -572,17 +572,17 @@ impl EvalChild {
 		// stdout/stderr, so confinement needs no loopback or Unix-socket exception.
 		let command_for = |program: &Path| {
 			sandbox.as_deref().map_or_else(
-				|| Command::new(program),
+				|| Ok(Command::new(program)),
 				|sandbox| sandbox.tokio_command(program.as_os_str()),
 			)
 		};
 		let (mut command, external_runner) = if interpreter == Path::new(EMBEDDED_INTERPRETER) {
-			let mut command = command_for(executable);
+			let mut command = command_for(executable)?;
 			command.arg(EVAL_CHILD_ARG);
 			(command, None)
 		} else {
 			let runner = stage_external_runner()?;
-			let mut command = command_for(interpreter);
+			let mut command = command_for(interpreter)?;
 			command.arg("-u").arg(&runner);
 			(command, Some(runner))
 		};

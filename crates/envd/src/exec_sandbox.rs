@@ -194,6 +194,7 @@ pub(crate) struct ExecSandboxAttempt {
 
 #[derive(Clone)]
 struct FilePolicy {
+	approved_scope:  Option<ApprovedPathScope>,
 	writable:        Arc<[PathBuf]>,
 	write_denied:    Arc<[PathBuf]>,
 	readable:        Arc<[PathBuf]>,
@@ -430,22 +431,28 @@ impl ExecSandbox {
 	}
 
 	/// Creates a launcher command followed by the real program and arguments.
-	pub(crate) fn command(&self, program: &OsStr, args: &[&OsStr]) -> std::process::Command {
+	pub(crate) fn command(
+		&self,
+		program: &OsStr,
+		args: &[&OsStr],
+	) -> io::Result<std::process::Command> {
+		self.file_policy.validate_authority()?;
 		let mut command = std::process::Command::new(self.wrapper.launcher().unwrap_or(program));
 		if self.wrapper.launcher().is_some() {
 			command.args(self.wrapper.prefix_args()).arg(program);
 		}
 		command.args(args);
-		command
+		Ok(command)
 	}
 
 	/// Creates an asynchronous launcher command prefixed with the real program.
-	pub(crate) fn tokio_command(&self, program: &OsStr) -> tokio::process::Command {
+	pub(crate) fn tokio_command(&self, program: &OsStr) -> io::Result<tokio::process::Command> {
+		self.file_policy.validate_authority()?;
 		let mut command = tokio::process::Command::new(self.wrapper.launcher().unwrap_or(program));
 		if self.wrapper.launcher().is_some() {
 			command.args(self.wrapper.prefix_args()).arg(program);
 		}
-		command
+		Ok(command)
 	}
 
 	/// Applies the compiled child environment policy.
@@ -543,6 +550,10 @@ fn set_environment(environment: &mut Vec<(OsString, OsString)>, name: &str, valu
 }
 
 impl SpawnWrapper for ExecSandbox {
+	fn validate(&self) -> io::Result<()> {
+		self.file_policy.validate_authority()
+	}
+
 	fn launcher(&self) -> Option<(&OsStr, &[OsString])> {
 		self
 			.wrapper
@@ -560,6 +571,10 @@ impl SpawnWrapper for ExecSandbox {
 }
 
 impl SpawnWrapper for ExecSandboxAttempt {
+	fn validate(&self) -> io::Result<()> {
+		self.sandbox.file_policy.validate_authority()
+	}
+
 	fn launcher(&self) -> Option<(&OsStr, &[OsString])> {
 		self
 			.sandbox
@@ -579,6 +594,22 @@ impl SpawnWrapper for ExecSandboxAttempt {
 }
 
 impl FilePolicy {
+	fn validate_authority(&self) -> io::Result<()> {
+		self
+			.approved_scope
+			.as_ref()
+			.map_or(Ok(()), ApprovedPathScope::verify)
+	}
+
+	fn validate_path_authority(&self, path: &Path, access: PathAccess) -> Result<(), PathDenied> {
+		if let Some(scope) = &self.approved_scope {
+			if path.starts_with(&scope.scope) {
+				scope.verify().map_err(|_| Self::denied(path, access))?;
+			}
+		}
+		Ok(())
+	}
+
 	fn denied(path: &Path, access: PathAccess) -> PathDenied {
 		PathDenied { path: std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()), access }
 	}
@@ -592,6 +623,7 @@ impl FilePolicy {
 		}
 		let resolved =
 			resolve_write_path(&lexical).map_err(|_| Self::denied(&lexical, PathAccess::Read))?;
+		self.validate_path_authority(&resolved, PathAccess::Read)?;
 		if self
 			.read_amendment
 			.as_ref()
@@ -619,6 +651,7 @@ impl FilePolicy {
 
 	fn check_write(&self, path: &Path) -> Result<(), PathDenied> {
 		let resolved = resolve_write_path(path).map_err(|_| Self::denied(path, PathAccess::Write))?;
+		self.validate_path_authority(&resolved, PathAccess::Write)?;
 		if resolved == Path::new("/dev/null") {
 			return Ok(());
 		}
@@ -1046,6 +1079,7 @@ fn policy_parts_with_approved_scope(
 	Ok(PolicyParts {
 		spec,
 		file_policy: FilePolicy {
+			approved_scope: approved_scope.cloned(),
 			writable: writable.into(),
 			write_denied: denied.into(),
 			readable: readable.into(),
@@ -1406,6 +1440,39 @@ mod tests {
 		.expect("amended policy");
 		assert!(amended.file_policy.check_read(&denied).is_ok());
 	}
+	#[cfg(unix)]
+	#[test]
+	fn compiled_attempt_retains_and_rechecks_approved_scope() {
+		let workspace = tempfile::tempdir().expect("workspace");
+		let denied = workspace.path().join("denied");
+		fs::create_dir(&denied).expect("scope directory");
+		let target = denied.join("data");
+		fs::write(&target, "original").expect("original data");
+		let settings = SandboxSettings {
+			mode: ExecSandboxMode::Off,
+			read_deny: vec![Str::from(denied.to_string_lossy().as_ref())],
+			..SandboxSettings::default()
+		};
+		let scope = ApprovedPathScope::capture(&denied, ApprovedPathAccess::Read).expect("freeze");
+		let sandbox =
+			ExecSandbox::compile_amended(&settings, workspace.path(), false, None, Some(&scope), None)
+				.expect("compile retained authority")
+				.expect("environment policy");
+		drop(scope);
+		let attempt = sandbox.begin_attempt();
+		let request = OpenRequest { access: PathAccess::Read, create_mode: 0o600 };
+		assert!(attempt.open(&target, request).is_ok(), "unchanged scope remains usable");
+		assert!(attempt.validate().is_ok());
+		fs::remove_file(&target).expect("remove original file");
+		fs::remove_dir(&denied).expect("unlink retained inode");
+		fs::create_dir(&denied).expect("replacement directory");
+		fs::write(&target, "replacement").expect("replacement data");
+		assert!(attempt.open(&target, request).is_err(), "replacement must not inherit approval");
+		assert!(attempt.validate().is_err(), "external shell launch must reject changed authority");
+		assert!(sandbox.command(OsStr::new("true"), &[]).is_err());
+		assert!(sandbox.tokio_command(OsStr::new("true")).is_err());
+	}
+
 	#[test]
 	fn missing_configured_roots_are_inactive_not_compile_failures() {
 		let workspace = tempfile::tempdir().expect("workspace");

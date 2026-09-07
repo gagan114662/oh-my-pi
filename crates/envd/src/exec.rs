@@ -3351,9 +3351,9 @@ fn detached_command(source: &str, sandbox: Option<&ExecSandbox>) -> Result<Comma
 	let args = crate::shell_child::child_args(source);
 	let args = [args[0].as_os_str(), args[1].as_os_str()];
 	let mut command = sandbox.map_or_else(
-		|| Command::new(&executable),
+		|| Ok(Command::new(&executable)),
 		|sandbox| sandbox.command(executable.as_os_str(), &args),
-	);
+	)?;
 	if sandbox.is_none() {
 		command.args(args);
 	}

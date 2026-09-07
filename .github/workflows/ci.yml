@@ -505,6 +505,25 @@ jobs:
         with:
           name: managed-skill-roundtrip
           path: target/managed-skill-proof/
+      - name: Prove approved command wrapper validation
+        run: |
+          set -o pipefail
+          mkdir -p target/approved-scope-proof
+          set +e
+          cargo nextest run --profile ci --locked -p omp-shell --lib -E 'test(commands::sandbox_tests)' --no-tests fail 2>&1 | tee target/approved-scope-proof/shell.log
+          test_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-shell 2>&1 | tee target/approved-scope-proof/doctests.log
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > target/approved-scope-proof/nextest.exit
+          printf '%s\n' "$doc_status" > target/approved-scope-proof/doctests.exit
+          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+
+      - name: Publish approved command wrapper evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: approved-command-wrapper
+          path: target/approved-scope-proof/
           if-no-files-found: error
 
       - name: Prove Linux environment host contracts
