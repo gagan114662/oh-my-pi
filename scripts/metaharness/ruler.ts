@@ -47,7 +47,7 @@ type Executor = (
 }>;
 const hash = (value: Uint8Array) =>
 	createHash("sha256").update(value).digest("hex");
-export async function rulerProvenance(spec: RulerSpec) {
+async function verifiedInputs(spec: RulerSpec) {
 	if (spec.kind !== "ruler" || spec.revision !== RULER_REVISION)
 		throw new Error("Unsupported RULER scorer revision");
 	for (const path of [spec.source, spec.python, spec.dataset.path])
@@ -57,25 +57,38 @@ export async function rulerProvenance(spec: RulerSpec) {
 		throw new Error(
 			"Record dataset origin and generation command (empty for a published dataset)",
 		);
-	for (const [path, sha] of Object.entries(SOURCES))
-		if (hash(await readFile(join(spec.source, path))) !== sha)
+	const sources: Record<string, string> = {};
+	for (const [path, sha] of Object.entries(SOURCES)) {
+		const bytes = await readFile(join(spec.source, path));
+		if (hash(bytes) !== sha)
 			throw new Error(`RULER official scorer hash mismatch: ${path}`);
+		sources[path] = bytes.toString("base64");
+	}
 	if (hash(await readFile(await realpath(spec.python))) !== spec.pythonSha256)
 		throw new Error("RULER Python executable hash mismatch");
-	if (hash(await readFile(spec.dataset.path)) !== spec.dataset.sha256)
+	const dataset = await readFile(spec.dataset.path);
+	if (hash(dataset) !== spec.dataset.sha256)
 		throw new Error("RULER dataset hash mismatch");
 	return {
-		repository: "https://github.com/NVIDIA/RULER",
-		revision: RULER_REVISION,
-		files: SOURCES,
-		pythonSha256: spec.pythonSha256,
-		dataset: spec.dataset,
-		family: spec.family,
+		sources,
+		dataset,
+		provenance: {
+			repository: "https://github.com/NVIDIA/RULER",
+			revision: RULER_REVISION,
+			files: SOURCES,
+			pythonSha256: spec.pythonSha256,
+			dataset: spec.dataset,
+			family: spec.family,
+		},
 	};
 }
+export async function rulerProvenance(spec: RulerSpec) {
+	return (await verifiedInputs(spec)).provenance;
+}
 export async function rulerDataset(spec: RulerSpec) {
-	await rulerProvenance(spec);
-	const rows = (await readFile(spec.dataset.path, "utf8"))
+	const { dataset } = await verifiedInputs(spec);
+	const rows = dataset
+		.toString("utf8")
 		.split("\n")
 		.filter((x) => x.trim())
 		.map((x) => JSON.parse(x) as RulerRecord);
@@ -125,15 +138,18 @@ export function finalAnswer(trace: string) {
 // The AST extraction executes the upstream function unchanged while avoiding
 // evaluate.py's CLI/import side effects (NeMo/pandas and an NLTK auto-download).
 const BRIDGE = String.raw`
-import ast, json, pathlib, re, runpy, sys
-root=pathlib.Path(sys.argv[1])
-module=ast.parse((root/'scripts/eval/evaluate.py').read_text())
+import ast, base64, json, re, sys
+data=json.load(sys.stdin)
+evaluate_name='scripts/eval/evaluate.py'
+constants_name='scripts/eval/synthetic/constants.py'
+module=ast.parse(base64.b64decode(data['sources'][evaluate_name],validate=True),filename=evaluate_name)
 functions=[n for n in module.body if isinstance(n, ast.FunctionDef) and n.name=='postprocess_pred']
 if len(functions)!=1: raise RuntimeError('Upstream preprocessing function missing')
 scope={'re':re}
-exec(compile(ast.Module(body=functions,type_ignores=[]),str(root/'scripts/eval/evaluate.py'),'exec'),scope)
-metrics=runpy.run_path(str(root/'scripts/eval/synthetic/constants.py'))['TASKS']
-data=json.load(sys.stdin)
+exec(compile(ast.Module(body=functions,type_ignores=[]),evaluate_name,'exec'),scope)
+constants={'__name__':'<run_path>','__file__':constants_name,'__package__':'','__spec__':None,'__cached__':None}
+exec(compile(base64.b64decode(data['sources'][constants_name],validate=True),constants_name,'exec'),constants)
+metrics=constants['TASKS']
 config=metrics[data['family']]
 predictions=[scope['postprocess_pred'](x,config) for x in data['predictions']]
 print(json.dumps({'score':config['metric_fn'](predictions,data['references'])}))
@@ -144,15 +160,16 @@ export async function scoreRuler(
 	references: string[][],
 	execute: Executor,
 ) {
-	await rulerProvenance(spec);
+	// Retain exactly the bytes whose digests passed; Python never reopens sources.
+	const { sources } = await verifiedInputs(spec);
 	if (!predictions.length || predictions.length !== references.length)
 		throw new Error("RULER score requires aligned nonempty rows");
 	const result = await execute(
-		[spec.python, "-I", "-c", BRIDGE, spec.source],
+		[spec.python, "-I", "-c", BRIDGE],
 		spec.source,
 		30_000,
 		new TextEncoder().encode(
-			JSON.stringify({ family: spec.family, predictions, references }),
+			JSON.stringify({ family: spec.family, predictions, references, sources }),
 		),
 	);
 	if (result.exitCode !== 0 || result.timedOut || result.error)
