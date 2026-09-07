@@ -329,21 +329,6 @@ jobs:
         run: cargo nextest run --profile ci --workspace --exclude omp-e2e --locked
       # nextest cannot run doctests; omp has them in 25+ modules, so they need
       # their own libtest pass or the coverage silently disappears.
-      - name: Publish compiled tool roster policy proof
-        run: |
-          set -o pipefail
-          mkdir -p target/tool-roster
-          cargo nextest run --profile ci -p omp-envd --locked --no-tests fail --success-output immediate -E 'test(every_environment_family_has_one_advertised_surface_in_each_policy)' 2>&1 | tee target/tool-roster/policy.log
-          cat target/tool-roster/policy.log >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload compiled roster proof
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: native-tool-roster-policy-proof
-          path: target/tool-roster/policy.log
-          if-no-files-found: warn
-          retention-days: 14
-
       - name: Test doctests
         run: cargo test --doc --workspace --exclude omp-e2e --locked
 
@@ -462,6 +447,21 @@ jobs:
         with:
           name: linux-xattr-proof
           path: target/linux-xattr-proof.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish compiled tool roster policy proof
+        run: |
+          set -o pipefail
+          mkdir -p "$ENVD_PROOF_DIR"/roster
+          cargo nextest run --profile ci -p omp-envd --locked --no-tests fail --success-output immediate -E 'test(every_environment_family_has_one_advertised_surface_in_each_policy)' 2>&1 | tee "$ENVD_PROOF_DIR"/roster/policy.log
+          cat "$ENVD_PROOF_DIR"/roster/policy.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload compiled roster proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-tool-roster-policy-proof
+          path: ${{ env.ENVD_PROOF_DIR }}/roster/policy.log
           if-no-files-found: warn
           retention-days: 14
 
