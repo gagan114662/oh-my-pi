@@ -388,6 +388,7 @@ test.skipIf(!process.env.OMP_RULER_SOURCE)(
 			JSON.stringify({
 				index: 7,
 				input: "contract input",
+				answer_prefix: "\nAnswer: ",
 				outputs: ["Alpha", "Beta"],
 			}) + "\n",
 		);
@@ -406,7 +407,7 @@ test.skipIf(!process.env.OMP_RULER_SOURCE)(
 					datasetIndex: 7,
 					input,
 					expected,
-					prompt: "contract input",
+					prompt: "contract input\nAnswer: ",
 				},
 			],
 			repetitions: 1,
@@ -438,7 +439,7 @@ test.skipIf(!process.env.OMP_RULER_SOURCE)(
 			runExperiment({
 				...manifest,
 				output: join(root, "invalid"),
-				tasks: [{ ...manifest.tasks[0]!, prompt: "changed input" }],
+				tasks: [{ ...manifest.tasks[0]!, prompt: "contract input" }],
 			}),
 		).rejects.toThrow("exactly match");
 	},

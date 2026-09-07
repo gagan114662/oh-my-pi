@@ -120,6 +120,23 @@ test.skipIf(!officialSource)(
 			expect(
 				await scoreRuler(spec, ["", "Beta"], [["alpha"], ["beta"]], execute),
 			).toBe(50);
+			for (const answer_prefix of [null, 42, {}, []]) {
+				await writeFile(
+					dataset,
+					JSON.stringify({
+						index: 7,
+						input: "question",
+						answer_prefix,
+						outputs: ["answer"],
+					}) + "\n",
+				);
+				await expect(
+					rulerDataset({
+						...spec,
+						dataset: { ...spec.dataset, sha256: sha(await readFile(dataset)) },
+					}),
+				).rejects.toThrow("Invalid RULER dataset records");
+			}
 			await writeFile(dataset, "changed");
 			await expect(rulerDataset(spec)).rejects.toThrow("dataset hash mismatch");
 		} finally {

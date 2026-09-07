@@ -31,7 +31,12 @@ export interface RulerSpec {
 export interface RulerRecord {
 	index: number;
 	input: string;
+	answer_prefix?: string;
 	outputs: string[];
+}
+/** Upstream scripts/pred/call_api.py submits input plus the optional answer prefix. */
+export function rulerPrompt(record: RulerRecord): string {
+	return record.input + (record.answer_prefix ?? "");
 }
 type Executor = (
 	command: string[],
@@ -98,6 +103,7 @@ export async function rulerDataset(spec: RulerSpec) {
 			(r) =>
 				!Number.isSafeInteger(r.index) ||
 				typeof r.input !== "string" ||
+				("answer_prefix" in r && typeof r.answer_prefix !== "string") ||
 				!Array.isArray(r.outputs) ||
 				!r.outputs.length ||
 				r.outputs.some((x) => typeof x !== "string" || !x.length),

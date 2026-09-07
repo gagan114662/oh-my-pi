@@ -1,6 +1,7 @@
 import {
 	finalAnswer,
 	rulerDataset,
+	rulerPrompt,
 	rulerProvenance,
 	scoreRuler,
 	type RulerSpec,
@@ -727,9 +728,9 @@ export async function runExperiment(manifest: Manifest) {
 		const selected = new Set<number>();
 		for (const task of manifest.tasks) {
 			const record = answerRecords.find((r) => r.index === task.datasetIndex);
-			if (!record || record.input !== task.prompt)
+			if (!record || rulerPrompt(record) !== task.prompt)
 				throw new Error(
-					"Task prompt must exactly match its pinned RULER dataset input",
+					"Task prompt must exactly match its pinned RULER dataset input plus answer prefix",
 				);
 			if (selected.has(record.index))
 				throw new Error("Repeated RULER dataset index");
