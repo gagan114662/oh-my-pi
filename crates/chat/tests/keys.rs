@@ -1477,12 +1477,19 @@ fn space_hold_recognizes_a_metronomic_repeat_and_tracks_back_typed_spaces() {
 fn a_held_space_bar_starts_recording_and_release_stops_it() {
 	let mut h = harness(idle_session());
 	type_text(&mut h.host, "hi");
-	// Feed the gesture on the real clock: repeats 30ms apart.
+	// Record both key arrival and completed repaint: sleeping 30ms between
+	// calls does not guarantee a 30ms input cadence on a busy host.
+	let mut timings = Vec::with_capacity(5);
 	for _ in 0..5 {
+		let before = h.host.clock().elapsed();
 		h.host.key(Key::Space).expect("space");
+		timings.push((before, h.host.clock().elapsed()));
 		std::thread::sleep(Duration::from_millis(30));
 	}
-	assert!(h.host.recording(), "metronomic repeat begins push-to-talk");
+	assert!(
+		h.host.recording(),
+		"metronomic repeat begins push-to-talk; key arrival/repaint times: {timings:?}",
+	);
 	assert_eq!(h.host.composer_text(), "hi", "pre-burst spaces are tracked back");
 	assert!(matches!(h.commands.try_recv(), Ok(HostCommand::PushToTalk { active: true })));
 	// Release: native polling advances the same presentation-clock deadline
