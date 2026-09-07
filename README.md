@@ -109,6 +109,9 @@ names are `omp-` prefixed; directory names are not.
 
 ## Building
 
+Start with `just doctor` for offline prerequisite checks; see
+[build prerequisites](docs/building.md) for installation and proof limits.
+
 On Apple Silicon, `.cargo/config.toml` currently requires Homebrew LLD at
 `/opt/homebrew/bin/ld64.lld` (`brew install lld`). Run `just setup-python`
 before builds that link embedded Python.

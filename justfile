@@ -12,6 +12,16 @@ default:
 # Setup
 # ---------------------------------------------------------------------------
 
+# Diagnose build prerequisites without compiling or downloading.
+[group('setup')]
+doctor:
+    @command -v python3 >/dev/null || { echo "Install Python 3.11+ to run the build doctor."; exit 1; }
+    python3 scripts/build-doctor.py
+
+[group('setup')]
+doctor-test:
+    python3 scripts/build-doctor-test.py
+
 # One-time embedded-Python fetch crates/py needs before it builds; re-run freely, skips work once the stamp matches crates/py/requirements.txt.
 [group('setup')]
 setup-python:
