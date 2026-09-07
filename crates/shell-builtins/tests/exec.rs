@@ -330,7 +330,14 @@ fn executes_unix_behavior_corpus() {
 		Case { script: "echo hello | tr a-z A-Z", stdout: "HELLO\n", stderr: "", exit: 0 },
 		Case { script: "diff <(echo a) <(echo a); echo $?", stdout: "0\n", stderr: "", exit: 0 },
 		Case { script: "timeout 0.2 sleep 5; echo $?", stdout: "124\n", stderr: "", exit: 0 },
-		Case { script: "ps >/dev/null && echo ok", stdout: "ok\n", stderr: "", exit: 0 },
+		// Select this shell explicitly: macOS's default selection excludes
+		// processes without a terminal, as on a hosted test runner.
+		Case {
+			script: r#"pid=$(ps -p $$ -o pid=); [ "$pid" -eq "$$" ] && echo ok"#,
+			stdout: "ok\n",
+			stderr: "",
+			exit:   0,
+		},
 	];
 
 	for case in &cases {
