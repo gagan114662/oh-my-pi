@@ -64,6 +64,9 @@ jobs:
       - name: Test lint rules
         run: cargo test --release --locked --manifest-path tools/lintx/Cargo.toml
 
+      - name: Test build prerequisite diagnostics
+        run: python3 scripts/build-doctor-test.py
+
       - name: Publish format and source-contract result
         if: always()
         env:
@@ -302,6 +305,22 @@ jobs:
           restore-keys: |
             cargo-p7-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
             cargo-p7-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Prove Linux move attribute preservation
+        run: |
+          set -o pipefail
+          cargo nextest run --profile ci -p omp-shell-builtins --lib --locked \
+            -E 'test(xattr) | test(cross_filesystem_fallback)' 2>&1 | tee target/linux-xattr-proof.log
+          cargo test --doc -p omp-shell-builtins --locked
+
+      - name: Publish Linux attribute proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-xattr-proof
+          path: target/linux-xattr-proof.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Run terminal proof P7 on Linux PTY
         env:
