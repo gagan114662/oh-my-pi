@@ -23,7 +23,8 @@ expression: "rows.join(\"\\n\")"
 │                          │                                                                       │
 │                          │                                                                       │
 ╰──────────────────────────┴───────────────────────────────────────────────────────────────────────╯
- Tip: Spaghetti code? Try complaining with /omfg
+ Tip: Need a cheap nested model call? Use `completion(x...)`. Have a big batch of tasks? Ask clanker
+      to use it!
 
 
  π  > ⬢ Fable 5 > 📁 omp > ⑂ main ▶─0%───────────────────────────────────────────────────────────────┃───────────────1M─
