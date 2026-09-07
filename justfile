@@ -96,6 +96,11 @@ lintx-test:
 adr-paths:
     python3 scripts/check-adr-paths.py
 
+# Every incomplete architecture record must identify its remaining gap.
+[group('lint')]
+adr-status:
+    python3 scripts/check-adr-status.py
+
 # Enforce provider-as-data rules against the live inference crate.
 [group('format & lint')]
 lint-models:
@@ -115,7 +120,7 @@ lintx-fix *paths='crates':
 # crates stays advisory (arc-struct/mutex-arc fire on existing code); only the
 # model rules are gated, matching the CI format job.
 [group('format & lint')]
-lint: fmt-check clippy proto-lint lint-locked-maps lint-models adr-paths
+lint: fmt-check clippy proto-lint lint-locked-maps lint-models adr-paths adr-status
 
 # ---------------------------------------------------------------------------
 # Build & check

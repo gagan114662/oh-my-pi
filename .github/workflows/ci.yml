@@ -72,6 +72,43 @@ jobs:
           echo "Format, current ADR paths, and model ownership: $CHECK_STATUS" >> "$GITHUB_STEP_SUMMARY"
           echo "See this job's individual step logs for failures." >> "$GITHUB_STEP_SUMMARY"
 
+  adr_status:
+    name: ADR status lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check every architecture status
+        run: python3 scripts/check-adr-status.py --report target/adr-status.json
+      - name: Prove missing gaps fail the gate
+        run: python3 scripts/test-adr-status.py
+      - name: Publish architecture status evidence
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          report = Path("target/adr-status.json")
+          if not report.exists():
+              raise SystemExit("ADR status evidence is missing")
+          data = json.loads(report.read_text())
+          print("| Architecture record | Status | Explicit gap |")
+          print("| --- | --- | --- |")
+          for row in data["records"]:
+              gap = 'yes' if row['gap'] else ('MISSING' if row['status'] == 'Partial' else 'not required')
+              print(f"| {row['path']} | {row['status']} | {gap} |")
+          for failure in data["failures"]:
+              print(f"Violation: {failure['path']}:{failure['line']}: {failure['reason']}")
+          PY
+      - name: Upload architecture status evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: adr-status-evidence
+          path: target/adr-status.json
+          if-no-files-found: error
+          retention-days: 14
+
   runtime_spec:
     name: Runtime symbol and dependency contracts
     runs-on: ubuntu-24.04
@@ -110,7 +147,7 @@ jobs:
 
   rust:
     name: Rust workspace and acceptance proofs
-    needs: [format, runtime_spec, licenses]
+    needs: [format, adr_status, runtime_spec, licenses]
     runs-on: macos-15
     timeout-minutes: 120
     steps:
