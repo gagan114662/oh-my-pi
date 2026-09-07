@@ -526,6 +526,21 @@ jobs:
           path: target/approved-scope-proof/
           if-no-files-found: error
 
+      - name: Prove authenticated proxy header boundaries
+        run: |
+          set -o pipefail
+          mkdir -p target/proxy-header-proof
+          cargo nextest run --profile ci --locked -p omp-envd --lib -E 'test(headers_are_bounded_cumulatively_and_by_count)' --no-tests fail --success-output immediate 2>&1 | tee target/proxy-header-proof/nextest.log
+          cargo test --doc --locked -p omp-envd 2>&1 | tee target/proxy-header-proof/doctests.log
+
+      - name: Publish proxy header boundary evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proxy-header-boundaries
+          path: target/proxy-header-proof/
+          if-no-files-found: error
+
       - name: Prove Linux environment host contracts
         env:
           CARGO_TERM_COLOR: never
