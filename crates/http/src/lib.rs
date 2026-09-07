@@ -90,3 +90,49 @@ fn build_client(
 	tracing::debug!("HTTP client pool initialized");
 	Client::from(client)
 }
+
+/// Failure while collecting a response within the caller's byte ceiling.
+#[derive(Debug, thiserror::Error)]
+pub enum BodyError {
+	/// The declared or streamed body exceeds the configured ceiling.
+	#[error("HTTP response exceeds the {limit}-byte body limit")]
+	TooLarge {
+		/// Maximum retained response bytes.
+		limit: usize,
+	},
+	/// Reading the transport failed, including an expired request timeout.
+	#[error("HTTP response transport failed: {0}")]
+	Transport(#[from] reqwest::Error),
+}
+
+/// Collects at most `limit` response bytes, rejecting oversized bodies.
+///
+/// Checks both Content-Length and actual streamed bytes. Dropping this future
+/// drops its response stream; request deadlines set on the request builder
+/// continue to apply while the body is read. The caller owns byte/deadline
+/// policy, so streaming provider clients are not assigned a global limit.
+pub async fn read_bounded(
+	mut response: reqwest::Response,
+	limit: usize,
+) -> Result<bytes::Bytes, BodyError> {
+	if response
+		.content_length()
+		.is_some_and(|length| length > limit as u64)
+	{
+		return Err(BodyError::TooLarge { limit });
+	}
+	let mut body = bytes::BytesMut::with_capacity(
+		response
+			.content_length()
+			.and_then(|length| usize::try_from(length).ok())
+			.unwrap_or_default()
+			.min(limit),
+	);
+	while let Some(chunk) = response.chunk().await? {
+		if chunk.len() > limit.saturating_sub(body.len()) {
+			return Err(BodyError::TooLarge { limit });
+		}
+		body.extend_from_slice(&chunk);
+	}
+	Ok(body.freeze())
+}
