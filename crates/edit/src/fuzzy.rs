@@ -1171,6 +1171,25 @@ pub fn replace_text(
 	all: bool,
 	threshold: Option<f64>,
 ) -> Result<ReplaceResult, EditError> {
+	let (bom, body) = crate::text::strip_bom(content);
+	let (_, old_body) = crate::text::strip_bom(old_text);
+	let (_, new_body) = crate::text::strip_bom(new_text);
+	let mut result = replace_text_body(body, old_body, new_body, fuzzy, all, threshold)?;
+	if !bom.is_empty() {
+		result.content.insert_str(0, bom);
+	}
+	Ok(result)
+}
+
+// A leading BOM is document metadata, not indentation in a fuzzy match.
+fn replace_text_body(
+	content: &str,
+	old_text: &str,
+	new_text: &str,
+	fuzzy: bool,
+	all: bool,
+	threshold: Option<f64>,
+) -> Result<ReplaceResult, EditError> {
 	if old_text.is_empty() {
 		return Err(EditError::apply("oldText must not be empty."));
 	}
@@ -1284,6 +1303,20 @@ mod tests {
 		assert_eq!(multiple.occurrences, Some(2));
 		assert_eq!(multiple.occurrence_lines, Some(vec![1, 3]));
 		assert_eq!(multiple.occurrence_previews.as_ref().map(Vec::len), Some(2));
+	}
+
+	#[test]
+	fn replacement_keeps_one_bom_for_exact_all_and_missing_matches() {
+		let replaced = replace_text("\u{feff}old old", "old", "new", false, true, None).unwrap();
+		assert_eq!(replaced.count, 2);
+		assert_eq!(replaced.content, "\u{feff}new new");
+		let missing = replace_text("\u{feff}old", "absent", "new", false, false, None).unwrap();
+		assert_eq!(missing.count, 0);
+		assert_eq!(missing.content, "\u{feff}old");
+		let explicit =
+			replace_text("\u{feff}old", "\u{feff}old", "\u{feff}new", false, false, None).unwrap();
+		assert_eq!(explicit.count, 1);
+		assert_eq!(explicit.content, "\u{feff}new");
 	}
 
 	#[test]
