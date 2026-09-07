@@ -446,7 +446,7 @@ fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 		streaming_edit_script(),
 		tool_script(&[("shell-1", "bash", json!({ "command": "printf 'shell-ok\\n'" }))]),
 		metered_text_script("The deterministic tool sequence is complete."),
-		tool_script(&[("slow-shell", "bash", json!({ "command": command }))]),
+		tool_script(&[("slow-shell", "bash", json!({ "command": command, "timeout": 0 }))]),
 	]
 }
 
@@ -853,6 +853,10 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	fs::create_dir(&metadata_dir).expect("project metadata directory");
 	fs::set_permissions(&metadata_dir, <fs::Permissions>::from_mode(0o755))
 		.expect("use standard project metadata permissions");
+	// This proof owns foreground lifetime with a release barrier. Automatic
+	// backgrounding is a separate contract and must not race the input checks.
+	fs::write(metadata_dir.join("config.cfg"), "sv_shell_auto_background_enabled 0\n")
+		.expect("disable auto-background for the foreground interruption fixture");
 
 	let shell_release = project.join(".p7-shell-release");
 	let _shell_barrier = ShellBarrier(shell_release.clone());
@@ -989,7 +993,26 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	assert_eq!(info.get("rows").and_then(Value::as_u64), Some(32), "resize rows: {info}");
 	assert_eq!(info.get("cols").and_then(Value::as_u64), Some(92), "resize cols: {info}");
 
+	// Ctrl+C clears the draft; it is deliberately not the interrupt binding.
+	debug.keys("'clear-only P7 draft'");
+	let draft =
+		wait_snapshot(&mut debug, &raw_capture, "draft entered during foreground tool", |snapshot| {
+			snapshot.combined().contains("clear-only P7 draft")
+				&& slow_shell_record(&journal(&session_path)).1.is_none()
+		});
+	assert_surface(&draft, "draft before clearing");
 	debug.keys("ctrl+c");
+	let cleared =
+		wait_snapshot(&mut debug, &raw_capture, "Ctrl+C clears without cancelling", |snapshot| {
+			let surface = snapshot.combined();
+			surface.contains("bash running")
+				&& !surface.contains("clear-only P7 draft")
+				&& slow_shell_record(&journal(&session_path)).1.is_none()
+				&& !shell_release.exists()
+		});
+	assert_surface(&cleared, "draft cleared while tool remains live");
+	// Escape is cl_interrupt and reaches the active turn's cancellation token.
+	debug.keys("esc");
 	let interrupted =
 		wait_snapshot(&mut debug, &raw_capture, "turn interrupted and responsive", |snapshot| {
 			let surface = snapshot.combined();
@@ -1005,8 +1028,10 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	let omp_journal::data::ToolResult::Outcome { outcome, .. } = result else {
 		panic!("slow-shell produced a tool fault instead of cooperative cancellation");
 	};
-	let terminal: omp_tool::CallOutcome<Value, Value> =
-		serde_json::from_str(outcome.get()).expect("typed terminal");
+	let terminal: omp_tool::CallOutcome<Value, Value> = serde_json::from_str(outcome.get())
+		.unwrap_or_else(|error| {
+			panic!("slow-shell must cancel, never detach: {error}; terminal={}", outcome.get())
+		});
 	assert!(
 		matches!(terminal, omp_tool::CallOutcome::Aborted {
 			abort: omp_tool::Abort::Interrupted { .. },
@@ -1018,7 +1043,8 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	assert!(interrupted_journal.contains("event: msg.assistant.end@1"));
 	assert_journal_chain(&interrupted_journal);
 
-	debug.keys("ctrl+c");
+	// The documented double-Ctrl+C gesture exits from the idle composer.
+	debug.keys("ctrl+c ctrl+c");
 	drop(debug);
 	let before = process.before.clone();
 	let (status, raw, stdout, stderr, after) = process.wait(READY_TIMEOUT);
