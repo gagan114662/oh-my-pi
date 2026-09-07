@@ -490,7 +490,7 @@ impl Mutations for AppServices {
 			Mutation::DeleteSession { id } => Ok(ready(
 				session_ops::delete(&self.state, &id).map(|()| Str::new_static("Session deleted")),
 			)),
-			Mutation::ResetUsage { target } => Ok(ready(usage::reset(&self.state, &target))),
+			Mutation::ResetUsage { target } => usage::reset(&self.state, &target),
 		}
 	}
 }
