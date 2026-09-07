@@ -87,7 +87,7 @@ fn tlc_traces_refine_public_slots_history_lifecycle_and_rendered_delivery() {
 				if step.mode[index] == "Mutable" {
 					slots.set(ids[index], text.as_str());
 				} else {
-					slots.append(ids[index], &format!("{text}\n"));
+					slots.append(ids[index], &text);
 					// TLC Update contains the visible snapshot. The default stream
 					// root reveals it over animation ticks; these are history-free
 					// stutters, not deliveries. Advance a fixed bounded frame budget
