@@ -190,7 +190,15 @@ def summarize(metadata, runs):
 def invoke(command, log, stdout=None):
     if stdout is not None:
         with stdout.open('w') as out, log.open('w') as err:
-            return subprocess.run(command, stdout=out, stderr=err).returncode
+            # Keep machine-readable stdout isolated, but expose compilation
+            # progress immediately instead of hiding it until discovery fails.
+            with subprocess.Popen(command, stdout=out, stderr=subprocess.PIPE,
+                                  text=True, errors='replace') as process:
+                for line in process.stderr:
+                    print(line, end='', flush=True)
+                    err.write(line)
+                    err.flush()
+                return process.wait()
     with log.open('w') as output:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
         for line in process.stdout:
@@ -237,7 +245,6 @@ def capture(args):
     run['discovery_exit'] = invoke(listing, folder / 'list.log', folder / 'list.json')
     save(folder / 'run.json', run)
     if run['discovery_exit'] != 0:
-        print((folder / 'list.log').read_text())
         return run['discovery_exit']
     # A prior phase's report must never be mistaken for this run's execution.
     args.junit.unlink(missing_ok=True)

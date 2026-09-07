@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Negative nextest JSON/JUnit fixtures at the binary/package evidence boundary."""
+from contextlib import redirect_stdout
+import io
+import sys
 import importlib.util
 import json
 from pathlib import Path
@@ -97,6 +100,18 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(rows['omp-a']['skipped'], 1)
         self.assertEqual(rows['omp-a']['missing'], 1)
         self.assertEqual(report['status'], 'failed')
+
+    def test_discovery_streams_diagnostics_without_polluting_json_or_losing_failure(self):
+        log = self.root / 'compile.log'
+        output = self.root / 'list.json'
+        console = io.StringIO()
+        script = 'import sys,json; print(json.dumps({"test-count": 0})); print("compiling fixture", file=sys.stderr); sys.exit(7)'
+        with redirect_stdout(console):
+            code = inventory.invoke([sys.executable, '-c', script], log, output)
+        self.assertEqual(code, 7)
+        self.assertEqual(json.loads(output.read_text()), {'test-count': 0})
+        self.assertEqual(log.read_text(), 'compiling fixture\n')
+        self.assertEqual(console.getvalue(), 'compiling fixture\n')
 
     def test_capture_preserves_failed_exit_and_discards_stale_junit(self):
         inventory.save(self.root / 'metadata.json', self.metadata)
