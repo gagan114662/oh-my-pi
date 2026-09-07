@@ -762,7 +762,7 @@ mod tests {
 				_: Duration,
 				_: CancellationToken,
 			) -> impl Future<Output = Result<Payload, Fault>> + Send + '_ {
-				let rendered = debug_render::render(Action::Variables, &self.data);
+				let rendered = crate::debug_render::render(Action::Variables, &self.data);
 				std::future::ready(Ok(Payload {
 					action:   Action::Variables,
 					session:  None,
