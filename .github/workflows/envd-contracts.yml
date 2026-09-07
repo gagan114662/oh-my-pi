@@ -5,6 +5,7 @@ on:
     branches: [fix/audit-ci-gates, omp2]
     paths:
       - crates/envd/**
+      - crates/py/**
       - .github/workflows/envd-contracts.yml
   workflow_dispatch:
 
@@ -66,18 +67,21 @@ jobs:
             cargo-p7-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
             cargo-p7-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Run all environment host tests and doctests
+      - name: Run environment host tests, Python startup contract, and doctests
         shell: bash
         run: |
           mkdir -p "$OMP_ENVD_CONTRACT_DIR"
           set +e
           cargo nextest run --profile ci --locked -p omp-envd --lib --tests --no-tests fail 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/nextest.log"
           test_status=${PIPESTATUS[0]}
-          cargo test --doc --locked -p omp-envd 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/doctests.log"
+          cargo nextest run --profile ci --locked -p omp-py --test control_registration_contract --no-tests fail 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/startup.log"
+          startup_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-envd -p omp-py 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/doctests.log"
           doc_status=${PIPESTATUS[0]}
           printf '%s\n' "$test_status" > "$OMP_ENVD_CONTRACT_DIR/nextest.exit"
+          printf '%s\n' "$startup_status" > "$OMP_ENVD_CONTRACT_DIR/startup.exit"
           printf '%s\n' "$doc_status" > "$OMP_ENVD_CONTRACT_DIR/doctests.exit"
-          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+          if [ "$test_status" -ne 0 ] || [ "$startup_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
       - name: Publish environment host result
         if: always()
         run: |
@@ -85,13 +89,15 @@ jobs:
           import os, re
           from pathlib import Path
           root = Path(os.environ['OMP_ENVD_CONTRACT_DIR'])
-          log = (root/'nextest.log').read_text(errors='replace') if (root/'nextest.log').exists() else ''
-          summaries = re.findall(r'Summary[^\n]*', log)
-          exits = {name: int((root/(name+'.exit')).read_text()) if (root/(name+'.exit')).exists() else None for name in ('nextest', 'doctests')}
+          summaries = {}
+          for name in ('nextest', 'startup'):
+              log = (root/(name+'.log')).read_text(errors='replace') if (root/(name+'.log')).exists() else ''
+              summaries[name] = re.findall(r'Summary[^\n]*', log)
+          exits = {name: int((root/(name+'.exit')).read_text()) if (root/(name+'.exit')).exists() else None for name in ('nextest', 'startup', 'doctests')}
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
               out.write('## Environment host execution\n\nRevision: `' + os.environ['GITHUB_SHA'] + '`\n\n')
-              out.write('\n'.join(summaries) + '\n\nExit codes: `' + str(exits) + '`\n')
-          if not summaries or any(code != 0 for code in exits.values()):
+              out.write('\n'.join(name + ': ' + ' '.join(rows) for name, rows in summaries.items()) + '\n\nExit codes: `' + str(exits) + '`\n')
+          if any(not rows for rows in summaries.values()) or any(code != 0 for code in exits.values()):
               raise SystemExit('Missing or failed environment host evidence')
           PYREPORT
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
