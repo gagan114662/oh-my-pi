@@ -13,7 +13,7 @@ use std::{
 		fd::{self, AsFd as _, AsRawFd as _},
 		unix::net::UnixStream,
 	},
-	path::Path,
+	path::{Path, PathBuf},
 	process::{self, Child, Command, Stdio},
 	sync::{
 		Arc,
@@ -426,17 +426,27 @@ fn completed(reason: FinishReason, blocks: usize) -> ChatEvent {
 	})
 }
 
-fn scripts(_shell_release: &Path) -> Vec<FakeScript> {
+/// Releases the fixture process even when an earlier assertion unwinds.
+struct ShellBarrier(PathBuf);
+impl Drop for ShellBarrier {
+	fn drop(&mut self) {
+		let _ = fs::write(&self.0, b"release");
+	}
+}
+
+fn scripts(shell_release: &Path) -> Vec<FakeScript> {
+	let quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+	let command = format!(
+		"printf 'interrupt-ready\\n'; printf ready > {}; while [ ! -f {} ]; do sleep 0.05; done",
+		quote(&shell_release.with_extension("started")),
+		quote(shell_release),
+	);
 	vec![
 		tool_script(&[("read-1", "read", json!({ "path": "scratch.txt" }))]),
 		streaming_edit_script(),
 		tool_script(&[("shell-1", "bash", json!({ "command": "printf 'shell-ok\\n'" }))]),
 		metered_text_script("The deterministic tool sequence is complete."),
-		tool_script(&[(
-			"slow-shell",
-			"bash",
-			json!({ "command": "printf 'interrupt-ready\\n'; sleep 30" }),
-		)]),
+		tool_script(&[("slow-shell", "bash", json!({ "command": command }))]),
 	]
 }
 
@@ -728,6 +738,33 @@ fn journal(path: &Path) -> String {
 	fs::read_to_string(path).expect("read session journal")
 }
 
+/// Decode only committed journal frames and correlate the exact scripted call.
+fn slow_shell_record(
+	text: &str,
+) -> (Option<omp_journal::EntryId>, Option<omp_journal::data::ToolResult>) {
+	let mut scanner = omp_journal::sse::Scanner::new(text.as_bytes());
+	let mut call = None;
+	let mut result = None;
+	while let Some(frame) = scanner.next() {
+		let entry = frame.expect("committed journal frame decodes").entry;
+		if entry.kind.name == omp_journal::kind::TOOL_CALL {
+			let payload: omp_journal::data::ToolCall =
+				serde_json::from_str(&entry.data).expect("typed tool call");
+			if payload.call_id == "slow-shell" {
+				assert_eq!(payload.name, "bash");
+				assert!(call.replace(entry.id).is_none(), "slow-shell dispatched once");
+			}
+		} else if entry.kind.name == omp_journal::kind::TOOL_RESULT
+			&& call.is_some()
+			&& entry.by == call
+		{
+			assert!(result.is_none(), "slow-shell settles once");
+			result = Some(serde_json::from_str(&entry.data).expect("typed tool result"));
+		}
+	}
+	(call, result)
+}
+
 fn assert_journal_chain(text: &str) {
 	let frames = text
 		.split("\n\n")
@@ -817,7 +854,9 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	fs::set_permissions(&metadata_dir, <fs::Permissions>::from_mode(0o755))
 		.expect("use standard project metadata permissions");
 
-	let shell_release = scratch.path().join("unused-shell-release");
+	let shell_release = project.join(".p7-shell-release");
+	let _shell_barrier = ShellBarrier(shell_release.clone());
+	let shell_started = shell_release.with_extension("started");
 	let gateway_socket = scratch.path().join("gateway.sock");
 	let debug_socket = scratch.path().join("tui-debug.sock");
 	let gateway = ScriptedGateway::start(scratch.path(), &gateway_socket, &shell_release).await;
@@ -917,7 +956,16 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	gateway.release(4);
 	let running = wait_snapshot(&mut debug, &raw_capture, "interruptible bash live", |snapshot| {
 		let surface = snapshot.combined();
-		surface.contains("bash running") && surface.contains("\"terminal\":false")
+		let records = journal(&session_path);
+		let (call, result) = slow_shell_record(&records);
+		surface.contains("bash running")
+			&& surface.contains("interrupt-ready")
+			&& fs::read_to_string(&shell_started).is_ok_and(|text| text == "ready")
+			&& !shell_release.exists()
+			&& call.is_some()
+			&& result.is_none()
+			&& records.matches("event: tool.call@1").count() == 4
+			&& records.matches("event: tool.result@1").count() == 3
 	});
 	assert_surface(&running, "interruptible bash");
 
@@ -929,7 +977,7 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	// card, band, and composer must survive the rebuild.
 	let resized = wait_snapshot(&mut debug, &raw_capture, "streaming resize", |snapshot| {
 		let surface = snapshot.combined();
-		surface.contains("sleep 30")
+		surface.contains("interrupt-ready")
 			&& surface.contains("interrupt the next tool")
 			&& surface.contains(COMPOSER_PROMPT)
 	});
@@ -945,15 +993,28 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	let interrupted =
 		wait_snapshot(&mut debug, &raw_capture, "turn interrupted and responsive", |snapshot| {
 			let surface = snapshot.combined();
-			surface.contains(COMPOSER_PROMPT)
-				&& journal(&session_path)
-					.matches("event: tool.result@1")
-					.count() >= 4
+			surface.contains(COMPOSER_PROMPT) && slow_shell_record(&journal(&session_path)).1.is_some()
 		});
 	assert_surface(&interrupted, "interrupt");
 	let interrupted_journal = journal(&session_path);
 	assert!(interrupted_journal.matches("event: tool.call@1").count() >= 4);
-	assert!(interrupted_journal.matches("event: tool.result@1").count() >= 4);
+	assert_eq!(interrupted_journal.matches("event: tool.result@1").count(), 4);
+	assert!(!shell_release.exists(), "the fixture never released the running command");
+	let (_, result) = slow_shell_record(&interrupted_journal);
+	let result = result.expect("slow-shell has a correlated terminal");
+	let omp_journal::data::ToolResult::Outcome { outcome, .. } = result else {
+		panic!("slow-shell produced a tool fault instead of cooperative cancellation");
+	};
+	let terminal: omp_tool::CallOutcome<Value, Value> =
+		serde_json::from_str(outcome.get()).expect("typed terminal");
+	assert!(
+		matches!(terminal, omp_tool::CallOutcome::Aborted {
+			abort: omp_tool::Abort::Interrupted { .. },
+			kind: omp_tool::AbortKind::Cancelled,
+			..
+		}),
+		"slow-shell must durably record interruption, not natural completion: {terminal:?}"
+	);
 	assert!(interrupted_journal.contains("event: msg.assistant.end@1"));
 	assert_journal_chain(&interrupted_journal);
 
