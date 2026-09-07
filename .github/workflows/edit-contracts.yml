@@ -1,0 +1,58 @@
+name: Edit engine contracts
+
+on:
+  push:
+    branches: [fix/audit-ci-gates, omp2]
+    paths:
+      - crates/edit/**
+      - .github/workflows/edit-contracts.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  edit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Run every edit-engine test and doctest
+        shell: bash
+        run: |
+          mkdir -p target/edit-contracts
+          set +e
+          cargo nextest run --profile ci --locked -p omp-edit --no-tests fail 2>&1 | tee target/edit-contracts/nextest.log
+          test_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-edit 2>&1 | tee target/edit-contracts/doctests.log
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > target/edit-contracts/nextest.exit
+          printf '%s\n' "$doc_status" > target/edit-contracts/doctests.exit
+          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+      - name: Publish execution summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          root = Path('target/edit-contracts')
+          summaries = re.findall(r'Summary[^\n]*', (root / 'nextest.log').read_text(errors='replace'))
+          exits = {name: int((root / (name + '.exit')).read_text()) for name in ('nextest', 'doctests')}
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as report:
+              report.write('## Edit engine execution\n\nRevision: `' + os.environ['GITHUB_SHA'] + '`\n\n')
+              report.write('\n'.join(summaries) + '\n\nExit codes: `' + str(exits) + '`\n')
+          if not summaries or any(code != 0 for code in exits.values()):
+              raise SystemExit('Missing or failed execution evidence')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: edit-engine-contracts
+          path: target/edit-contracts/
+          if-no-files-found: error

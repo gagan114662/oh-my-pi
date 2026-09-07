@@ -1287,6 +1287,24 @@ mod tests {
 	}
 
 	#[test]
+	fn typographic_quotes_match_only_when_fuzzy_is_allowed_and_remain_ambiguous() {
+		for (content, target) in [("say “hello”", "say \"hello\""), ("it’s fine", "it's fine")]
+		{
+			assert!(
+				find_match(content, target, &options(false))
+					.matched
+					.is_none()
+			);
+			let found = find_match(content, target, &options(true)).matched.unwrap();
+			assert_eq!(found.actual_text, content);
+			assert_eq!(found.confidence, 1.0);
+		}
+		let ambiguous = find_match("say “hello”\nsay ”hello“", "say \"hello\"", &options(true));
+		assert!(ambiguous.matched.is_none());
+		assert_eq!(ambiguous.fuzzy_matches, Some(2));
+	}
+
+	#[test]
 	fn tab_space_and_internal_whitespace_normalization() {
 		for (content, target) in [
 			("\tfoo\n\t\tbar\n\tbaz", "  foo\n    bar\n  baz"),

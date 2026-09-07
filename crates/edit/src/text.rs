@@ -302,8 +302,8 @@ pub fn normalize_for_fuzzy(line: &str) -> String {
 	let mut in_space = false;
 	for ch in trimmed.chars() {
 		let mapped = match ch {
-			'"' | '\u{201E}' | '\u{201F}' | '\u{AB}' | '\u{BB}' => '"',
-			'\'' | '\u{201A}' | '\u{201B}' | '`' | '\u{B4}' => '\'',
+			'"' | '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' | '\u{AB}' | '\u{BB}' => '"',
+			'\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' | '`' | '\u{B4}' => '\'',
 			'\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2212}' => '-',
 			' ' | '\t' => ' ',
 			other => other,
@@ -476,7 +476,7 @@ mod tests {
 
 	#[test]
 	fn fuzzy_normalization_folds_punctuation() {
-		assert_eq!(normalize_for_fuzzy("  a \t b \u{201C}x\u{2014}y\u{201F}  "), "a b \u{201C}x-y\"");
+		assert_eq!(normalize_for_fuzzy("  a \t b \u{201C}x\u{2014}y\u{201F}  "), "a b \"x-y\"");
 		assert_eq!(normalize_unicode(" caf\u{E9} \u{2260} 1\u{2010}"), "caf\u{E9} != 1-");
 	}
 }
