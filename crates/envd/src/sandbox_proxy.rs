@@ -468,9 +468,6 @@ fn http<S: ClientStream>(
 		if line == b"\r\n" || line == b"\n" {
 			break;
 		}
-		if headers.len() >= MAX_HEADER_COUNT {
-			return http_deny(client);
-		}
 		let line = std::str::from_utf8(&line).map_err(invalid_data)?;
 		let Some((name, value)) = line.trim_end().split_once(':') else {
 			return http_deny(client);
