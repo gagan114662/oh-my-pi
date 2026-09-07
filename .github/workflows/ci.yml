@@ -317,6 +317,7 @@ jobs:
     timeout-minutes: 120
     env:
       TEST_INVENTORY_DIR: target/test-inventory/${{ github.run_id }}-${{ github.run_attempt }}
+      OMP_OUTPUT_PROOF_DIR: target/output-proof/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
 
@@ -431,7 +432,7 @@ jobs:
           python3 - <<'PY_OUTPUT'
           import json, os
           from pathlib import Path
-          rows = json.loads(Path('target/e2e-artifacts/output-completeness.json').read_text())
+          rows = json.loads((Path(os.environ['OMP_OUTPUT_PROOF_DIR']) / 'output-completeness.json').read_text())
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as report:
               report.write('## Actual 2MiB Bash output\n\n')
               report.write('Inline delivery and verified artifact recovery are different claims.\n\n```json\n')
@@ -443,7 +444,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: output-completeness-macos-arm64
-          path: target/e2e-artifacts/output-completeness.json
+          path: ${{ env.OMP_OUTPUT_PROOF_DIR }}/output-completeness.json
           if-no-files-found: error
           retention-days: 14
 

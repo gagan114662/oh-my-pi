@@ -205,10 +205,16 @@ async fn two_megabyte_bash_output_preserves_complete_truth_for_both_caller_modes
 			 "verified_raw_sha256": Str::new(Hash32::sum(&expected).to_hex().as_str()),
 		}));
 	}
-	let artifact_root = std::env::var_os("CARGO_TARGET_DIR")
+	let artifact_root = std::env::var_os("OMP_OUTPUT_PROOF_DIR")
 		.map(std::path::PathBuf::from)
-		.unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"))
-		.join("e2e-artifacts");
+		.unwrap_or_else(|| {
+			std::env::var_os("CARGO_TARGET_DIR")
+				.map(std::path::PathBuf::from)
+				.unwrap_or_else(|| {
+					std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")
+				})
+				.join("e2e-artifacts")
+		});
 	std::fs::create_dir_all(&artifact_root)?;
 	std::fs::write(
 		artifact_root.join("output-completeness.json"),
