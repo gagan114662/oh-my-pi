@@ -717,7 +717,7 @@ impl<C: omp_agent::Inference> Controller<C> {
 				},
 				message = kernel_control.recv_async() => {
 					if let Ok(message) = message {
-						self.kernel.handle_idle_control(&mut self.session, message).await?;
+						self.kernel.handle_idle_control(&mut self.session, message).await.into_diagnostic()?;
 					}
 					Flow::Idle
 				},
