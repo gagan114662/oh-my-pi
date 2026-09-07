@@ -203,3 +203,60 @@ async fn nested_callback_reentry_excludes_unrelated_and_sibling_callbacks() {
 		2
 	);
 }
+
+#[tokio::test]
+async fn cancelled_subtree_retires_queued_descendants_but_holds_running_slots_until_ack() {
+	let mut router = DispatchRouter::new(HostKey::new("project", "trusted", "hooks"), 7);
+	let request = |id| DispatchRequest {
+		id,
+		policy: CallbackConcurrency::Serialized,
+		deadline: EventDeadline { at: Instant::now() + Duration::from_secs(5) },
+		payload: CowBytes::from(Vec::new()),
+	};
+	let (_, parent) = router.dispatch("hooks", request(1)).expect("parent");
+	router.begin_control_wait("hooks", 1).expect("waiting");
+	let (_, child) = router
+		.dispatch_nested("hooks", request(2), 1)
+		.expect("child");
+	let (ready, queued) = router
+		.dispatch_nested("hooks", request(3), 1)
+		.expect("queued sibling");
+	assert!(ready.is_none());
+	let (_, unrelated) = router.dispatch("hooks", request(4)).expect("unrelated");
+	let cancelled = router.cancel_subtree("hooks", 1, true);
+	assert_eq!(cancelled, vec![(1, true), (2, true), (3, false)]);
+	assert!(router.cancel_subtree("hooks", 1, true).is_empty(), "cancellation is idempotent");
+	assert!(matches!(router.begin_control_wait("hooks", 1), Err(DispatchError::InvalidParent(1))));
+	for (id, running) in cancelled {
+		router.notify_cancelled(id, running);
+	}
+	assert_eq!(parent.response().await, Err(DispatchError::Cancelled));
+	assert_eq!(child.response().await, Err(DispatchError::Cancelled));
+	assert_eq!(queued.response().await, Err(DispatchError::Cancelled));
+	assert!(
+		router
+			.complete("hooks", 1, 7, Ok(CowBytes::from(Vec::new())))
+			.expect("parent ack")
+			.is_none(),
+		"cancelled child still unwinding"
+	);
+	assert_eq!(
+		router
+			.complete("hooks", 2, 7, Ok(CowBytes::from(Vec::new())))
+			.expect("child ack")
+			.expect("unrelated admitted")
+			.id,
+		4
+	);
+	assert!(
+		matches!(
+			router.complete("hooks", 3, 7, Ok(CowBytes::from(Vec::new()))),
+			Err(DispatchError::StaleCorrelation(3))
+		),
+		"queued orphan never ran"
+	);
+	router
+		.complete("hooks", 4, 7, Ok(CowBytes::from(Vec::new())))
+		.expect("unrelated completes");
+	assert!(unrelated.response().await.is_ok());
+}

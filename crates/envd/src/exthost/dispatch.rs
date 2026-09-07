@@ -1267,10 +1267,11 @@ struct Pending {
 
 #[derive(Default)]
 struct ExtensionActor {
-	running: BTreeSet<u64>,
-	waiting: BTreeMap<u64, usize>,
-	parents: BTreeMap<u64, u64>,
-	queued:  VecDeque<DispatchRequest>,
+	running:    BTreeSet<u64>,
+	cancelling: BTreeSet<u64>,
+	waiting:    BTreeMap<u64, usize>,
+	parents:    BTreeMap<u64, u64>,
+	queued:     VecDeque<DispatchRequest>,
 }
 
 /// Failure while projecting a verified extension frame into a headless sink.
@@ -1368,7 +1369,7 @@ impl DispatchRouter {
 			.actors
 			.get_mut(extension)
 			.ok_or(DispatchError::InvalidParent(parent))?;
-		if !actor.running.contains(&parent) {
+		if !actor.running.contains(&parent) || actor.cancelling.contains(&parent) {
 			return Err(DispatchError::InvalidParent(parent));
 		}
 		*actor.waiting.entry(parent).or_default() += 1;
@@ -1377,15 +1378,17 @@ impl DispatchRouter {
 
 	/// Releases one authenticated CONTROL wait; it grants no unrelated callback
 	/// entry.
-	pub fn end_control_wait(&mut self, extension: &str, parent: u64) {
+	pub fn end_control_wait(&mut self, extension: &str, parent: u64) -> bool {
 		if let Some(actor) = self.actors.get_mut(extension)
 			&& let Some(count) = actor.waiting.get_mut(&parent)
 		{
 			*count = count.saturating_sub(1);
 			if *count == 0 {
 				actor.waiting.remove(&parent);
+				return true;
 			}
 		}
+		false
 	}
 
 	fn dispatch_inner(
@@ -1399,7 +1402,9 @@ impl DispatchRouter {
 		}
 		if let Some(parent) = parent
 			&& !self.actors.get(extension.as_str()).is_some_and(|actor| {
-				actor.running.contains(&parent) && actor.waiting.contains_key(&parent)
+				actor.running.contains(&parent)
+					&& !actor.cancelling.contains(&parent)
+					&& actor.waiting.contains_key(&parent)
 			}) {
 			return Err(DispatchError::InvalidParent(parent));
 		}
@@ -1517,15 +1522,71 @@ impl DispatchRouter {
 				actual:   generation,
 			});
 		}
-		let _ = record.response.send(result);
+		let _ = record.response.try_send(result);
 		let Some(actor) = self.actors.get_mut(extension) else {
 			return Ok(None);
 		};
 		actor.running.remove(&id);
+		actor.cancelling.remove(&id);
 		actor.waiting.remove(&id);
 		actor.parents.remove(&id);
 		let next = actor.next_ready();
 		Ok(next)
+	}
+
+	/// Revokes a callback subtree. Running slots remain occupied until the child
+	/// acknowledges cancellation; queued descendants are retired immediately.
+	/// Returns `(correlation, was_running)` for newly cancelled callbacks.
+	pub fn cancel_subtree(
+		&mut self,
+		extension: &str,
+		root: u64,
+		include_root: bool,
+	) -> Vec<(u64, bool)> {
+		let Some(actor) = self.actors.get_mut(extension) else {
+			return Vec::new();
+		};
+		let mut subtree = BTreeSet::from([root]);
+		loop {
+			let previous = subtree.len();
+			for (&child, parent) in &actor.parents {
+				if subtree.contains(parent) {
+					subtree.insert(child);
+				}
+			}
+			if subtree.len() == previous {
+				break;
+			}
+		}
+		if !include_root {
+			subtree.remove(&root);
+		}
+		let mut cancelled = Vec::new();
+		for id in subtree {
+			if actor.running.contains(&id) {
+				if actor.cancelling.insert(id) {
+					actor.waiting.remove(&id);
+					cancelled.push((id, true));
+				}
+			} else if let Some(position) = actor.queued.iter().position(|request| request.id == id) {
+				actor.queued.remove(position);
+				actor.parents.remove(&id);
+				cancelled.push((id, false));
+			}
+		}
+		cancelled
+	}
+
+	/// Wakes the cancelled waiter only after the host has revoked its authority.
+	pub fn notify_cancelled(&self, id: u64, was_running: bool) {
+		let mut pending = self.pending.lock();
+		if was_running {
+			if let Some(record) = pending.get(id) {
+				let _ = record.response.try_send(Err(DispatchError::Cancelled));
+			}
+		} else if let Some(record) = pending.remove(id) {
+			let _ = record.response.try_send(Err(DispatchError::Cancelled));
+		}
 	}
 
 	/// Removes a callback which has not entered the child actor yet.
@@ -1554,7 +1615,7 @@ impl DispatchRouter {
 	/// closes.
 	pub fn disconnect(&mut self) {
 		self.pending.lock().retain(|_, record| {
-			let _ = record.response.send(Err(DispatchError::HostGone));
+			let _ = record.response.try_send(Err(DispatchError::HostGone));
 			false
 		});
 		self.actors.clear();
@@ -1567,7 +1628,7 @@ impl DispatchRouter {
 			if record.deadline.at > now {
 				return true;
 			}
-			let _ = record.response.send(Err(DispatchError::Deadline));
+			let _ = record.response.try_send(Err(DispatchError::Deadline));
 			false
 		});
 	}
@@ -1583,7 +1644,10 @@ impl ExtensionActor {
 		let mut suspended = 0;
 		let mut ancestor = parent;
 		while let Some(parent) = ancestor {
-			if !self.running.contains(&parent) || !self.waiting.contains_key(&parent) {
+			if !self.running.contains(&parent)
+				|| self.cancelling.contains(&parent)
+				|| !self.waiting.contains_key(&parent)
+			{
 				return false;
 			}
 			suspended += 1;

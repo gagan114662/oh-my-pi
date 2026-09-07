@@ -622,6 +622,28 @@ jobs:
           path: target/approved-scope-proof/
           if-no-files-found: error
 
+      - name: Prove embedded Python context reentry
+        if: github.event_name == 'workflow_dispatch' && inputs.context_tests
+        run: |
+          set -o pipefail
+          mkdir -p target/python-context-proof
+          set +e
+          cargo nextest run --profile ci --locked -p omp-py --test context_reentry_contract --no-tests fail 2>&1 | tee target/python-context-proof/nextest.log
+          test_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-py 2>&1 | tee target/python-context-proof/doctests.log
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > target/python-context-proof/nextest.exit
+          printf '%s\n' "$doc_status" > target/python-context-proof/doctests.exit
+          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+
+      - name: Publish embedded Python context evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.context_tests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-context-reentry
+          path: target/python-context-proof/
+          if-no-files-found: error
+
       - name: Prove Linux environment host contracts
         env:
           CARGO_TERM_COLOR: never
