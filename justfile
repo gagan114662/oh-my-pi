@@ -111,9 +111,11 @@ spec-check:
 lintx-fix *paths='crates':
     cargo run --quiet --release --locked --manifest-path tools/lintx/Cargo.toml -- --fix {{ paths }}
 
-# Run every formatter-check and linter this repo defines.
+# Run every formatter-check and linter this repo enforces. `lintx` over all
+# crates stays advisory (arc-struct/mutex-arc fire on existing code); only the
+# model rules are gated, matching the CI format job.
 [group('format & lint')]
-lint: fmt-check clippy proto-lint lint-locked-maps lintx
+lint: fmt-check clippy proto-lint lint-locked-maps lint-models adr-paths
 
 # ---------------------------------------------------------------------------
 # Build & check

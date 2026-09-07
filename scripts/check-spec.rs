@@ -361,9 +361,12 @@ fn check_policy_list(policy: &TomlValue, key: &str, expected: &[&str], failures:
 fn parse_toml(path: &Path) -> TomlValue {
 	let text = fs::read_to_string(path)
 		.unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-	text
+	// toml 1.x: `Value: FromStr` parses a single *value*; a manifest is a
+	// document and must go through `Table`.
+	let table: toml::Table = text
 		.parse()
-		.unwrap_or_else(|error| panic!("cannot parse {}: {error}", path.display()))
+		.unwrap_or_else(|error| panic!("cannot parse {}: {error}", path.display()));
+	TomlValue::Table(table)
 }
 
 fn generated_spec_json() -> String {

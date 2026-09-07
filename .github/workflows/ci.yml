@@ -61,6 +61,9 @@ jobs:
       - name: Enforce model data ownership
         run: cargo run --release --locked --manifest-path tools/lintx/Cargo.toml -- --only model-gate --only model-table crates/ai/src
 
+      - name: Test lint rules
+        run: cargo test --release --locked --manifest-path tools/lintx/Cargo.toml
+
       - name: Publish format and source-contract result
         if: always()
         env:

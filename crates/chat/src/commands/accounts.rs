@@ -255,13 +255,20 @@ omp_con::cmd! {
 			if words.as_deref().is_none_or(|words| words.trim().is_empty()) {
 				return pin_session(cx, None);
 			}
-			let providers = match cx.services.providers() {
-				Ok(providers) => providers,
-				Err(error) => return PanelEvent::Notice(sf!("Cannot resolve pin target: {error}")),
+			// The catalog only disambiguates provider names; session pins must
+			// keep working when it is unavailable (remote gateway).
+			let (providers, catalog_error) = match cx.services.providers() {
+				Ok(providers) => (providers, None),
+				Err(error) => (Vec::new(), Some(error)),
 			};
 			match pin_target(words.clone(), &providers) {
 				PinTarget::CurrentSession => pin_session(cx, None),
-				PinTarget::Session(id) => pin_session(cx, Some(id.as_str())),
+				PinTarget::Session(id) => match (pin_session(cx, Some(id.as_str())), catalog_error) {
+					(PanelEvent::Notice(notice), Some(error)) => PanelEvent::Notice(sf!(
+						"{notice} Provider accounts cannot be resolved either: {error}"
+					)),
+					(event, _) => event,
+				},
 				PinTarget::Account { provider, account } => {
 					pin_account(cx, provider.as_str(), account.as_deref())
 				},
