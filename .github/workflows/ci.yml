@@ -312,7 +312,9 @@ jobs:
 
   rust:
     name: Rust workspace and acceptance proofs
-    needs: [format, adr_status, runtime_spec, licenses, roster_coverage]
+    # License compliance remains a required independent job. It produces no
+    # input for Rust verification, so do not serialize the expensive builds.
+    needs: [format, adr_status, runtime_spec, roster_coverage]
     runs-on: macos-15
     timeout-minutes: 120
     env:
