@@ -38,3 +38,36 @@ license = "MIT"
 [[tree-sitter-graphql.clarify.files]]
 path = "LICENSE"
 checksum = "5ea7d9ec06cb21ca0a800b69cd954e346bafba94620eb115c4b1fead3f3b30f8"
+
+# Local scanning keeps one candidate per SPDX expression. These crates contain
+# multiple MIT files, so scan order can select unrelated bundled dependencies or
+# omit a vendored component's attribution. Pin the actual shipped Rust sources.
+
+[rkyv_derive.clarify]
+license = "MIT"
+
+[[rkyv_derive.clarify.files]]
+path = "LICENSE"
+checksum = "635111a955495b5d8d34b8052f69656e8e45f6437f9266329077b9aad5fbe8d3"
+
+[[rkyv_derive.clarify.files]]
+path = "src/serde/LICENSE"
+checksum = "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652"
+
+[tree-sitter-scala.clarify]
+license = "MIT"
+
+[[tree-sitter-scala.clarify.files]]
+path = "LICENSE"
+checksum = "1f95ed26e1f4074074c9c7083e61c0a9e4c3b9f435745044995f3beb4ed28575"
+
+[omp-ai.clarify]
+license = "MIT"
+
+[[omp-ai.clarify.files]]
+path = "LICENSE"
+checksum = "048c9ebb09976a1c2e895d23f91dbe9114bd7858bfd7ff3b6a8f957feccbdfeb"
+
+[[omp-ai.clarify.files]]
+path = "src/local/tts/kokoro/LICENSE"
+checksum = "f56788cf46c9c6ced66996df223154709d5887762e7ec14aafc2577b5f148e4e"
