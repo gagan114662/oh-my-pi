@@ -309,6 +309,7 @@ jobs:
       - name: Prove Linux move attribute preservation
         run: |
           set -o pipefail
+          mkdir -p target
           cargo nextest run --profile ci -p omp-shell-builtins --lib --locked \
             -E 'test(xattr) | test(cross_filesystem_fallback)' 2>&1 | tee target/linux-xattr-proof.log
           cargo test --doc -p omp-shell-builtins --locked
