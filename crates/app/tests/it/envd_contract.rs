@@ -494,6 +494,7 @@ fn test_manifest(
 }
 
 fn test_config() -> ExtHostConfig {
+	super::init_extension_test_tracing();
 	ExtHostConfig::new(
 		PathBuf::from(env!("CARGO_BIN_EXE_omp")),
 		Principal::new(sf!("test"), sf!("Test")),

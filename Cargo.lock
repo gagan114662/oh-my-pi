@@ -7753,6 +7753,7 @@ dependencies = [
  "tonic-health",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "url",
  "windows-sys 0.61.2",
  "xutf",

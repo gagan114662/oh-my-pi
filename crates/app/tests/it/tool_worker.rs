@@ -710,6 +710,7 @@ fn bind_test_control(config: &mut ExtHostConfig) -> Arc<CallbackDispatcherSlot> 
 }
 
 fn test_config() -> ExtHostConfig {
+	super::init_extension_test_tracing();
 	ExtHostConfig::new(
 		env!("CARGO_BIN_EXE_omp").into(),
 		Principal::new(sf!("test"), sf!("Test")),

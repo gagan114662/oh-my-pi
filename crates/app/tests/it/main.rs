@@ -17,3 +17,17 @@ mod tool_worker;
 #[cfg(windows)]
 mod windows_named_pipe;
 mod zz_sizes;
+
+/// Keep contained extension failures visible in the failing test's output.
+#[cfg(unix)]
+fn init_extension_test_tracing() {
+	static INIT: std::sync::Once = std::sync::Once::new();
+	INIT.call_once(|| {
+		tracing_subscriber::fmt()
+			.with_max_level(tracing::Level::WARN)
+			.with_test_writer()
+			.with_ansi(false)
+			.try_init()
+			.expect("install integration-test diagnostics");
+	});
+}
