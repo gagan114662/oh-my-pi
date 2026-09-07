@@ -31,6 +31,12 @@ on:
     # `push.paths` above is kept: pushes to main are upstream syncs.
     branches: [main, omp2]
   workflow_dispatch:
+    inputs:
+      http_tests:
+        description: Run the HTTP streaming contract checkpoint in addition to normal CI
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -146,6 +152,66 @@ jobs:
           name: rust-license-inventory
           path: target/rust-license-data.json
           if-no-files-found: warn
+          retention-days: 14
+
+  http_contracts:
+    name: HTTP bounded stream contracts
+    if: github.event_name == 'workflow_dispatch' && inputs.http_tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential pkg-config
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Exercise all HTTP contract tests and doctests
+        shell: bash
+        run: |
+          mkdir -p target/http-contracts
+          set +e
+          cargo nextest run --profile ci --locked -p omp-http --no-tests fail --success-output immediate 2>&1 | tee target/http-contracts/nextest.log
+          test_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > target/http-contracts/nextest.exit
+          cargo test --doc --locked -p omp-http 2>&1 | tee target/http-contracts/doctests.log
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$doc_status" > target/http-contracts/doctests.exit
+          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+      - name: Publish observed streaming contract results
+        if: always()
+        run: |
+          mkdir -p target/http-contracts
+          python3 - <<'PY_REPORT'
+          import json, os, re
+          from pathlib import Path
+          root = Path('target/http-contracts')
+          log = (root / 'nextest.log').read_text(errors='replace') if (root / 'nextest.log').exists() else ''
+          summaries = re.findall(r'Summary[^\n]*?([0-9]+) tests? run:[^\n]*', log)
+          executed = int(summaries[-1]) if summaries else 0
+          exits = {name: int((root / f'{name}.exit').read_text()) if (root / f'{name}.exit').exists() else None for name in ('nextest', 'doctests')}
+          observations = re.findall(r'offered_bytes=[0-9]+ sent_bytes=[0-9]+ peer_closed=true', log)
+          report = {'commit': os.environ['GITHUB_SHA'], 'executed': executed, 'exit_codes': exits, 'peer_observations': observations}
+          (root / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
+          lines = ['### HTTP streaming contracts', '', f"Commit: `{report['commit']}`", '', f'Executed tests: **{executed}**; exit codes: `{exits}`.', '', 'The peer generates a 1 GiB stream in fixed-size chunks. Each observation below is printed only after the real peer observes socket closure:', '', *observations, '', 'Includes declared/chunked byte limits, an absolute request deadline during arriving body data, cancellation after consuming body bytes, and default/disabled redirect behavior.', '', 'This checkpoint does not replace the workspace-wide per-crate inventory or red-before/green-after evidence required by #45.']
+          summary = '\n'.join(lines) + '\n'
+          (root / 'summary.md').write_text(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output: output.write(summary)
+          if executed < 5 or len(observations) < 4 or any(code != 0 for code in exits.values()):
+              raise SystemExit('Missing or failed HTTP contract evidence')
+          PY_REPORT
+      - name: Upload HTTP contract evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: http-contracts-linux
+          path: target/http-contracts/
+          if-no-files-found: error
           retention-days: 14
 
   rust:
