@@ -70,6 +70,40 @@ fn workspace_root() -> PathBuf {
 	panic!("run the spec checker from inside the OMP workspace");
 }
 
+// Decorator factories have their own registration arguments. Their examples
+// carry the callback signature; the payload's name may describe its type
+// (message/query/view), but the context must remain the second argument.
+fn has_payload_context_callback(signature: &str, examples: &[&str]) -> bool {
+	if signature.trim_start().starts_with("(payload, ctx)") {
+		return true;
+	}
+	if !signature.trim_end().ends_with("-> Decorator") || examples.is_empty() {
+		return false;
+	}
+	examples.iter().all(|example| {
+		let Some((_, function)) = example.split_once("def ") else {
+			return false;
+		};
+		let Some((_, arguments)) = function.split_once('(') else {
+			return false;
+		};
+		let Some((arguments, _)) = arguments.split_once(')') else {
+			return false;
+		};
+		let mut arguments = arguments.split(',').map(str::trim);
+		let Some(payload) = arguments.next() else {
+			return false;
+		};
+		!payload.is_empty()
+			&& payload != "ctx"
+			&& payload
+				.bytes()
+				.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+			&& arguments.next() == Some("ctx")
+			&& arguments.next().is_none()
+	})
+}
+
 fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 	let symbols = runtime_symbols();
 	let mut owners = BTreeMap::<&str, &str>::new();
@@ -108,7 +142,7 @@ fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 			failures.push(format!("{} has no concrete example", symbol.public_name));
 		}
 		if symbol.callback_abi == CallbackAbi::PayloadContext
-			&& !symbol.signature.trim_start().starts_with("(payload, ctx)")
+			&& !has_payload_context_callback(symbol.signature, symbol.examples)
 		{
 			failures.push(format!("{} violates the (payload, ctx) callback ABI", symbol.public_name));
 		}
@@ -426,4 +460,33 @@ fn generated_spec_json() -> String {
 		"phase_legality": legality,
 	}))
 	.expect("runtime symbol spec is serializable")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::has_payload_context_callback;
+
+	#[test]
+	fn callback_and_decorator_signatures_are_distinct() {
+		assert!(has_payload_context_callback("(payload, ctx) -> None", &[]));
+		for name in ["payload", "message", "query", "view"] {
+			let example = format!("@ui.command(\"hello\")\nasync def callback({name}, ctx): pass");
+			assert!(has_payload_context_callback("(name: str) -> Decorator", &[&example]));
+		}
+	}
+
+	#[test]
+	fn decorator_callbacks_still_require_payload_then_context() {
+		for example in [
+			"def callback(ctx, payload): pass",
+			"def callback(payload): pass",
+			"def callback(payload, ctx, extra): pass",
+			"def callback(*payload, ctx): pass",
+			"register(callback)",
+		] {
+			assert!(!has_payload_context_callback("(name: str) -> Decorator", &[example]));
+		}
+		assert!(!has_payload_context_callback("(name: str) -> Decorator", &[]));
+		assert!(!has_payload_context_callback("(ctx, payload) -> None", &[]));
+	}
 }

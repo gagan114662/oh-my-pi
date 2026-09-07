@@ -99,6 +99,15 @@ jobs:
       - name: Check license policy and release notices
         run: just license-check
 
+      - name: Upload resolved license inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rust-license-inventory
+          path: target/rust-license-data.json
+          if-no-files-found: warn
+          retention-days: 14
+
   rust:
     name: Rust workspace and acceptance proofs
     needs: [format, runtime_spec, licenses]
@@ -224,6 +233,9 @@ jobs:
           sudo apt-get install --no-install-recommends -y pipx zstd
           command -v uv >/dev/null || pipx install uv
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Cache embedded Python
         id: python-cache
