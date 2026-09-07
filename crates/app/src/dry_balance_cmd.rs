@@ -98,7 +98,8 @@ pub async fn run(args: DryBalanceArgs) -> miette::Result<()> {
 	}
 	if args.bench {
 		bench_cmd::run(BenchArgs {
-			model:         model.key.as_str().into(),
+			command:       None,
+			model:         Some(model.key.as_str().into()),
 			data_dir:      args.data_dir,
 			runs:          Some(args.count),
 			max_tokens:    Some(512),
