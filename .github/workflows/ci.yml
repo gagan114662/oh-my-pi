@@ -535,12 +535,12 @@ jobs:
         with:
           name: managed-skill-roundtrip
           path: target/managed-skill-proof/
-      - name: Prove approved command wrapper validation
+      - name: Prove Linux shell contracts and approved command wrappers
         run: |
           set -o pipefail
           mkdir -p target/approved-scope-proof
           set +e
-          cargo nextest run --profile ci --locked -p omp-shell --lib -E 'test(commands::sandbox_tests)' --no-tests fail 2>&1 | tee target/approved-scope-proof/shell.log
+          cargo nextest run --profile ci --locked -p omp-shell --lib --tests --no-tests fail 2>&1 | tee target/approved-scope-proof/shell.log
           test_status=${PIPESTATUS[0]}
           cargo test --doc --locked -p omp-shell 2>&1 | tee target/approved-scope-proof/doctests.log
           doc_status=${PIPESTATUS[0]}
