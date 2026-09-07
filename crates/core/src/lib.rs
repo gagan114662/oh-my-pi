@@ -13,7 +13,7 @@
 /// Default User-Agent header sent by omp HTTP clients.
 pub const USER_AGENT: &str = concat!("omp/", env!("CARGO_PKG_VERSION"));
 
-pub mod append_vec;
+pub  mod append_vec;
 pub mod cache;
 pub mod cow_bytes;
 /// Stable local and UTC display-time formatting.
