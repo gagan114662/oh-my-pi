@@ -541,6 +541,36 @@ jobs:
           path: target/proxy-header-proof/
           if-no-files-found: error
 
+      - name: Prove managed skill version contracts
+        run: |
+          set -o pipefail
+          mkdir -p target/skill-version-proof
+          status=0
+          for package in omp-envd omp-tools omp-chat; do
+            case "$package" in
+              omp-envd) args=(--lib -E 'test(managed_skills::tests)');;
+              omp-tools) args=(--lib -E 'test(manage_skill::tests) | test(learn::tests)');;
+              omp-chat) args=(--test card_types);;
+            esac
+            set +e
+            cargo nextest run --profile ci --locked -p "$package" "${args[@]}" --no-tests fail 2>&1 | tee "target/skill-version-proof/$package-nextest.log"
+            test_status=${PIPESTATUS[0]}
+            cargo test --doc --locked -p "$package" 2>&1 | tee "target/skill-version-proof/$package-doctests.log"
+            doc_status=${PIPESTATUS[0]}
+            printf '%s\n' "$test_status" > "target/skill-version-proof/$package-nextest.exit"
+            printf '%s\n' "$doc_status" > "target/skill-version-proof/$package-doctests.exit"
+            if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then status=1; fi
+          done
+          exit "$status"
+
+      - name: Publish skill version evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: skill-version-contracts
+          path: target/skill-version-proof/
+          if-no-files-found: error
+
       - name: Prove Linux environment host contracts
         env:
           CARGO_TERM_COLOR: never

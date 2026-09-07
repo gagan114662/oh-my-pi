@@ -268,7 +268,10 @@ fn every_native_registered_card_accepts_its_tool_contract() {
 		tools::manage_skill::Params,
 		tools::manage_skill::MutationOutcome,
 		tools::manage_skill::Fault,
-	>("manage_skill", json!({"action":"create","name":"rust","path":"rust/SKILL.md","revision":1}));
+	>(
+		"manage_skill",
+		json!({"action":"create","name":"rust","path":"rust/SKILL.md","revision":1,"previous_version":null,"version":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
+	);
 	renders_typed::<
 		tools::security_scan::Params,
 		tools::security_scan::Payload,

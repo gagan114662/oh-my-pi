@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_stream::stream;
 use futures::Stream;
-use omp_core::{Str, StrMut, sf};
+use omp_core::{Hash32, Str, StrMut, sf};
 use omp_memory::MemoryRuntime;
 use omp_tool::{
 	ArgIssue, ArgIssueKind, CommitError, Constraint, DocEffects, Effects, Ev, IncomingParams,
@@ -20,20 +20,26 @@ use crate::manage_skill::{
 const DESCRIPTION: &str = "Capture one durable, self-contained lesson in active Mnemopi memory. \
                            Optionally create or update an isolated managed skill in the same \
                            call. The lesson remains stored when an authored skill shadows only \
-                           the optional skill mutation.";
+                           the optional skill mutation. Skill updates require expected_version \
+                           from the current SKILL.md SHA-256 receipt; skill creates omit it.";
 
 /// Optional managed-skill mutation bundled with a lesson.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillInput {
 	/// Create or update. Delete is not accepted by `learn`.
-	pub action:      LearnSkillAction,
+	pub action:           LearnSkillAction,
 	/// Kebab-case managed-skill name.
-	pub name:        Str,
+	pub name:             Str,
 	/// Prompt-safe one-line use-case description.
-	pub description: Str,
+	pub description:      Str,
 	/// Markdown body without frontmatter.
-	pub body:        Str,
+	pub body:             Str,
+	/// Exact current SKILL.md SHA-256; required for update and omitted for
+	/// create.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	#[schemars(with = "Option<String>")]
+	pub expected_version: Option<Hash32>,
 }
 
 /// Skill actions accepted inside `learn`.
@@ -68,7 +74,7 @@ impl From<LearnSkillAction> for Action {
 	}
 }
 
-/// Arguments accepted by `learn@1`.
+/// Arguments accepted by `learn@2`.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
@@ -143,11 +149,11 @@ pub struct LearnTool<A> {
 	spec:      ToolSpec,
 }
 
-/// Builds the host-free `learn@1` declaration.
+/// Builds the host-free `learn@2` declaration.
 pub fn spec() -> ToolSpec {
 	ToolSpec {
 		name:            sf!("learn"),
-		rev:             Rev { family: Str::default(), n: 1 },
+		rev:             Rev { family: Str::default(), n: 2 },
 		description:     sf!(DESCRIPTION),
 		schema:          omp_tool::schema::<Params>(),
 		constraint:      Constraint::Schema {
@@ -170,7 +176,7 @@ pub fn spec() -> ToolSpec {
 	}
 }
 
-/// Creates `learn@1` over one active Mnemopi runtime and managed-skill
+/// Creates `learn@2` over one active Mnemopi runtime and managed-skill
 /// authority.
 pub fn tool<A: ManagedSkillAuthority>(
 	memory: Arc<MemoryRuntime>,
@@ -203,6 +209,16 @@ impl<A: ManagedSkillAuthority> Tool for LearnTool<A> {
 				yield done(Err(Fault::InvalidInput));
 				return;
 			}
+			if let Some(skill) = &params.skill {
+					 let valid = match skill.action {
+						  LearnSkillAction::Create => skill.expected_version.is_none(),
+						  LearnSkillAction::Update => skill.expected_version.is_some(),
+					 };
+					 if !valid {
+						  yield Ev::Args(ArgIssue { path: Vec::new(), expected: sf!("skill.expected_version required for update and omitted for create"), kind: ArgIssueKind::Malformed, example: None, found: None });
+						  return;
+					 }
+				}
 			if let Err(error) = incoming.interruptable().committed().await {
 				yield commit_event(error);
 				return;
@@ -227,6 +243,7 @@ impl<A: ManagedSkillAuthority> Tool for LearnTool<A> {
 				name: skill.name.as_str(),
 				description: Some(skill.description.as_str()),
 				body: Some(skill.body.as_str()),
+					 expected_version: skill.expected_version,
 			}) {
 				Ok(mutation) => yield done(Ok(LearnOutcome {
 					memory_id,
@@ -262,6 +279,11 @@ fn render_outcome(outcome: &LearnOutcome) -> Str {
 			text.push_str(". Managed skill \"");
 			text.push_str(mutation.name.as_str());
 			text.push_str("\" published and registry refreshed.");
+			if let Some(version) = mutation.version {
+				text.push_str(" Version: ");
+				text.push_str(version.to_hex().as_str());
+				text.push('.');
+			}
 		},
 		SkillOutcome::AuthoredShadow { name } => {
 			text.push_str(". Did not create managed skill \"");
@@ -303,5 +325,43 @@ fn protocol_issue(message: Str) -> ArgIssue {
 		kind:     ArgIssueKind::Protocol,
 		example:  None,
 		found:    Some(message),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use futures::{StreamExt as _, executor::block_on};
+
+	use super::*;
+
+	struct NoPublication;
+	impl ManagedSkillAuthority for NoPublication {
+		fn mutate(&self, _: MutationRequest<'_>) -> Result<MutationOutcome, AuthorityError> {
+			panic!("invalid version must never enter managed-skill authority");
+		}
+	}
+
+	#[test]
+	fn missing_skill_update_version_does_not_store_a_lesson() {
+		let tree = tempfile::tempdir().unwrap();
+		let memory = MemoryRuntime::start(omp_memory::runtime::RuntimeStart {
+			session_id:             sf!("version-test"),
+			data_dir:               tree.path().join("data"),
+			workspace_root:         tree.path().to_owned(),
+			canonical_primary_root: None,
+			backend:                omp_memory::MemoryBackend::Mnemopi,
+			mnemopi:                omp_memory::MnemopiSettings::default(),
+		})
+		.unwrap();
+		let before = memory.stats().unwrap().counts.working;
+		let generation = memory.generation();
+		let tool = tool(Arc::clone(&memory), Arc::new(NoPublication));
+		let (feed, incoming) = IncomingParams::channel();
+		feed.args_committed(sf!(r#"{"memory":"A durable lesson with an invalid stale skill edit", "skill":{"action":"update","name":"skill","description":"when useful","body":"new body"}}"#)).unwrap();
+		let events = block_on(tool.call(incoming).collect::<Vec<_>>());
+		assert!(matches!(events.as_slice(), [Ev::Args(_)]));
+		assert_eq!(memory.stats().unwrap().counts.working, before);
+		assert_eq!(memory.generation(), generation);
+		assert_eq!(spec().rev.n, 2);
 	}
 }
