@@ -765,6 +765,56 @@ fn slow_shell_record(
 	(call, result)
 }
 
+// compose_kernel opens Session with its default CAS beside the journal.
+// Gateway artifacts are adopted there before DispatchCommitter journals a
+// spill.
+fn resolve_terminal(
+	session_path: &Path,
+	raw: &serde_json::value::RawValue,
+) -> omp_tool::CallOutcome<Value, Value> {
+	let envelope: Value = serde_json::from_str(raw.get()).expect("terminal JSON");
+	let bytes = if envelope.get("storage").is_some() {
+		match serde_json::from_str::<omp_tool::CallOutcomeDetails>(raw.get()).unwrap_or_else(
+			|error| panic!("invalid terminal storage: {error}; terminal={}", raw.get()),
+		) {
+			omp_tool::CallOutcomeDetails::Inline { json } => json,
+			omp_tool::CallOutcomeDetails::Spilled { blob, byte_len } => {
+				assert_eq!(
+					blob.media_type.as_str(),
+					"application/json",
+					"terminal artifact media type"
+				);
+				assert_eq!(blob.byte_len, byte_len, "terminal artifact length declarations agree");
+				let reference = omp_journal::blob::BlobRef::parse_hex(&blob.hash, byte_len)
+					.expect("terminal artifact SHA-256 reference");
+				let root = session_path.parent().expect("session CAS root");
+				let store = omp_journal::blob::BlobStore::open(root).expect("session CAS opens");
+				let bytes = store.get(&reference).unwrap_or_else(|error| {
+					panic!(
+						"terminal artifact unavailable or wrong length at {}: {error}; terminal={}",
+						root.display(),
+						raw.get()
+					)
+				});
+				assert_eq!(
+					omp_core::Hash32::sum(&bytes),
+					reference.hash,
+					"terminal artifact content digest"
+				);
+				bytes
+			},
+		}
+	} else {
+		Bytes::copy_from_slice(raw.get().as_bytes())
+	};
+	serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+		panic!(
+			"slow-shell must have a typed cancellation: {error}; resolved terminal={}",
+			String::from_utf8_lossy(&bytes)
+		)
+	})
+}
+
 fn assert_journal_chain(text: &str) {
 	let frames = text
 		.split("\n\n")
@@ -1035,10 +1085,7 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 			panic!("slow-shell must cancel, never succeed or detach: terminal={}", outcome.get());
 		},
 	};
-	let terminal: omp_tool::CallOutcome<Value, Value> = serde_json::from_str(fault.get())
-		.unwrap_or_else(|error| {
-			panic!("slow-shell must have a typed cancellation: {error}; terminal={}", fault.get())
-		});
+	let terminal = resolve_terminal(&session_path, &fault);
 	assert!(
 		matches!(terminal, omp_tool::CallOutcome::Aborted {
 			abort: omp_tool::Abort::Interrupted { .. },
@@ -1220,4 +1267,43 @@ async fn chat_tui_persists_thinking_blocks_across_turns_and_resume() {
 		"resumed omp chat did not exit cleanly\n{resumed_diagnostics}"
 	);
 	assert_restored(&resumed_bytes, &resumed_before, &resumed_after, &resumed_diagnostics);
+}
+
+#[test]
+fn terminal_resolution_checks_runtime_cas_before_decoding_cancellation() {
+	let scratch = tempfile::tempdir().expect("scratch");
+	let session_path = scratch.path().join("proof.oms");
+	let store = omp_journal::blob::BlobStore::open(scratch.path()).expect("CAS");
+	let terminal = omp_tool::CallOutcome::<Value, Value>::aborted(omp_tool::Abort::Interrupted {
+		reason: Str::new_static("proof cancellation"),
+	});
+	let raw = serde_json::value::to_raw_value(&terminal).expect("terminal JSON");
+	let inline = serde_json::value::to_raw_value(&omp_tool::CallOutcomeDetails::Inline {
+		json: Bytes::copy_from_slice(raw.get().as_bytes()),
+	})
+	.expect("inline JSON");
+	let reference = store.put(raw.get().as_bytes()).expect("persist artifact");
+	let spilled = serde_json::value::to_raw_value(&omp_tool::CallOutcomeDetails::Spilled {
+		blob:     omp_tool::BlobRef {
+			hash:       Str::new(reference.to_hex().as_str()),
+			media_type: Str::new_static("application/json"),
+			byte_len:   reference.size,
+		},
+		byte_len: reference.size,
+	})
+	.expect("spill JSON");
+	for encoded in [&raw, &inline, &spilled] {
+		assert!(matches!(resolve_terminal(&session_path, encoded), omp_tool::CallOutcome::Aborted {
+			abort: omp_tool::Abort::Interrupted { .. },
+			kind: omp_tool::AbortKind::Cancelled,
+			..
+		}));
+	}
+	// Preserve length so this specifically tests digest validation, not only size.
+	fs::write(store.path(&reference), vec![b' '; reference.size as usize])
+		.expect("corrupt artifact");
+	assert!(
+		std::panic::catch_unwind(|| resolve_terminal(&session_path, &spilled)).is_err(),
+		"same-length corrupt content must be rejected before terminal decoding"
+	);
 }
