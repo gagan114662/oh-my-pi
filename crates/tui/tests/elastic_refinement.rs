@@ -8,6 +8,8 @@
 //! Rust retains its delivered-row count for bookkeeping. Resize, queued layout,
 //! failed writes and repaired finalized snapshots are outside this profile.
 
+use std::time::Duration;
+
 use omp_tui::{
 	Size, frame_text,
 	slots::{BlockId, BlockState, Delivered, Mode, ResizePolicy, Slots},
@@ -67,6 +69,7 @@ fn tlc_traces_refine_public_slots_history_lifecycle_and_rendered_delivery() {
 	for case in traces.cases {
 		let mut slots = Slots::new(32, case.height, ResizePolicy::Preserve);
 		let mut ids: Vec<BlockId> = Vec::new();
+		let mut now = Duration::ZERO;
 		for step in case.steps {
 			let before = rows(&slots);
 			let action = step.action.as_str();
@@ -85,6 +88,21 @@ fn tlc_traces_refine_public_slots_history_lifecycle_and_rendered_delivery() {
 					slots.set(ids[index], text.as_str());
 				} else {
 					slots.append(ids[index], &format!("{text}\n"));
+					// TLC Update contains the visible snapshot. The default stream
+					// root reveals it over animation ticks; these are history-free
+					// stutters, not deliveries. Advance a fixed bounded frame budget
+					// without sleeping or choosing output from the expected history.
+					for _ in 0..400 {
+						now += Duration::from_millis(17);
+						slots.tick(now);
+					}
+					assert_eq!(
+						slots.stream_rows(ids[index]),
+						step.want[index].len(),
+						"{} {action}: visible snapshot settles within frame budget",
+						case.name
+					);
+					assert_eq!(rows(&slots), before, "animation must not commit history");
 				}
 			} else if action.starts_with("FinalizeActive(") {
 				slots.finalize(ids[argument(action)]);
