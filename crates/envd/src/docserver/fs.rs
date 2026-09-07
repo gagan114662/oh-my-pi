@@ -27,6 +27,29 @@ use xutf::IntoAnsiStripped as _;
 
 use crate::docserver::{Error, FileFingerprint, FileMetadata, Result, ServerConfig};
 
+/// Reopens the retained directory itself with an I/O-capable descriptor.
+/// Linux capability directories may use `O_PATH`, which supports neither
+/// locking nor fsync. Resolve only `.` relative to the handle, never its path.
+pub(super) fn open_directory_for_io(directory: &Dir) -> io::Result<std::fs::File> {
+	#[cfg(unix)]
+	{
+		use rustix::fs::{Mode, OFlags, openat};
+
+		openat(
+			directory,
+			".",
+			OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+			Mode::empty(),
+		)
+		.map(std::fs::File::from)
+		.map_err(io::Error::from)
+	}
+	#[cfg(not(unix))]
+	{
+		directory.try_clone().map(Dir::into_std_file)
+	}
+}
+
 const STABLE_READ_ATTEMPTS: usize = 4;
 const TEMP_CREATE_ATTEMPTS: usize = 128;
 
@@ -2745,10 +2768,9 @@ impl LocalFs {
 	}
 
 	fn flush_directory(directory: &Dir, path: &Path) -> Result<()> {
-		let clone = directory
-			.try_clone()
-			.map_err(|source| Self::io_error("clone parent directory handle", path, source))?;
-		match clone.into_std_file().sync_all() {
+		let file = open_directory_for_io(directory)
+			.map_err(|source| Self::io_error("open parent directory for flush", path, source))?;
+		match file.sync_all() {
 			Ok(()) => Ok(()),
 			Err(source)
 				if matches!(
