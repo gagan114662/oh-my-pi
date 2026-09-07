@@ -1287,6 +1287,21 @@ mod tests {
 	}
 
 	#[test]
+	fn replacement_preserves_bom_while_matching_typographic_quotes_and_crlf() {
+		let result = replace_text(
+			"\u{feff}say “hello”\r\n",
+			"say \"hello\"\n",
+			"say \"goodbye\"\n",
+			true,
+			false,
+			None,
+		)
+		.unwrap();
+		assert_eq!(result.count, 1);
+		assert_eq!(result.content, "\u{feff}say \"goodbye\"\n");
+	}
+
+	#[test]
 	fn typographic_quotes_match_only_when_fuzzy_is_allowed_and_remain_ambiguous() {
 		for (content, target) in [("say “hello”", "say \"hello\""), ("it’s fine", "it's fine")]
 		{
