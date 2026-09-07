@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, omp2]
     paths:
       - ".cargo/**"
       - ".github/workflows/ci.yml"
@@ -22,25 +22,12 @@ on:
       - "rust-toolchain.toml"
       - "rustfmt.toml"
   pull_request:
-    branches: [main]
-    paths:
-      - ".cargo/**"
-      - ".github/workflows/ci.yml"
-      - "about.toml"
-      - "deny.toml"
-      - "justfile"
-      - "LICENSE*"
-      - "THIRD-PARTY-NOTICES.txt"
-      - "crates/**"
-      - "examples/**"
-      - "fixtures/**"
-      - "scripts/**"
-      - "docs/py/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "clippy.toml"
-      - "rust-toolchain.toml"
-      - "rustfmt.toml"
+    # No `paths:` filter here, deliberately. Once these jobs are required
+    # contexts on a protected branch, a PR touching only unlisted paths
+    # (docs/adr/**, AGENTS.md, elastic/**, .pr/**) triggers no run, the
+    # required contexts stay "Expected", and the PR can never merge.
+    # `push.paths` above is kept: pushes to main are upstream syncs.
+    branches: [main, omp2]
   workflow_dispatch:
 
 permissions:
