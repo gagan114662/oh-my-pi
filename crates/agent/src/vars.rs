@@ -30,6 +30,21 @@ pub enum VisionMode {
 omp_con::con_enum!(VisionMode);
 
 omp_con::var! {
+ /// Host ceiling for settlement continuations per owner and external user scope.
+ /// Raises apply at the next external user boundary; zero disables continuation.
+ pub static AI_CONTINUATION_CAP = ai_continuation_cap: i64 {
+ default: 8,
+ min: 0,
+ max: 1024,
+ flags: archive | session,
+ };
+ /// Narrower limits keyed by authenticated host owner identity. Repeated keys
+ /// take the smallest limit; malformed values disable that owner's allowance.
+ pub static AI_CONTINUATION_OWNER_LIMITS = ai_continuation_owner_limits: omp_con::Kv {
+ default: omp_con::Kv::new(),
+ flags: archive | session,
+ };
+
 	/// Selected model route.
 	pub static AI_MODEL = ai_model: Str {
 		default: Str::new_static(""),
@@ -192,4 +207,32 @@ omp_con::var! {
 pub fn tool_allowlist(con: Option<&omp_con::Ctx>) -> Option<Vec<Str>> {
 	let roster = SV_TOOLS.get(con?);
 	(!roster.is_empty()).then_some(roster)
+}
+
+/// Effective host-configured allowance for an authenticated settlement owner.
+/// Child contexts inherit these variables through the existing convar seed.
+#[must_use]
+pub fn continuation_cap(con: Option<&omp_con::Ctx>, owner: &str) -> u64 {
+	let Some(con) = con else {
+		return omp_session::continuation::DEFAULT_CONTINUATION_CAP;
+	};
+	let ceiling = AI_CONTINUATION_CAP
+		.get(con)
+		.clamp(0, omp_session::continuation::MAX_CONTINUATION_CAP as i64) as u64;
+	AI_CONTINUATION_OWNER_LIMITS
+		.get(con)
+		.0
+		.iter()
+		.filter(|(key, _)| key == owner)
+		.fold(ceiling, |limit, (_, value)| {
+			let narrower = match value {
+				omp_con::Value::Int(value)
+					if (0..=omp_session::continuation::MAX_CONTINUATION_CAP as i64).contains(value) =>
+				{
+					*value as u64
+				},
+				_ => 0,
+			};
+			limit.min(narrower)
+		})
 }

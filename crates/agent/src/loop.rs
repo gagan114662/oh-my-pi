@@ -1862,8 +1862,10 @@ impl<C: Inference> Kernel<C> {
 							}
 						};
 						if let crate::AgentSettled::Continue(continuation) = decision
-							&& session.continue_from_settlement(&continuation)?
-						{
+							&& session.continue_from_settlement(
+								&continuation,
+								crate::continuation_cap(self.con.as_deref(), &continuation.owner),
+							)? {
 							self.apply_live_components(session)?;
 							continue;
 						}

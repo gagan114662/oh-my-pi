@@ -32,6 +32,9 @@ pub enum SessionError {
 	/// The durable settlement continuation ledger is malformed.
 	#[error("invalid durable continuation state")]
 	InvalidContinuationState,
+	/// Host continuation limit exceeds the finite supported bound.
+	#[error("continuation limit {limit} exceeds the supported maximum")]
+	InvalidContinuationLimit { limit: u64 },
 	/// A durable context retry key was reused for another operation or payload.
 	#[error("context request identity conflicts with an earlier acknowledgement")]
 	ContextRequestConflict,

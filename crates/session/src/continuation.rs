@@ -12,8 +12,15 @@ use crate::{Session, SessionError};
 pub const COLLAPSED_PROP: &str = "omp/continuation-collapsed";
 pub(crate) const OWNER_PROP: &str = "omp/continuation-owner";
 const LEDGER_PROP: &str = "omp/continuation-ledger";
-/// Documented Core ceiling for consecutive settlement continuations.
-pub const CONTINUATION_CAP: u64 = 8;
+/// Default consecutive settlement allowance when no host configuration is
+/// present.
+pub const DEFAULT_CONTINUATION_CAP: u64 = 8;
+/// Finite host configuration bound, including explicit disabling with zero.
+pub const MAX_CONTINUATION_CAP: u64 = 1024;
+
+const fn default_cap() -> u64 {
+	DEFAULT_CONTINUATION_CAP
+}
 
 /// Python Continue wire role, validated before journaling.
 #[derive(
@@ -63,8 +70,10 @@ const fn default_collapse() -> bool {
 	true
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Ledger {
+	#[serde(default = "default_cap")]
+	cap:         u64,
 	consecutive: u64,
 	total:       u64,
 	refusals:    u64,
@@ -77,7 +86,11 @@ impl Session {
 	pub fn continue_from_settlement(
 		&mut self,
 		continuation: &Continuation,
+		configured_cap: u64,
 	) -> Result<bool, SessionError> {
+		if configured_cap > MAX_CONTINUATION_CAP {
+			return Err(SessionError::InvalidContinuationLimit { limit: configured_cap });
+		}
 		let dom = self.dom();
 		let meta = dom.meta();
 		let prop = PropKey::Custom(Str::new_static(LEDGER_PROP));
@@ -88,24 +101,38 @@ impl Session {
 			Some(_) => return Err(SessionError::InvalidContinuationState),
 		};
 		let owner_prop = PropKey::Custom(Str::new_static(OWNER_PROP));
-		let last_user = dom
-			.select("user")
-			.map_err(|_| SessionError::InvalidContinuationState)?
-			.filter_map(|handle| dom.get(handle))
-			.filter(|node| node.prop(&owner_prop).is_none())
-			.filter_map(|node| {
-				node
-					.prop(&PropId::Id.into())
-					.and_then(Value::as_str)
-					.map(Str::new)
-			})
-			.last();
-		let ledger = ledgers.entry(continuation.owner.clone()).or_default();
+		// Read the authoritative branch, not arbitrary user-shaped DOM patches.
+		// Projection compaction and extension-authored messages cannot reset budgets.
+		let last_user = self
+			.head()
+			.map(|head| self.chain_indices(head))
+			.transpose()?
+			.into_iter()
+			.flatten()
+			.rev()
+			.find_map(|index| {
+				let entry = &self.entries[index];
+				(entry.kind.name.as_str() == omp_journal::kind::MSG_USER)
+					.then(|| Str::new(entry.id.to_string()))
+			});
+		let ledger = ledgers
+			.entry(continuation.owner.clone())
+			.or_insert_with(|| Ledger {
+				cap:         configured_cap,
+				consecutive: 0,
+				total:       0,
+				refusals:    0,
+				last_user:   last_user.clone(),
+			});
 		if ledger.last_user != last_user {
 			ledger.consecutive = 0;
+			ledger.cap = configured_cap;
 			ledger.last_user = last_user;
 		}
-		let accepted = ledger.consecutive < CONTINUATION_CAP;
+		// Configuration can tighten a live scope, but cannot replenish it, including
+		// after replay. A genuine new user boundary admits a newly configured ceiling.
+		ledger.cap = ledger.cap.min(configured_cap);
+		let accepted = ledger.consecutive < ledger.cap;
 		if accepted {
 			ledger.consecutive += 1;
 			ledger.total = ledger.total.saturating_add(1);
