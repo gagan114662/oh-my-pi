@@ -70,6 +70,50 @@ and the like all moved to `Ev::Diag` with the shared `DiagKind` vocabulary
 carrying `continuation` and `omitted` where a next slice exists. The sloppy hashline parser no longer
 recognizes read-output footers, since they cannot appear in pasted result text.
 
+## Complete requests and upstream omission
+
+`notrunc=true` becomes `OutputRequest::Complete`. It opts out of the ordinary
+central byte and per-line clamps; it does not remove host security limits or
+promise to reconstruct bytes already omitted from an upstream inline projection.
+The 8 MiB complete-request ceiling is a maximum inline allowance, not a guarantee
+that every smaller process result arrives inline. In `crates/envd/src/exec.rs`,
+`OutputCapture` also bounds the number of projected frames, and the reader closes
+the inline projection if the bounded event queue is full. Capture continues into
+the artifact store. These cases must retain their omission receipt and artifact
+address even when the caller requested complete output.
+
+The dispatcher therefore preserves an upstream spill in `stage_external_inner`
+(`crates/agent/src/dispatch.rs`) and emits `DiagKind::OutputBounded` for the omitted
+inline result. Suppressing that diagnostic solely because `notrunc` was requested
+would falsely present a partial result as complete. A complete result that was not
+spilled has no such diagnostic. The separate model-projection gap described above
+still applies: preserving an accurate notice does not satisfy the target of
+keeping diagnostics outside `ToolResult.parts`.
+
+### Assertion correction and evidence limits
+
+Issue #44's original failure was attributed to the complete request, but the
+cited assertion in `central_truncation_spills_and_notrunc_explicitly_opts_out`
+actually followed the **bounded** dispatch (`notrunc=false`). It expected only
+`["abcde"]`; the same test then required that same projected result to contain
+both `"abcde"` and the structured artifact diagnostic. Those expectations were
+contradictory. The correction consolidates the bounded expectation into the
+existing exact two-part assertion, rather than suppressing a real omission notice.
+It retains the complete-request assertion of exactly `["abcdefghij"]`, no spill,
+and the separate `notrunc_disables_the_per_line_clamp` regression.
+
+`crates/agent/tests/dispatch.rs` also contains
+`notrunc_keeps_transport_omission_visible_and_preserves_its_artifact`: it supplies
+an already-spilled external result, checks that complete mode preserves the
+upstream diagnostic and full artifact, and verifies journal replay. Its source
+is ten bytes and its external executor is a fixture; it is not a live 2 MB
+process demonstration. The real process test
+`fast_output_is_host_bounded_and_complete_in_the_spill_artifact` in
+`crates/envd/src/exec.rs` runs `seq 1 20000` in bounded mode and checks exact artifact
+bytes. It does not compare bounded and complete requests at 2 MB. That requested
+comparison and its published run evidence remain outstanding; these source tests
+alone do not establish issue #44's full acceptance or the all-crate test inventory.
+
 ## References
 
 - The Harness Playbook, "The runtime" — "Limits are part of the primitive", "Bound output once"
