@@ -107,8 +107,8 @@ pub fn context_pins(dom: &Dom) -> Result<BTreeMap<Str, ContextPin>, ContextPinEr
 
 impl Session {
 	/// Resolves a body reference against the current selected projection,
-	/// excluding its leading system items exactly as the agent ContextView does. A
-	/// stale sequence/event cannot accidentally address another journal item.
+	/// excluding its leading system items exactly as the agent ContextView does.
+	/// A stale sequence/event cannot accidentally address another journal item.
 	pub fn context_item(
 		&self,
 		id: &str,

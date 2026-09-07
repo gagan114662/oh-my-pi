@@ -435,10 +435,15 @@ fn project_window(dom: &Dom, window: Window, items: &mut Vec<Item>) {
 }
 
 fn stamp_context_origin(item: &mut Item, node: &Node, ordinal: usize) {
-	let Some(entry) = prop_text(node, PropId::Order)
-		.or_else(|| prop_text(node, PropId::Id))
-		.and_then(|value| EntryId::from_str(value).ok())
-	else {
+	// Order advances on stream/tool updates and is a compaction ordering fact,
+	// not identity. Tools keep their original journal identity in Cause because
+	// Id is the provider's call id; built-in elements retain it in Id.
+	let identity = if matches!(node.tag, Tag::Custom(_)) {
+		prop_text(node, PropId::Cause)
+	} else {
+		prop_text(node, PropId::Id)
+	};
+	let Some(entry) = identity.and_then(|value| EntryId::from_str(value).ok()) else {
 		return;
 	};
 	let fields = &mut item.props.get_or_insert_default().fields;
