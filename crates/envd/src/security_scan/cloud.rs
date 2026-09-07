@@ -7,8 +7,9 @@ use std::{
 use bytes::Bytes;
 use omp_ai::auth::HeaderPlacement;
 use omp_core::{Hash32, Str, Ulid};
+use omp_http::Client;
 use omp_tools::security_scan::{Fault, LookbackDays, TargetKind, ValidationStatus};
-use reqwest::{Client, Method, StatusCode};
+use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -53,7 +54,7 @@ impl CloudClient {
 			.build()
 			.ok()?;
 		Some(Self {
-			client,
+			client: client.into(),
 			base: Str::new(base.trim_end_matches('/')),
 			access_token: Some(access_token),
 			account_id,
@@ -69,12 +70,12 @@ impl CloudClient {
 			.build()
 			.expect("test client");
 		Self {
-			client,
-			base: Str::new(base.trim_end_matches('/')),
-			access_token: Some(Arc::new(Zeroizing::new(token.to_owned()))),
-			account_id: None,
+			client:        client.into(),
+			base:          Str::new(base.trim_end_matches('/')),
+			access_token:  Some(Arc::new(Zeroizing::new(token.to_owned()))),
+			account_id:    None,
 			credential_id: Some(credential_id),
-			authority: None,
+			authority:     None,
 		}
 	}
 
@@ -86,20 +87,20 @@ impl CloudClient {
 		let base =
 			std::env::var("OMP_CODEX_SECURITY_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE.to_owned());
 		Some(Self {
-			client,
-			base: Str::new(base.trim_end_matches('/')),
-			access_token: std::env::var("OMP_CODEX_SECURITY_ACCESS_TOKEN")
+			client:        client.into(),
+			base:          Str::new(base.trim_end_matches('/')),
+			access_token:  std::env::var("OMP_CODEX_SECURITY_ACCESS_TOKEN")
 				.ok()
 				.map(Zeroizing::new)
 				.map(Arc::new),
-			account_id: std::env::var("OMP_CODEX_SECURITY_ACCOUNT_ID")
+			account_id:    std::env::var("OMP_CODEX_SECURITY_ACCOUNT_ID")
 				.ok()
 				.filter(|value| !value.is_empty())
 				.map(Str::new),
 			credential_id: std::env::var("OMP_CODEX_SECURITY_CREDENTIAL_ID")
 				.ok()
 				.and_then(|value| value.parse().ok()),
-			authority: Some(authority),
+			authority:     Some(authority),
 		})
 	}
 
