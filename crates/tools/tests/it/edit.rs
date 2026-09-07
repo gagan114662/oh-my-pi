@@ -614,9 +614,9 @@ async fn malformed_and_headerless_input_never_commit_and_preserve_parser_diagnos
 			 start with `[path#HASH]`; use `replace`, `delete`, or `insert` ops.",
 		),
 		(
-			"[a.txt#1A2B]\nPUT 1.=:\n+x",
+			"[a.txt#1A2B]\nPUT 1.=nope:\n+x",
 			"line 1: payload line has no preceding hunk header. Use `PUT N.=M:`, `CUT N.=M`, or `PUT \
-			 <N:`/`PUT >N:` above the body. Got \"PUT 1.=:\".",
+			 <N:`/`PUT >N:` above the body. Got \"PUT 1.=nope:\".",
 		),
 		(
 			"[a.txt#1A2B]\nPUT 1.=2:\n+X\nPUT 2.=3:\n+Y",
@@ -642,6 +642,20 @@ async fn malformed_and_headerless_input_never_commit_and_preserve_parser_diagnos
 		assert_eq!(rendered, expected);
 	}
 	assert!(fake.state.lock().commits.is_empty());
+}
+
+#[tokio::test]
+async fn abbreviated_single_line_range_commits_only_the_selected_line() {
+	let original = b"one\ntwo\n";
+	let fake = Fake::with_files(&[("a.txt", original)]);
+	let input = format!("[a.txt#{}]\nPUT 1.=:\n+ONE", tag(original));
+	invoke(fake.clone(), &input).await;
+	let state = fake.state.lock();
+	assert_eq!(state.commits.len(), 1);
+	assert!(matches!(
+		&state.commits[0].action,
+		EditAction::Write { content } if content.as_ref() == b"ONE\ntwo\n"
+	));
 }
 
 #[tokio::test]
@@ -704,13 +718,16 @@ async fn stale_head_insert_applies_to_live_bytes_and_emits_drift_diag() {
 async fn copied_read_elision_is_ignored_and_emits_an_advisory_diag() {
 	let fake = Fake::with_files(&[("a.txt", b"one\ntwo\n")]);
 	let tag = tag(b"one\ntwo\n");
-	let input = format!(
-		"[a.txt#{tag}]\n[…8ln elided; re-read needed ranges with |, e.g. a.txt:10-17]\nPUT \
-		 1.=1:\n+ONE"
-	);
-	let (_, parts, diags) = invoke(fake, &input).await;
+	let input = format!("[a.txt#{tag}]\n2-9: …\nPUT 1.=1:\n+ONE");
+	let (_, parts, diags) = invoke(fake.clone(), &input).await;
 	let output = text(&parts);
 	assert!(!output.contains("Warnings:"), "{output:?}");
+	let state = fake.state.lock();
+	assert_eq!(state.commits.len(), 1);
+	assert!(matches!(
+		&state.commits[0].action,
+		EditAction::Write { content } if content.as_ref() == b"ONE\ntwo\n"
+	));
 	assert!(diags.iter().any(|diag| {
 		diag.native_kind() == Some(DiagKind::Advisory) && diag.severity == Severity::Warn
 	}));
