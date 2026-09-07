@@ -1,29 +1,39 @@
-# Runtime spec remaining drift
+# Runtime specification and live-owner evidence
 
-The runtime-spec checker compiled and ran on Ubuntu in [workflow run 34154484336, job 101843358051](https://github.com/gagan114662/oh-my-pi/actions/runs/34154484336/job/101843358051), against commit `d8807995e126e5f4594ddeb69e97559d0c2f2561`. It exited 1 at 2026-09-07 19:11:39 UTC. This replaces the earlier static estimate with the actual job output.
+[Hosted run 34155217508](https://github.com/gagan114662/oh-my-pi/actions/runs/34155217508), at `41ee243633`, compiled and ran the checker successfully before the checker exited 1 with **49 diagnostics**: 12 DATA literals and 37 Python CONTROL occurrences (36 distinct keys). The earlier duplicate-row and decorator-ABI diagnostics are absent from this real run.
 
-The job emitted **56 diagnostic lines**: 2 duplicate-symbol diagnostics, 5 callback-ABI diagnostics, 12 DATA-operation diagnostics, and 37 Python CONTROL diagnostics covering 36 distinct operations (`omp.provider.models` occurs twice).
+## Prepared repair
 
-## Mechanical corrections prepared after this run
+- Added 48 canonical symbol rows from existing Python signatures, native client/protobuf signatures, owner authorization code, and declared documentation contracts. Eleven rows cover valid missing DATA operations, 36 cover distinct CONTROL keys, and one covers `omp.env.mcp.live-header`, which the old literal scanner silently missed.
+- Missing MCP operations return `InvalidArgument` before authorization; the synthetic `omp.env.mcp.invalid` name is no longer presented as an operation requiring metadata.
+- The checker includes hyphenated dispatch keys and accepts one optional `--` before its output path, rejecting extra arguments.
+- Added runtime-spec admission/alias-uniqueness tests, all-eight-MCP-operation lookup tests, and a production-domain-router test that distinguishes declared context metadata from missing runtime routing.
 
-- Removed one identical duplicate `omp.env.workspace.snapshot` metadata row. The original row, signature, authority, and durability remain.
-- Corrected callback checking for the five decorator factories below. The previous check compared their registration arguments against the callback ABI; it now checks their callback examples for exactly two arguments, with `ctx` second. Direct callback signatures still require `(payload, ctx)`. Added regression tests for valid factories and reversed/missing/extra callback arguments.
+These changes await hosted validation. Static independent lookup/literal checks find no missing current DATA or CONTROL keys and no duplicate lookup keys. Formatting and diff checks pass. No local Rust build was started.
 
-These changes have not yet been rerun in CI. They address seven observed diagnostic lines; the DATA and Python CONTROL failures below remain unresolved. No phase, authority, durability, or operation rows were invented to make the gate pass.
+## Contract sources and proof limits
 
-Observed mechanical diagnostics:
+| Operation group | Phase/authority evidence |
+| --- | --- |
+| Native `omp.env.*` DATA | `crates/envd/src/server.rs::authorize_data_operation` requires Environment authority and EffectsAuthorized; protobuf requests and `crates/env/src/client.rs` provide exact signatures. |
+| Devices and hook dispatch | `crates/envd/src/tools.rs::require_active_invocation`, called by both owners, requires active lifecycle and EffectsAuthorized. |
+| Convar requests | `crates/envd/src/exthost/control.rs::ConvarControlAuthority::authorize` admits owned operations without an effect-phase requirement. |
+| UI dynamic commands | `crates/envd/src/exthost/presentation.rs::UiControlAuthority::authorize` explicitly uses Open plus `ui.commands`. |
+| Telemetry requests | `TelemetryControlAuthority::authorize` uses Open; the class exists, but production binding remains a separate gap below. |
+| MCP CONTROL | `ProductionMcpControlAuthority` checks connection identity and delegates to the Environment MCP manager. Mount/list/unmount are Open Environment metadata; invocation carries the declared DATA effect requirement. Metadata alone does not add a new phase guard to this CONTROL owner. |
+| Context durable mutations | `docs/py/08-context.md` explicitly defines durable CONTROL before DATA authorization. `DECLARED_CONTEXT_CONTROL` is documented as a declared contract, **not evidence of an implemented owner**. |
+| Provider request | `docs/py/13-inference.md` defines paid inference as a durable EffectsAuthorized Core request. Its live owner is not wired by the production UI-only binding. |
 
-```text
-duplicate public symbol omp.env.workspace.snapshot (owners docs/py/12-agents.md and docs/py/12-agents.md)
-duplicate operation lookup key omp.env.workspace.snapshot (omp.env.workspace.snapshot and omp.env.workspace.snapshot)
-omp.ui.message_renderer violates the (payload, ctx) callback ABI
-omp.ui.completion violates the (payload, ctx) callback ABI
-omp.ui.shortcut violates the (payload, ctx) callback ABI
-omp.ui.command violates the (payload, ctx) callback ABI
-omp.renderer violates the (payload, ctx) callback ABI
-```
+## Live wiring gaps still requiring implementation
 
-## Actual missing DATA-operation diagnostics
+Static metadata completeness is not runtime completeness. Do not close these gaps based on a green spec gate.
+
+1. **All nine context keys have no domain route.** `ControlDomain::handles` in `crates/envd/src/exthost/control.rs` has no `omp.context.*` branch. `CompositeControlAuthority::owner` returns `unhandled_operation` when no route handles a key. `crates/envd/tests/domain_control_router.rs` exercises the real `HostControlAuthorityFactory` with all owners supplied and now verifies actual requests to `omp.context.view`, `.pin`, and `.compact` still return that error despite existing metadata. The remaining keys are `.usage`, `.epoch`, `.unpin`, `.message.parts`, `.message.verdict`, and `.message.raw_args`.
+2. **Provider, prompts, and telemetry require external owners absent from the production binding inspected.** `production_control_bindings` in `crates/envd/src/server.rs` installs manifest-gated late-bound slots. `LateBoundControlAuthority::owner` rejects an absent lease/factory. The production call in `crates/app/src/chat_cmd.rs` supplies only `ui` in `ExternalDomainControlFactories` and defaults the other fields. Thus six provider keys, `omp.prompts.invalidate`, and seven telemetry keys have declarations but no demonstrated usable production binding in this composition. Provider/prompt concrete handlers were not found; telemetry has an existing owner implementation to wire.
+
+Next work must implement and exercise these owners through production composition and replace the no-route proof with a real successful/denied-request contract. Broadening the router or adding metadata without owners is not a fix.
+
+## Exact observed diagnostics before this repair
 
 ```text
 DATA dispatch operation omp.env.fs.privileged_mutation is missing from the runtime spec
@@ -38,15 +48,6 @@ DATA dispatch operation omp.env.mcp.invoke is missing from the runtime spec
 DATA dispatch operation omp.env.mcp.config is missing from the runtime spec
 DATA dispatch operation omp.env.mcp.invalid is missing from the runtime spec
 DATA dispatch operation omp.env.Process.info is missing from the runtime spec
-```
-
-These are the checker's literal findings, not approved public API additions. For example, `omp.env.mcp.invalid` is the dispatcher's missing-operation sentinel and needs semantic review rather than an invented public API row.
-
-## Actual missing Python CONTROL diagnostics
-
-The existing four-operation debt baseline remains unchanged. Duplicate occurrences are retained here to match the job log exactly.
-
-```text
 Python CONTROL operation omp.devices.dynamic_mount in crates/py/python/omp/devices.py has no generated spec row
 Python CONTROL operation omp.devices.set_availability in crates/py/python/omp/devices.py has no generated spec row
 Python CONTROL operation omp.devices.refresh in crates/py/python/omp/devices.py has no generated spec row
@@ -85,7 +86,3 @@ Python CONTROL operation omp.provider.models in crates/py/python/omp/provider.py
 Python CONTROL operation omp.provider.watch_models in crates/py/python/omp/provider.py has no generated spec row
 Python CONTROL operation omp.ui.dynamic_mount in crates/py/python/omp/ui/__init__.py has no generated spec row
 ```
-
-## Validation status
-
-The observed run reached all checker validations and reported no stale-owner-path, setting/default, telemetry, phase-matrix, or dependency-policy failures. The checker remains a failing gate until the unresolved contracts are modeled or their dispatch semantics are corrected. The callback validation function and its two unit tests were extracted unchanged into a standalone Rust test binary; both passed. Formatting and diff checks passed. The complete checker and workspace have not been rebuilt locally after these changes.

@@ -12,7 +12,9 @@ toml = "1.1"
 
 use std::{
 	collections::{BTreeMap, BTreeSet},
-	env, fs,
+	env,
+	ffi::{OsStr, OsString},
+	fs,
 	path::{Path, PathBuf},
 };
 
@@ -32,6 +34,10 @@ const PYTHON_SPEC_BASELINE: &[&str] =
 	&["omp.state.cas_get", "omp.state.cas_put", "omp.state_dir", "omp.urls.read"];
 
 fn main() {
+	let output = requested_output(env::args_os().skip(1)).unwrap_or_else(|message| {
+		eprintln!("spec check: {message}");
+		std::process::exit(2);
+	});
 	let root = workspace_root();
 	let mut failures = Vec::new();
 	check_symbols(&root, &mut failures);
@@ -45,7 +51,7 @@ fn main() {
 		std::process::exit(1);
 	}
 
-	if let Some(output) = env::args_os().nth(1) {
+	if let Some(output) = output {
 		let output = root.join(output);
 		if let Some(parent) = output.parent() {
 			fs::create_dir_all(parent)
@@ -54,6 +60,21 @@ fn main() {
 		fs::write(&output, generated_spec_json())
 			.unwrap_or_else(|error| panic!("cannot write {}: {error}", output.display()));
 	}
+}
+
+fn requested_output(
+	mut arguments: impl Iterator<Item = OsString>,
+) -> Result<Option<OsString>, &'static str> {
+	let first = arguments.next();
+	let output = if first.as_deref() == Some(OsStr::new("--")) {
+		arguments.next()
+	} else {
+		first
+	};
+	if output.as_deref() == Some(OsStr::new("--")) || arguments.next().is_some() {
+		return Err("expected at most one output path after an optional -- separator");
+	}
+	Ok(output)
 }
 
 fn workspace_root() -> PathBuf {
@@ -170,7 +191,7 @@ fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 			&& !token.ends_with('.')
 			&& token
 				.bytes()
-				.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
+				.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 	}) {
 		if operation_spec(operation).is_none() {
 			failures
@@ -309,7 +330,7 @@ fn check_python_surface_specs(root: &Path, failures: &mut Vec<String>) {
 					&& !operation.ends_with('.')
 					&& operation
 						.bytes()
-						.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
+						.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 					&& !PYTHON_SPEC_BASELINE.contains(&operation)
 					&& operation_spec(operation).is_none()
 				{
@@ -464,7 +485,23 @@ fn generated_spec_json() -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::has_payload_context_callback;
+	use std::ffi::OsString;
+
+	use super::{has_payload_context_callback, requested_output};
+
+	#[test]
+	fn output_path_accepts_one_optional_separator_and_rejects_extra_arguments() {
+		for args in [vec!["target/spec.json"], vec!["--", "target/spec.json"]] {
+			assert_eq!(
+				requested_output(args.into_iter().map(OsString::from)),
+				Ok(Some(OsString::from("target/spec.json")))
+			);
+		}
+		assert_eq!(requested_output(std::iter::empty()), Ok(None));
+		for args in [vec!["one.json", "two.json"], vec!["--", "--", "one.json"]] {
+			assert!(requested_output(args.into_iter().map(OsString::from)).is_err());
+		}
+	}
 
 	#[test]
 	fn callback_and_decorator_signatures_are_distinct() {

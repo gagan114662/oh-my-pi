@@ -5418,13 +5418,18 @@ impl EnvServer {
 				.await;
 			},
 			Some(Body::Mcp(request)) => {
+				let Some(operation) = mcp_operation(&request) else {
+					send_error(
+						responses,
+						request_id,
+						pb::ProtocolErrorCode::InvalidArgument,
+						"MCP operation is missing",
+					)
+					.await;
+					return;
+				};
 				if !authorize_data_operation(
-					connection,
-					scope,
-					mcp_operation(&request),
-					"env.mcp",
-					responses,
-					request_id,
+					connection, scope, operation, "env.mcp", responses, request_id,
 				)
 				.await
 				{
@@ -10080,19 +10085,19 @@ async fn send_resource_capability_error(
 	.await;
 }
 
-const fn mcp_operation(request: &pb::McpOp) -> &'static str {
+const fn mcp_operation(request: &pb::McpOp) -> Option<&'static str> {
 	use mcp_op::Op;
 
 	match request.op.as_ref() {
-		Some(Op::Status(_)) => "omp.env.mcp.status",
-		Some(Op::Subscribe(_)) => "omp.env.mcp.subscribe",
-		Some(Op::Reset(_)) => "omp.env.mcp.reset",
-		Some(Op::LiveHeader(_)) => "omp.env.mcp.live-header",
-		Some(Op::Resource(_)) => "omp.env.mcp.resource",
-		Some(Op::Prompt(_)) => "omp.env.mcp.prompt",
-		Some(Op::Invoke(_)) => "omp.env.mcp.invoke",
-		Some(Op::Config(_)) => "omp.env.mcp.config",
-		None => "omp.env.mcp.invalid",
+		Some(Op::Status(_)) => Some("omp.env.mcp.status"),
+		Some(Op::Subscribe(_)) => Some("omp.env.mcp.subscribe"),
+		Some(Op::Reset(_)) => Some("omp.env.mcp.reset"),
+		Some(Op::LiveHeader(_)) => Some("omp.env.mcp.live-header"),
+		Some(Op::Resource(_)) => Some("omp.env.mcp.resource"),
+		Some(Op::Prompt(_)) => Some("omp.env.mcp.prompt"),
+		Some(Op::Invoke(_)) => Some("omp.env.mcp.invoke"),
+		Some(Op::Config(_)) => Some("omp.env.mcp.config"),
+		None => None,
 	}
 }
 
@@ -14085,5 +14090,36 @@ mod tests {
 		};
 		assert!(yolo.denial(&effects, br#"{"command":"touch x"}"#).is_none());
 		assert!(plan.denial(&effects, br#"{"command":"touch x"}"#).is_some());
+	}
+}
+
+#[cfg(test)]
+mod runtime_operation_contracts {
+	use super::{mcp_operation, pb};
+
+	#[test]
+	fn every_mcp_operation_reaches_a_registered_environment_contract() {
+		use pb::mcp_op::Op;
+		for operation in [
+			Op::Status(pb::McpStatusRequest::default()),
+			Op::Subscribe(pb::McpSubscribeRequest::default()),
+			Op::Reset(pb::McpResetRequest::default()),
+			Op::LiveHeader(pb::McpLiveHeaderRequest::default()),
+			Op::Resource(pb::McpResourceRequest::default()),
+			Op::Prompt(pb::McpPromptRequest::default()),
+			Op::Invoke(pb::McpInvokeRequest::default()),
+			Op::Config(pb::McpConfigRequest::default()),
+		] {
+			let request = pb::McpOp { op: Some(operation) };
+			let name = mcp_operation(&request).expect("present MCP operation");
+			let spec = omp_tool::operation_spec(name).expect("MCP operation has canonical metadata");
+			assert_eq!(spec.authority, omp_tool::Authority::Environment);
+			assert_eq!(spec.minimum_phase, omp_core::InvocationPhase::EffectsAuthorized);
+		}
+	}
+
+	#[test]
+	fn missing_mcp_operation_is_invalid_input_not_a_public_operation() {
+		assert_eq!(mcp_operation(&pb::McpOp::default()), None);
 	}
 }
