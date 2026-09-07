@@ -78,7 +78,7 @@ impl ApprovedPathScope {
 	}
 
 	fn verify(&self) -> io::Result<()> {
-		if PathIdentity::capture(&self.scope)? == self.identity {
+		if self.identity.matches(&self.scope)? {
 			Ok(())
 		} else {
 			Err(io::Error::other("approved path scope identity changed"))
@@ -87,19 +87,50 @@ impl ApprovedPathScope {
 }
 
 #[cfg(unix)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 struct PathIdentity {
-	device: u64,
-	inode:  u64,
+	device:  u64,
+	inode:   u64,
+	// Keep the approved inode alive: numbers alone can be reused after unlink.
+	_handle: Arc<fs::File>,
 }
 
 #[cfg(unix)]
 impl PathIdentity {
 	fn capture(path: &Path) -> io::Result<Self> {
-		use std::os::unix::fs::MetadataExt as _;
+		use std::os::{
+			fd::FromRawFd as _,
+			unix::{ffi::OsStrExt as _, fs::MetadataExt as _},
+		};
 
-		let metadata = fs::metadata(path)?;
-		Ok(Self { device: metadata.dev(), inode: metadata.ino() })
+		let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+			.map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in approved path"))?;
+		#[cfg(target_os = "linux")]
+		let access = libc::O_PATH;
+		#[cfg(target_vendor = "apple")]
+		let access = libc::O_EVTONLY;
+		#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+		let access = libc::O_RDONLY | libc::O_NONBLOCK;
+		// SAFETY: path is NUL-terminated; a successful fd is immediately owned.
+		let fd = unsafe { libc::open(path.as_ptr(), access | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+		if fd < 0 {
+			return Err(io::Error::last_os_error());
+		}
+		// SAFETY: open returned a fresh descriptor that has no other owner.
+		let handle = unsafe { fs::File::from_raw_fd(fd) };
+		let metadata = handle.metadata()?;
+		if metadata.file_type().is_symlink() {
+			return Err(io::Error::other("approved path was replaced by a symlink"));
+		}
+		Ok(Self { device: metadata.dev(), inode: metadata.ino(), _handle: Arc::new(handle) })
+	}
+
+	fn matches(&self, path: &Path) -> io::Result<bool> {
+		use std::os::unix::fs::MetadataExt as _;
+		let metadata = fs::symlink_metadata(path)?;
+		Ok(!metadata.file_type().is_symlink()
+			&& metadata.dev() == self.device
+			&& metadata.ino() == self.inode)
 	}
 }
 
@@ -112,6 +143,10 @@ struct PathIdentity {
 
 #[cfg(windows)]
 impl PathIdentity {
+	fn matches(&self, path: &Path) -> io::Result<bool> {
+		Ok(Self::capture(path)? == *self)
+	}
+
 	fn capture(path: &Path) -> io::Result<Self> {
 		use std::os::windows::fs::MetadataExt as _;
 
@@ -129,6 +164,10 @@ struct PathIdentity(PathBuf);
 
 #[cfg(not(any(unix, windows)))]
 impl PathIdentity {
+	fn matches(&self, path: &Path) -> io::Result<bool> {
+		Ok(Self::capture(path)? == *self)
+	}
+
 	fn capture(path: &Path) -> io::Result<Self> {
 		fs::canonicalize(path).map(Self)
 	}
@@ -1568,6 +1607,23 @@ mod tests {
 		fs::remove_dir(&scope).expect("remove scope");
 		fs::create_dir(&scope).expect("replace scope");
 		assert!(frozen.verify().is_err());
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn frozen_scope_clone_keeps_original_identity_and_rejects_symlink_replacement() {
+		use std::os::unix::fs::symlink;
+		let root = tempfile::tempdir().expect("root");
+		let scope = root.path().join("approved");
+		fs::create_dir(&scope).expect("scope");
+		let frozen = ApprovedPathScope::capture(&scope, ApprovedPathAccess::Write).expect("freeze");
+		let clone = frozen.clone();
+		drop(frozen);
+		clone.verify().expect("unchanged scope");
+		let moved = root.path().join("moved");
+		fs::rename(&scope, &moved).expect("rename original");
+		symlink(&moved, &scope).expect("symlink to original inode");
+		assert!(clone.verify().is_err(), "a new symlink is not the approved path");
 	}
 
 	#[cfg(unix)]
