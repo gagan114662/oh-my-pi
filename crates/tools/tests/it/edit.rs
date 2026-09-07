@@ -390,6 +390,10 @@ async fn host_edit_policy_overrides_legacy_fuzzy_request_and_requires_seen() {
 		denied_events.last(),
 		Some(Ev::Done(ToolTerminal::Done { result: Err(_), .. }))
 	));
+	let Some(Ev::Done(ToolTerminal::Done { result: Err(fault), .. })) = denied_events.last() else {
+		panic!("denied replacement must explain the failure");
+	};
+	assert!(text(&denied.prompt(Err(fault), &caps(&denied))).contains("No matching text found"));
 	assert!(denied_fake.state.lock().commits.is_empty());
 	assert!(!denied_fake.state.lock().prepared[0].allow_unpinned);
 
