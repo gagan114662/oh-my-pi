@@ -329,6 +329,13 @@ pub enum Prepared {
 	Rebuild,
 }
 
+/// One preflight frame either finishes inline or yields an owned compaction
+/// action to the Session actor.
+pub(crate) enum PreflightStep {
+	Ready(Prepared),
+	Compaction(crate::directors::compaction::CompactionWork),
+}
+
 /// Mutable cold-path capabilities for asynchronous pre-inference Directors.
 pub struct MutDirectorCx<'a> {
 	/// Authoritative session controller.
@@ -431,6 +438,16 @@ pub trait Director: Send + Sync {
 	/// Adds this Director's durable constructor and state properties.
 	fn state(&self) -> Vec<(Str, BindValue)> {
 		Vec::new()
+	}
+
+	/// Prepares a compaction action without retaining the Session borrow.
+	/// Other director kinds use their ordinary asynchronous preflight hook.
+	fn prepare_compaction(
+		&self,
+		_cx: &MutDirectorCx<'_>,
+		_request: &ChatRequest,
+	) -> Option<Result<crate::directors::compaction::CompactionWork, DirectorError>> {
+		None
 	}
 
 	/// Runs a cold auxiliary operation before request projection.
@@ -832,6 +849,31 @@ impl DirectorStack {
 		patch(session, "director.exit", vec![Op::Rm(handle)])?;
 		self.promote(session)?;
 		Ok(true)
+	}
+
+	/// Advances one frame in the same outer-to-inner order as preflight,
+	/// handing compaction back to the actor before its asynchronous work.
+	pub(crate) async fn before_inference_frame(
+		&self,
+		cx: &mut MutDirectorCx<'_>,
+		req: &ChatRequest,
+		index: usize,
+	) -> Result<Option<PreflightStep>, DirectorError> {
+		let Some(frame) = self.active.get(index) else {
+			return Ok(None);
+		};
+		cx.director = Some(frame.handle);
+		let result = if let Some(compaction) = frame.director.prepare_compaction(cx, req) {
+			compaction.map(PreflightStep::Compaction)
+		} else {
+			frame
+				.director
+				.before_inference(cx, req)
+				.await
+				.map(PreflightStep::Ready)
+		};
+		cx.director = None;
+		result.map(Some)
 	}
 
 	/// Runs asynchronous pre-inference hooks outermost to innermost.

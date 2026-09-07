@@ -135,6 +135,13 @@ pub(crate) struct CompactionPreparation {
 	context_window:  u64,
 }
 
+/// Owned compaction action returned to the Session actor before any await.
+/// The private snapshot can only be constructed by the compaction director.
+pub struct CompactionWork {
+	pub(crate) director: CompactionDirector,
+	pub(crate) prepared: Option<CompactionPreparation>,
+}
+
 pub(crate) struct CompactionSummary {
 	prepared:       CompactionPreparation,
 	summary:        Str,
@@ -331,6 +338,7 @@ impl CompactionDirector {
 			"warning": warning,
 		});
 		let compaction = Compaction {
+			receipt: None,
 			summary: blob,
 			boundary: plan.cut.boundary,
 			method: Some(self.method()),
@@ -438,6 +446,18 @@ impl CompactionDirector {
 impl Director for CompactionDirector {
 	fn id(&self) -> &'static str {
 		"compaction"
+	}
+
+	fn prepare_compaction(
+		&self,
+		cx: &MutDirectorCx<'_>,
+		request: &ChatRequest,
+	) -> Option<Result<CompactionWork, DirectorError>> {
+		Some(
+			self
+				.prepare(cx, request)
+				.map(|prepared| CompactionWork { director: self.clone(), prepared }),
+		)
 	}
 
 	fn before_inference<'a>(

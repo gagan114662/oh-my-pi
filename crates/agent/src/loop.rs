@@ -36,11 +36,11 @@ use tokio_util::sync::CancellationToken;
 use tower::Service;
 
 use crate::{
-	CallControl, CancelTree, Director as _, DirectorCx, DirectorError, DirectorRegistry,
-	DirectorStack, DispatchError, DispatchPolicy, Dispatcher, ExternalToolExecutor,
-	FileMentionService, FileMentionSource, KernelEvent, LiveComponent, LiveComponentError,
-	LoopDecision, MaterializedFileMention, MutDirectorCx, Prepared, PreparedCall, Received,
-	ReplyObligations, RouteFacts, SessionTool, ToolCancellation, TurnView, Up,
+	CallControl, CancelTree, DirectorCx, DirectorError, DirectorRegistry, DirectorStack,
+	DispatchError, DispatchPolicy, Dispatcher, ExternalToolExecutor, FileMentionService,
+	FileMentionSource, KernelEvent, LiveComponent, LiveComponentError, LoopDecision,
+	MaterializedFileMention, MutDirectorCx, Prepared, PreparedCall, Received, ReplyObligations,
+	RouteFacts, SessionTool, ToolCancellation, TurnView, Up,
 	directors::compaction::CompactionDirector,
 	parse_file_mentions,
 	steering::{
@@ -1343,25 +1343,90 @@ impl<C: Inference> Kernel<C> {
 					Some(control.clone()),
 					self.approvals.clone(),
 				);
-				let preflight = {
-					let mut cx = MutDirectorCx {
-						session,
-						inference: &mut self.client,
-						blobs: &self.dispatcher.policy().spill,
-						route: &route,
-						turn,
-						director: None,
-						events: Some(&self.events),
-						con: self.con.as_deref(),
-						hooks: self.lifecycle_hooks.as_ref(),
-					};
-					let preparing = directors.before_inference(&mut cx, &request);
-					tokio::pin!(preparing);
-					tokio::select! {
-						biased;
-						result = &mut preparing => PreflightSignal::Ready(result),
-						() = control.cancelled() => PreflightSignal::Cancelled,
-						message = preflight_control.recv() => PreflightSignal::Control(message),
+				let preflight = 'frames: {
+					let mut index = 0;
+					let mut aggregate = Prepared::Unchanged;
+					loop {
+						let step = {
+							let mut cx = MutDirectorCx {
+								session,
+								inference: &mut self.client,
+								blobs: &self.dispatcher.policy().spill,
+								route: &route,
+								turn,
+								director: None,
+								events: Some(&self.events),
+								con: self.con.as_deref(),
+								hooks: self.lifecycle_hooks.as_ref(),
+							};
+							let preparing = directors.before_inference_frame(&mut cx, &request, index);
+							tokio::pin!(preparing);
+							tokio::select! {
+								biased;
+								result = &mut preparing => result,
+								() = control.cancelled() => break 'frames PreflightSignal::Cancelled,
+								message = preflight_control.recv() => break 'frames PreflightSignal::Control(message),
+							}
+						};
+						let step = match step {
+							Ok(Some(step)) => step,
+							Ok(None) => break PreflightSignal::Ready(Ok(aggregate)),
+							Err(error) => break PreflightSignal::Ready(Err(error)),
+						};
+						index += 1;
+						let result = match step {
+							crate::director::PreflightStep::Ready(prepared) => Ok(prepared),
+							crate::director::PreflightStep::Compaction(work) => {
+								let Some(prepared) = work.prepared else {
+									continue;
+								};
+								let result = {
+									let summarizing = work.director.summarize_prepared(
+										prepared,
+										&mut self.client,
+										self.lifecycle_hooks.as_ref(),
+										Some(&self.events),
+									);
+									tokio::pin!(summarizing);
+									loop {
+										tokio::select! {
+											biased;
+											() = control.cancelled() => {
+												self.events.publish(KernelEvent::CompactionSettled { applied: false });
+												break 'frames PreflightSignal::Cancelled;
+											},
+											message = preflight_control.recv() => match message {
+												message @ Up::SessionMutation(_) => { let _ = preflight_control.handle(session, message)?; },
+												Up::ContextCompact(request) => request.reject_busy(),
+												message => {
+													self.events.publish(KernelEvent::CompactionSettled { applied: false });
+													break 'frames PreflightSignal::Control(message);
+												},
+											},
+											result = &mut summarizing => break result,
+										}
+									}
+								};
+								let result = match result {
+									Ok(Some(summary)) => work.director.commit_prepared(
+										session,
+										summary,
+										self.lifecycle_hooks.as_ref(),
+									),
+									Ok(None) => Ok(Prepared::Unchanged),
+									Err(error) => Err(error),
+								};
+								self.events.publish(KernelEvent::CompactionSettled {
+									applied: matches!(result, Ok(Prepared::Rebuild)),
+								});
+								result
+							},
+						};
+						match result {
+							Ok(Prepared::Rebuild) => aggregate = Prepared::Rebuild,
+							Ok(Prepared::Unchanged) => {},
+							Err(error) => break PreflightSignal::Ready(Err(error)),
+						}
 					}
 				};
 				let prepared = match preflight {
@@ -2116,6 +2181,17 @@ impl<C: Inference> Kernel<C> {
 		self.context_control.refresh(self.context_projector());
 		if let Up::ContextCompact(request) = message {
 			if let Some(request) = request.take() {
+				match request.guard.replay(session) {
+					Ok(Some(outcome)) => {
+						let _ = request.reply.send(Ok(outcome));
+						return Ok(());
+					},
+					Err(error) => {
+						let _ = request.reply.send(Err(error));
+						return Ok(());
+					},
+					Ok(None) => {},
+				}
 				let outcome = request.guard.outcome.clone();
 				let control = RunControl::new(request.guard.cancellation.clone(), None);
 				let result = self

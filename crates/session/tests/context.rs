@@ -192,3 +192,55 @@ fn pin_acknowledgement_replays_without_appending_and_rejects_reused_arguments() 
 	));
 	assert_eq!(session.head(), accepted);
 }
+
+#[test]
+fn compaction_receipt_is_atomic_replayable_and_branch_scoped() {
+	use omp_journal::data::CompactionReceipt;
+	use omp_session::context::ContextRequestKey;
+	let directory = tempfile::tempdir().expect("directory");
+	let path = directory.path().join("compaction-receipt.oms");
+	let mut session = Session::create(&path, ComponentRegistry::default()).expect("session");
+	session.begin_turn().expect("turn");
+	let boundary = session.user("history", Vec::new()).expect("history");
+	let request = ContextRequestKey {
+		owner:       Str::new_static("owner"),
+		key:         Str::new_static("compact"),
+		fingerprint: Str::new_static("canonical-arguments"),
+	};
+	let outcome = serde_json::json!({"epoch": 1, "summary_bytes": 7});
+	let mut compaction =
+		Compaction::new(session.blobs().put(b"summary").expect("summary"), boundary);
+	compaction.receipt = Some(CompactionReceipt {
+		owner:       request.owner.clone(),
+		key:         request.key.clone(),
+		fingerprint: request.fingerprint.clone(),
+		outcome:     outcome.clone(),
+	});
+	let count = session.entry_count();
+	let accepted = session.compaction(compaction.clone()).expect("commit");
+	assert_eq!(
+		session.entry_count(),
+		count + 1,
+		"summary and receipt use exactly one journal entry"
+	);
+	drop(session);
+	let mut session = Session::open(&path, ComponentRegistry::default()).expect("replay");
+	assert_eq!(
+		session
+			.context_compaction_result(&request)
+			.expect("receipt"),
+		Some(outcome)
+	);
+	assert_eq!(session.compaction(compaction.clone()).expect("retry"), accepted);
+	assert_eq!(session.entry_count(), count + 1, "retry never appends");
+	compaction.receipt.as_mut().expect("receipt").fingerprint = Str::new_static("changed");
+	assert!(matches!(session.compaction(compaction), Err(SessionError::ContextRequestConflict)));
+	assert_eq!(session.head(), Some(accepted));
+	session.rewind(boundary).expect("rewind");
+	assert_eq!(
+		session
+			.context_compaction_result(&request)
+			.expect("branch lookup"),
+		None
+	);
+}

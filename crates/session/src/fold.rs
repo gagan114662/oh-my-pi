@@ -528,6 +528,12 @@ impl Session {
 			.with_prop(PropId::Boundary, Value::Str(Str::new(payload.boundary.to_string())))
 			.with_prop(PropId::Summary, Value::Str(summary))
 			.with_prop(PropId::Blob, Value::Str(blob_address(&payload.summary)));
+		if let Some(receipt) = &payload.receipt {
+			node = node.with_prop(
+				PropKey::Custom(Str::new_static(crate::context::COMPACTION_RECEIPT_PROP)),
+				Value::Json(serde_json::value::to_raw_value(receipt)?),
+			);
+		}
 		if let Some(method) = payload.method {
 			node = node.with_prop(PropId::Method, Value::Str(method));
 		}

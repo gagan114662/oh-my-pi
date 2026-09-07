@@ -29,7 +29,10 @@ impl ContextControlError {
 /// Revocable admission lease. The read lock covers the actual actor mutation;
 /// revocation waits for any already-committing operation to finish.
 #[derive(Clone, Debug, Default)]
-pub struct ContextControlLease(Arc<RwLock<bool>>);
+pub struct ContextControlLease {
+	active:  Arc<RwLock<bool>>,
+	revoked: CancellationToken,
+}
 
 /// Admission held again around the final journal append after summarization.
 #[derive(Clone, Debug)]
@@ -38,22 +41,45 @@ pub(crate) struct ContextCommitGuard {
 	connection:              ContextControlLease,
 	pub(crate) cancellation: CancellationToken,
 	pub(crate) outcome:      Arc<parking_lot::Mutex<Option<Value>>>,
+	request:                 omp_session::context::ContextRequestKey,
 }
 
 impl ContextCommitGuard {
+	pub(crate) fn replay(&self, session: &Session) -> Result<Option<Value>, ContextControlError> {
+		let live = self.live.active.read();
+		let connection = self.connection.active.read();
+		if !*live || !*connection {
+			return Err(ContextControlError::new("StaleGeneration", "context owner was revoked"));
+		}
+		if self.cancellation.is_cancelled() {
+			return Err(ContextControlError::new("Cancelled", "context request was cancelled"));
+		}
+		session
+			.context_compaction_result(&self.request)
+			.map_err(session_error)
+	}
+
 	pub(crate) fn commit(
 		&self,
 		session: &mut Session,
-		compaction: omp_journal::data::Compaction,
+		mut compaction: omp_journal::data::Compaction,
 		outcome: Value,
 	) -> Result<omp_journal::EntryId, omp_session::SessionError> {
-		let live = self.live.0.read();
-		let connection = self.connection.0.read();
+		let live = self.live.active.read();
+		let connection = self.connection.active.read();
 		if !*live || !*connection || self.cancellation.is_cancelled() {
 			return Err(omp_session::SessionError::ContextAdmissionRevoked);
 		}
+		compaction.receipt = Some(omp_journal::data::CompactionReceipt {
+			owner: self.request.owner.clone(),
+			key: self.request.key.clone(),
+			fingerprint: self.request.fingerprint.clone(),
+			outcome,
+		});
 		let entry = session.compaction(compaction)?;
-		*self.outcome.lock() = Some(outcome);
+		*self.outcome.lock() = session
+			.context_compaction_result(&self.request)
+			.map_err(|_| omp_session::SessionError::InvalidContextReceipt)?;
 		Ok(entry)
 	}
 }
@@ -95,12 +121,13 @@ impl ContextControlLease {
 	/// Creates an admitted host-generation lease.
 	#[must_use]
 	pub fn admitted() -> Self {
-		Self(Arc::new(RwLock::new(true)))
+		Self { active: Arc::new(RwLock::new(true)), revoked: CancellationToken::new() }
 	}
 
 	/// Revokes every queued operation sharing this lease.
 	pub fn revoke(&self) {
-		*self.0.write() = false;
+		*self.active.write() = false;
+		self.revoked.cancel();
 	}
 }
 
@@ -137,10 +164,19 @@ impl ContextControl {
 	) -> Result<Value, ContextControlError> {
 		let projector = self.projector.clone();
 		let live = self.live.clone();
+		let binding_revoked = live.revoked.clone();
+		let connection_revoked = lease.revoked.clone();
 		let cancellation = CancellationToken::new();
 		let _cancel_on_drop = cancellation.clone().drop_guard();
 		let (reply, response) = flume::bounded(1);
 		if operation == "omp.context.compact" {
+			let request = request_key(&owner, &operation, &arguments)?;
+			if arguments
+				.get("focus")
+				.is_some_and(|focus| !focus.is_string())
+			{
+				return Err(ContextControlError::new("InvalidArgument", "focus must be a string"));
+			}
 			if arguments
 				.get("tier")
 				.is_some_and(|tier| !tier.is_null() && tier.as_str() != Some("local"))
@@ -162,6 +198,7 @@ impl ContextControl {
 					connection: lease,
 					cancellation,
 					outcome: Arc::default(),
+					request,
 				},
 				reply,
 			};
@@ -174,13 +211,11 @@ impl ContextControl {
 				.map_err(|_| {
 					ContextControlError::new("ContextUnavailable", "kernel mailbox is closed")
 				})?;
-			return response.recv_async().await.map_err(|_| {
-				ContextControlError::new("ContextUnavailable", "kernel dropped compaction")
-			})?;
+			return receive_response(response, binding_revoked, connection_revoked).await;
 		}
 		let mutation = SessionMutation::new(move |session| {
-			let binding = live.0.read();
-			let admitted = lease.0.read();
+			let binding = live.active.read();
+			let admitted = lease.active.read();
 			let result = if !*admitted || !*binding {
 				Err(ContextControlError::new("StaleGeneration", "context owner was revoked"))
 			} else if cancellation.is_cancelled() {
@@ -206,9 +241,20 @@ impl ContextControl {
 			.send_async(Up::SessionMutation(mutation))
 			.await
 			.map_err(|_| ContextControlError::new("ContextUnavailable", "kernel mailbox is closed"))?;
-		response.recv_async().await.map_err(|_| {
-			ContextControlError::new("ContextUnavailable", "kernel dropped the request")
-		})?
+		receive_response(response, binding_revoked, connection_revoked).await
+	}
+}
+
+async fn receive_response(
+	response: flume::Receiver<Result<Value, ContextControlError>>,
+	binding_revoked: CancellationToken,
+	connection_revoked: CancellationToken,
+) -> Result<Value, ContextControlError> {
+	tokio::select! {
+		biased;
+		result = response.recv_async() => result.map_err(|_| ContextControlError::new("ContextUnavailable", "kernel dropped the request"))?,
+		() = binding_revoked.cancelled() => Err(ContextControlError::new("StaleGeneration", "kernel binding was revoked")),
+		() = connection_revoked.cancelled() => Err(ContextControlError::new("StaleGeneration", "context connection was revoked")),
 	}
 }
 
@@ -252,6 +298,33 @@ fn session_error(error: omp_session::context::ContextPinError) -> ContextControl
 	ContextControlError::new(code, error)
 }
 
+fn request_key(
+	owner: &str,
+	operation: &str,
+	arguments: &Map<String, Value>,
+) -> Result<omp_session::context::ContextRequestKey, ContextControlError> {
+	let key = string(arguments, "idempotency_key")?;
+	if key.is_empty() || key.len() > 512 {
+		return Err(ContextControlError::new(
+			"InvalidArgument",
+			"idempotency_key must contain 1..512 bytes",
+		));
+	}
+	let mut normalized = Value::Object(arguments.clone());
+	normalized
+		.as_object_mut()
+		.expect("argument object")
+		.remove("idempotency_key");
+	normalized.sort_all_objects();
+	let fingerprint =
+		omp_core::Hash32::sum(json!([operation, normalized]).to_string().as_bytes()).to_hex();
+	Ok(omp_session::context::ContextRequestKey {
+		owner:       Str::new(owner),
+		key:         Str::new(key),
+		fingerprint: Str::new(fingerprint),
+	})
+}
+
 fn execute(
 	session: &mut Session,
 	projector: &ContextProjector,
@@ -260,26 +333,7 @@ fn execute(
 	arguments: &Map<String, Value>,
 ) -> Result<Value, ContextControlError> {
 	let receipt = if matches!(operation, "omp.context.pin" | "omp.context.unpin") {
-		let key = string(arguments, "idempotency_key")?;
-		if key.is_empty() || key.len() > 512 {
-			return Err(ContextControlError::new(
-				"InvalidArgument",
-				"idempotency_key must contain 1..512 bytes",
-			));
-		}
-		let mut normalized = Value::Object(arguments.clone());
-		normalized
-			.as_object_mut()
-			.expect("argument object")
-			.remove("idempotency_key");
-		normalized.sort_all_objects();
-		let fingerprint =
-			omp_core::Hash32::sum(json!([operation, normalized]).to_string().as_bytes()).to_hex();
-		let request = omp_session::context::ContextRequestKey {
-			owner:       Str::new(owner),
-			key:         Str::new(key),
-			fingerprint: Str::new(fingerprint),
-		};
+		let request = request_key(owner, operation, arguments)?;
 		if let Some(count) = session
 			.context_request_count(&request)
 			.map_err(session_error)?

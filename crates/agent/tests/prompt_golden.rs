@@ -422,6 +422,7 @@ fn retained_snapcompact_frame_is_inlined_after_the_summary() {
 		.expect("frame stores");
 	session
 		.compaction(omp_journal::data::Compaction {
+			receipt: None,
 			summary,
 			boundary,
 			method: Some(Str::new_static("snapcompact")),
@@ -467,6 +468,7 @@ fn missing_snapcompact_frame_drops_only_the_frame_and_keeps_summary_text() {
 		omp_journal::blob::BlobRef { hash: Hash32::sum(b"missing snapcompact frame"), size: 25 };
 	session
 		.compaction(omp_journal::data::Compaction {
+			receipt: None,
 			summary,
 			boundary,
 			method: Some(Str::new_static("snapcompact")),

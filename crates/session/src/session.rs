@@ -29,6 +29,12 @@ use crate::{
 /// Failure to append, decode, or fold a session entry.
 #[derive(Debug, Error)]
 pub enum SessionError {
+	/// A durable context retry key was reused for another operation or payload.
+	#[error("context request identity conflicts with an earlier acknowledgement")]
+	ContextRequestConflict,
+	/// Durable context retry metadata cannot be decoded.
+	#[error("invalid durable context receipt state")]
+	InvalidContextReceipt,
 	/// An extension generation or request was revoked before durable admission.
 	#[error("context request was revoked before the journal append")]
 	ContextAdmissionRevoked,
@@ -933,6 +939,28 @@ impl Session {
 	/// Records a content-addressed compaction summary, its hidden boundary,
 	/// maintenance facts, and bounded snapcompact frame references.
 	pub fn compaction(&mut self, compaction: Compaction) -> Result<EntryId, SessionError> {
+		if let Some(receipt) = &compaction.receipt {
+			let request = crate::context::ContextRequestKey {
+				owner:       receipt.owner.clone(),
+				key:         receipt.key.clone(),
+				fingerprint: receipt.fingerprint.clone(),
+			};
+			let replay = self
+				.context_compaction_result(&request)
+				.map_err(|error| match error {
+					crate::context::ContextPinError::IdempotencyConflict => {
+						SessionError::ContextRequestConflict
+					},
+					_ => SessionError::InvalidContextReceipt,
+				})?;
+			if replay.is_some() {
+				return self
+					.context_compaction_receipt(&request)
+					.map_err(|_| SessionError::InvalidContextReceipt)?
+					.map(|(entry, _)| entry)
+					.ok_or(SessionError::InvalidContextReceipt);
+			}
+		}
 		let by = self.turn_cause()?;
 		crate::context::validate_compaction_pins(self.dom(), compaction.boundary)?;
 		self.validate_compaction_frames(&compaction)?;

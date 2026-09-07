@@ -115,7 +115,7 @@ async fn idle_context_requests_observe_real_projection_and_revoke_before_commit(
 /// The compaction callback waits for an actor-owned view and optionally pins
 /// its source history before releasing the summary gate. A borrowed-Session
 /// implementation deadlocks here instead of reaching the final assertions.
-async fn nested_compaction(pin_during_hook: bool, revoke_during_hook: bool) {
+async fn nested_compaction(pin_during_hook: bool, revoke_during_hook: bool, automatic: bool) {
 	use omp_agent::{GateDecision, HookGate, HookPhase, OnFailure, SourceRef, When};
 	use omp_proto::toolhost::v1::HookEventId;
 	let temp = tempfile::tempdir().expect("tempdir");
@@ -141,8 +141,15 @@ async fn nested_compaction(pin_during_hook: bool, revoke_during_hook: bool) {
 	omp_ai::settings::AI_COMPACTION_KEEP_RECENT_TOKENS
 		.set(&con, 0)
 		.expect("keep none");
-	let (inference, requests) =
-		ScriptedInference::new([support::text_script("faithful history summary")]);
+	if automatic {
+		omp_ai::settings::AI_COMPACTION_THRESHOLD_TOKENS
+			.set(&con, 1)
+			.expect("auto threshold");
+	}
+	let (inference, requests) = ScriptedInference::new([
+		support::text_script("faithful history summary"),
+		support::text_script("answer after compaction"),
+	]);
 	let mut kernel = Kernel::new(
 		inference,
 		Arc::new(Registry::new()),
@@ -193,40 +200,76 @@ async fn nested_compaction(pin_during_hook: bool, revoke_during_hook: bool) {
 				.expect("answer");
 		}
 	});
-	let pending = tokio::spawn(async move {
-		control
-			.request(
-				sf!("owner"),
-				sf!("omp.context.compact"),
-				json!({"tier": "local", "idempotency_key": "compact-test"})
-					.as_object()
-					.expect("args")
-					.clone(),
-				lease,
-			)
-			.await
-	});
-	let receiver = kernel.idle_control_receiver();
-	let message = receiver.recv_async().await.expect("compact queued");
-	tokio::time::timeout(
-		std::time::Duration::from_secs(5),
-		kernel.handle_idle_control(&mut session, message),
-	)
-	.await
-	.expect("nested hook must not deadlock")
-	.expect("actor");
+	let (succeeded, outcome) = if automatic {
+		let result = tokio::time::timeout(
+			std::time::Duration::from_secs(5),
+			kernel.run_turn(
+				&mut session,
+				omp_agent::TurnInput { text: sf!("automatic trigger"), attachments: Vec::new() },
+				omp_agent::RunControl::default(),
+			),
+		)
+		.await
+		.expect("automatic nested hook must not deadlock");
+		(result.is_ok(), None)
+	} else {
+		let retry_control = control.clone();
+		let pending = tokio::spawn(async move {
+			control
+				.request(
+					sf!("owner"),
+					sf!("omp.context.compact"),
+					json!({"tier": "local", "idempotency_key": "compact-test"})
+						.as_object()
+						.expect("args")
+						.clone(),
+					lease,
+				)
+				.await
+		});
+		let receiver = kernel.idle_control_receiver();
+		let message = receiver.recv_async().await.expect("compact queued");
+		tokio::time::timeout(
+			std::time::Duration::from_secs(5),
+			kernel.handle_idle_control(&mut session, message),
+		)
+		.await
+		.expect("nested hook must not deadlock")
+		.expect("actor");
+		let result = pending.await.expect("request");
+		if let Ok(original) = &result {
+			let head = session.head();
+			let replay = tokio::spawn(async move {
+				retry_control
+					.request(
+						sf!("owner"),
+						sf!("omp.context.compact"),
+						json!({"tier": "local", "idempotency_key": "compact-test"})
+							.as_object()
+							.expect("args")
+							.clone(),
+						ContextControlLease::admitted(),
+					)
+					.await
+			});
+			let message = receiver.recv_async().await.expect("retry queued");
+			kernel
+				.handle_idle_control(&mut session, message)
+				.await
+				.expect("retry actor");
+			assert_eq!(replay.await.expect("retry task").expect("retry"), *original);
+			assert_eq!(session.head(), head, "retry does not compact twice");
+		}
+		(result.is_ok(), result.ok())
+	};
 	callback.await.expect("callback");
-	let result = pending.await.expect("request");
 	let markers = session
 		.dom()
 		.select("compaction")
 		.expect("selector")
 		.count();
 	if pin_during_hook || revoke_during_hook {
-		assert!(
-			result.is_err(),
-			"final commit must reject revoked admission or newly protected history"
-		);
+		assert!(!succeeded, "final commit must reject revoked admission or newly protected history");
 		assert_eq!(markers, 0, "no compaction was journaled");
 		if revoke_during_hook {
 			assert_eq!(session.head(), before);
@@ -240,24 +283,128 @@ async fn nested_compaction(pin_during_hook: bool, revoke_during_hook: bool) {
 			);
 		}
 	} else {
-		let result = result.expect("compaction result");
-		assert_eq!(result["epoch"], 1);
+		assert!(succeeded, "compaction succeeds");
+		if let Some(outcome) = outcome {
+			assert_eq!(outcome["epoch"], 1);
+		}
 		assert_eq!(markers, 1);
 	}
-	assert_eq!(requests.lock().len(), 1, "real summary inference was called");
+	if revoke_during_hook {
+		assert!(requests.lock().len() <= 1, "revocation may cancel before summary starts");
+	} else {
+		assert_eq!(
+			requests.lock().len(),
+			if automatic && !pin_during_hook { 2 } else { 1 },
+			"real summary inference was called"
+		);
+	}
 }
 
 #[tokio::test]
 async fn compaction_hook_can_await_live_context_view_without_deadlock() {
-	nested_compaction(false, false).await;
+	nested_compaction(false, false, false).await;
 }
 
 #[tokio::test]
 async fn pin_committed_inside_compaction_hook_blocks_the_final_append() {
-	nested_compaction(true, false).await;
+	nested_compaction(true, false, false).await;
 }
 
 #[tokio::test]
 async fn generation_revoked_inside_compaction_hook_blocks_the_final_append() {
-	nested_compaction(false, true).await;
+	nested_compaction(false, true, false).await;
+}
+
+#[tokio::test]
+async fn automatic_compaction_hook_awaits_context_without_restarting_inference() {
+	nested_compaction(false, false, true).await;
+}
+
+#[tokio::test]
+async fn automatic_compaction_rechecks_pin_committed_inside_its_hook() {
+	nested_compaction(true, false, true).await;
+}
+
+#[tokio::test]
+async fn revoking_connection_drops_inflight_summary_without_waiting_for_provider() {
+	use std::sync::atomic::{AtomicBool, Ordering};
+	struct PausedInference {
+		started: Arc<tokio::sync::Notify>,
+		dropped: Arc<AtomicBool>,
+	}
+	struct Inflight(Arc<AtomicBool>);
+	impl Drop for Inflight {
+		fn drop(&mut self) {
+			self.0.store(true, Ordering::SeqCst);
+		}
+	}
+	impl omp_agent::Inference for PausedInference {
+		async fn chat(
+			&mut self,
+			_request: omp_ai::ChatRequest,
+		) -> Result<omp_ai::ChatStream, omp_ai::Error> {
+			let _inflight = Inflight(self.dropped.clone());
+			self.started.notify_one();
+			std::future::pending().await
+		}
+	}
+	let temp = tempfile::tempdir().expect("tempdir");
+	let started = Arc::new(tokio::sync::Notify::new());
+	let dropped = Arc::new(AtomicBool::new(false));
+	let con = Arc::new(omp_con::Ctx::new());
+	omp_ai::settings::AI_COMPACTION_KEEP_RECENT_TOKENS
+		.set(&con, 0)
+		.expect("keep none");
+	let mut kernel = Kernel::new(
+		PausedInference { started: started.clone(), dropped: dropped.clone() },
+		Arc::new(Registry::new()),
+		DispatchPolicy::new(BlobStore::open(temp.path().join("blobs")).expect("blobs")),
+		StaticPrompt(sf!("system")),
+	)
+	.with_con_context(con);
+	let mut session = fresh_session(&temp.path().join("cancel-summary.oms"));
+	session.begin_turn().expect("history turn");
+	session
+		.user("history to summarize", Vec::new())
+		.expect("history");
+	session.begin_turn().expect("current turn");
+	session.user("next", Vec::new()).expect("prompt");
+	let before = session.head();
+	let control = kernel.context_control();
+	let lease = ContextControlLease::admitted();
+	let pending = tokio::spawn({
+		let lease = lease.clone();
+		async move {
+			control
+				.request(
+					sf!("owner"),
+					sf!("omp.context.compact"),
+					json!({"idempotency_key": "cancel-inflight"})
+						.as_object()
+						.expect("args")
+						.clone(),
+					lease,
+				)
+				.await
+		}
+	});
+	let message = kernel
+		.idle_control_receiver()
+		.recv_async()
+		.await
+		.expect("queued");
+	let revoke = async {
+		started.notified().await;
+		lease.revoke();
+	};
+	let actor = kernel.handle_idle_control(&mut session, message);
+	let (actor, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		tokio::join!(actor, revoke)
+	})
+	.await
+	.expect("revocation cancels pending provider immediately");
+	actor.expect("actor");
+	assert_eq!(pending.await.expect("request").expect_err("revoked").code, "StaleGeneration");
+	assert!(dropped.load(Ordering::SeqCst), "provider future was dropped");
+	assert_eq!(session.head(), before, "cancelled summary did not append");
 }

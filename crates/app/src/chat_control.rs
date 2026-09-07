@@ -2387,6 +2387,7 @@ impl<C: omp_agent::Inference> Controller<C> {
 		self
 			.session
 			.compaction(omp_journal::data::Compaction {
+				receipt: None,
 				summary,
 				boundary,
 				method: Some(Str::new_static("clear")),

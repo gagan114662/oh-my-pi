@@ -10,9 +10,11 @@ use thiserror::Error;
 use crate::{Session, SessionError};
 
 const PINS_PROP: &str = "omp/context-pins";
+pub(crate) const COMPACTION_RECEIPT_PROP: &str = "omp/context-compaction-receipt";
 const RECEIPTS_PROP: &str = "omp/context-receipts";
 
 /// Durable request identity and canonical argument digest supplied by CONTROL.
+#[derive(Clone, Debug)]
 pub struct ContextRequestKey {
 	/// Authenticated extension owner.
 	pub owner:       Str,
@@ -414,11 +416,64 @@ impl Session {
 		}
 	}
 
+	/// Original compaction acknowledgement from the selected journal branch.
+	pub fn context_compaction_result(
+		&self,
+		request: &ContextRequestKey,
+	) -> Result<Option<serde_json::Value>, ContextPinError> {
+		if self.context_receipts()?.contains_key(&receipt_key(request)) {
+			return Err(ContextPinError::IdempotencyConflict);
+		}
+		self
+			.context_compaction_receipt(request)
+			.map(|receipt| receipt.map(|(_, value)| value))
+	}
+
+	pub(crate) fn context_compaction_receipt(
+		&self,
+		request: &ContextRequestKey,
+	) -> Result<Option<(omp_journal::EntryId, serde_json::Value)>, ContextPinError> {
+		for handle in self
+			.dom()
+			.select("compaction")
+			.map_err(|_| ContextPinError::InvalidState)?
+		{
+			let node = self
+				.dom()
+				.get(handle)
+				.ok_or(ContextPinError::InvalidState)?;
+			let Some(value) = node.prop(&PropKey::Custom(Str::new_static(COMPACTION_RECEIPT_PROP)))
+			else {
+				continue;
+			};
+			let Value::Json(raw) = value else {
+				return Err(ContextPinError::InvalidState);
+			};
+			let receipt: omp_journal::data::CompactionReceipt =
+				serde_json::from_str(raw.get()).map_err(|_| ContextPinError::InvalidState)?;
+			if receipt.owner != request.owner || receipt.key != request.key {
+				continue;
+			}
+			if receipt.fingerprint != request.fingerprint {
+				return Err(ContextPinError::IdempotencyConflict);
+			}
+			let Some(Value::Str(id)) = node.prop(&omp_dom::PropKey::Known(omp_dom::PropId::Id)) else {
+				return Err(ContextPinError::InvalidState);
+			};
+			let entry = id.parse().map_err(|_| ContextPinError::InvalidState)?;
+			return Ok(Some((entry, receipt.outcome)));
+		}
+		Ok(None)
+	}
+
 	/// Returns the original acknowledgement for an exact durable request retry.
 	pub fn context_request_count(
 		&self,
 		request: &ContextRequestKey,
 	) -> Result<Option<usize>, ContextPinError> {
+		if self.context_compaction_receipt(request)?.is_some() {
+			return Err(ContextPinError::IdempotencyConflict);
+		}
 		match self.context_receipts()?.get(&receipt_key(request)) {
 			Some(receipt) if receipt.fingerprint != request.fingerprint => {
 				Err(ContextPinError::IdempotencyConflict)
