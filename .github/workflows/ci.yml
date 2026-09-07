@@ -492,6 +492,20 @@ jobs:
           path: ${{ env.ENVD_PROOF_DIR }}/roster/policy.log
           if-no-files-found: warn
           retention-days: 14
+      - name: Prove managed skill discovery roundtrip
+        run: |
+          set -o pipefail
+          mkdir -p target/managed-skill-proof
+          cargo nextest run --profile ci --locked -p omp-driver --test managed_skill_roundtrip --no-tests fail 2>&1 | tee target/managed-skill-proof/nextest.log
+          cargo test --doc --locked -p omp-driver 2>&1 | tee target/managed-skill-proof/doctests.log
+
+      - name: Publish managed skill proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: managed-skill-roundtrip
+          path: target/managed-skill-proof/
+          if-no-files-found: error
 
       - name: Prove Linux environment host contracts
         env:
