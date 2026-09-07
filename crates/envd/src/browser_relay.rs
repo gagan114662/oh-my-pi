@@ -886,14 +886,8 @@ async fn dispatch_socket_text(bridge: &Arc<RelayBridge>, role: SocketRole, id: u
 		SocketRole::Cdp => {
 			let bridge = Arc::clone(bridge);
 			let text = text.to_owned();
-			// Register state transitions in wire order before reading another command.
-			// Poll with this socket task's real context, then transfer the same owned
-			// future to a task if it waits on an RPC. Awaiting it to completion here
-			// would prevent Runtime.disable and local protocol fences from progressing.
-			let mut command = Box::pin(async move { bridge.cdp_message(id, &text).await });
-			if futures::poll!(command.as_mut()).is_pending() {
-				tokio::spawn(command);
-			}
+			// NEGATIVE CONTROL: restore spawn-only registration; keep all tests unchanged.
+			tokio::spawn(async move { bridge.cdp_message(id, &text).await });
 		},
 	}
 }
