@@ -1299,11 +1299,29 @@ fn terminal_resolution_checks_runtime_cas_before_decoding_cancellation() {
 			..
 		}));
 	}
-	// Preserve length so this specifically tests digest validation, not only size.
+}
+
+#[test]
+#[should_panic(expected = "terminal artifact content digest")]
+fn terminal_resolution_rejects_same_length_corrupt_artifact() {
+	// Cranelift does not emit catch_unwind landing pads. Let the LLVM-built
+	// libtest harness check this exact panic; the successful roundtrips above
+	// remain an independent positive test.
+	let scratch = tempfile::tempdir().expect("scratch");
+	let session_path = scratch.path().join("proof.oms");
+	let store = omp_journal::blob::BlobStore::open(scratch.path()).expect("CAS");
+	let raw = br#"{"fixture":"original"}"#;
+	let reference = store.put(raw).expect("persist artifact");
+	let spilled = serde_json::value::to_raw_value(&omp_tool::CallOutcomeDetails::Spilled {
+		blob:     omp_tool::BlobRef {
+			hash:       Str::new(reference.to_hex().as_str()),
+			media_type: Str::new_static("application/json"),
+			byte_len:   reference.size,
+		},
+		byte_len: reference.size,
+	})
+	.expect("spill JSON");
 	fs::write(store.path(&reference), vec![b' '; reference.size as usize])
 		.expect("corrupt artifact");
-	assert!(
-		std::panic::catch_unwind(|| resolve_terminal(&session_path, &spilled)).is_err(),
-		"same-length corrupt content must be rejected before terminal decoding"
-	);
+	resolve_terminal(&session_path, &spilled);
 }
