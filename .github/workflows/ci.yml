@@ -306,6 +306,8 @@ jobs:
     needs: [format, adr_status, runtime_spec, licenses, roster_coverage]
     runs-on: macos-15
     timeout-minutes: 120
+    env:
+      TEST_INVENTORY_DIR: target/test-inventory/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
 
@@ -350,11 +352,17 @@ jobs:
             cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
             cargo-${{ runner.os }}-${{ runner.arch }}-
 
+      - name: Validate test inventory tooling
+        run: python3 scripts/test-inventory-test.py
+
+      - name: Initialize workspace test inventory
+        run: python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" init
+
       - name: Lint workspace
         run: cargo clippy --workspace --locked
 
       - name: Test workspace
-        run: cargo nextest run --profile ci --workspace --exclude omp-e2e --locked
+        run: python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase workspace -- --workspace --exclude omp-e2e --locked
       # nextest cannot run doctests; omp has them in 25+ modules, so they need
       # their own libtest pass or the coverage silently disappears.
       - name: Test doctests
@@ -368,7 +376,7 @@ jobs:
 
       - name: Run acceptance proofs P1-P6
         run: |
-          cargo nextest run --profile ci -p omp-e2e --locked \
+          python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p1-p6 -- -p omp-e2e --locked \
             --test p1_doc_race \
             --test p2_cancel_matrix \
             --test p3_detached_jobs \
@@ -378,7 +386,7 @@ jobs:
 
       - name: Run acceptance proofs P9-P10 and tool sources
         run: |
-          cargo nextest run --profile ci -p omp-e2e --locked \
+          python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p9-p10-tools -- -p omp-e2e --locked \
             --test p9_isolation \
             --test p9_extension_control \
             --test p10_lift_idempotence \
@@ -387,10 +395,10 @@ jobs:
       - name: Run terminal proof P7
         env:
           TERM: xterm-256color
-        run: cargo nextest run --profile ci -p omp-e2e --test p7_tui --locked
+        run: python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p7 -- -p omp-e2e --test p7_tui --locked
 
       - name: Validate P8 baseline contract
-        run: cargo nextest run --profile ci -p omp-e2e --test p8_baselines --locked
+        run: python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p8 -- -p omp-e2e --test p8_baselines --locked
 
       - name: Record P8 baseline
         continue-on-error: true
@@ -405,6 +413,19 @@ jobs:
           name: omp-e2e-baseline-macos-arm64
           path: target/e2e-artifacts/p8-baselines.json
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Report executed workspace tests
+        if: always()
+        run: python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" report
+
+      - name: Upload workspace test inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workspace-test-inventory-macos-arm64
+          path: ${{ env.TEST_INVENTORY_DIR }}
+          if-no-files-found: error
           retention-days: 14
 
   p7_linux:
