@@ -129,7 +129,7 @@ pub async fn read_bounded(
 			.min(limit),
 	);
 	while let Some(chunk) = response.chunk().await? {
-		if chunk.len() > limit.saturating_sub(body.len()) {
+		if chunk.len() > usize::MAX.saturating_sub(body.len()) {
 			return Err(BodyError::TooLarge { limit });
 		}
 		body.extend_from_slice(&chunk);
