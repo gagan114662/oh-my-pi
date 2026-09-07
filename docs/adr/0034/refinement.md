@@ -17,6 +17,11 @@ The abstraction is deliberately limited:
 - Model Wide maps to width 32 with the unwrapped `row-a`/`row-b` alphabet.
 - Model Create followed by Admit maps to `Slots::open` at admission. Queued
   allocation and animated viewport scheduling are not checked here.
+- Model Update describes a visible snapshot. The default Rust stream root
+  animates reveal, so an append is followed by 400 real `Slots::tick` calls at
+  17 ms intervals of synthetic monotonic time. These history-preserving stutters
+  must settle to the model row count within that fixed budget; no delivery is
+  acknowledged during animation. This checks settled snapshots, not reveal timing.
 - BeginFlush is a scheduler stutter because `Slots::plan` already stages
   finalized rows; only the acknowledgement commits them.
 - The model resets emitted counts on retirement. Rust retains those counts, so
