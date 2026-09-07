@@ -1166,7 +1166,6 @@ type ReadReply = oneshot::Sender<Result<ReadResult>>;
 
 type StateReply = oneshot::Sender<Result<ActorStateSnapshot>>;
 type ReserveReply = oneshot::Sender<Result<ReservedDocument>>;
-type PermissionReply = oneshot::Sender<Result<PathMetadata>>;
 enum Command {
 	Open {
 		lease_id: LeaseId,
@@ -1367,7 +1366,6 @@ struct DocumentActor {
 	queued_reads: Vec<(Option<Revision>, ReadSelection, ReadReply)>,
 	queued_states: Vec<StateReply>,
 	queued_reserves: Vec<(TransactionId, Revision, ReserveReply)>,
-	queued_permissions: Vec<(Revision, PortablePermissions, FollowSymlinks, PermissionReply)>,
 	activation_in_flight: bool,
 	reload_in_flight: bool,
 	persist_in_flight: bool,
@@ -1422,7 +1420,6 @@ impl DocumentActor {
 			queued_reads: Vec::new(),
 			queued_states: Vec::new(),
 			queued_reserves: Vec::new(),
-			queued_permissions: Vec::new(),
 			activation_in_flight: false,
 			reload_in_flight: false,
 			persist_in_flight: false,
@@ -1604,7 +1601,6 @@ impl DocumentActor {
 			&& self.queued_reads.is_empty()
 			&& self.queued_states.is_empty()
 			&& self.queued_reserves.is_empty()
-			&& self.queued_permissions.is_empty()
 		{
 			self.idle_deadline = Some(Instant::now() + IDLE_EVICTION_DELAY);
 		}
@@ -1827,14 +1823,6 @@ impl DocumentActor {
 		reply: oneshot::Sender<Result<PathMetadata>>,
 	) {
 		self.sync_pending_watch_callbacks();
-		self.idle_deadline = None;
-		if self.head.is_some() && self.reads_are_queued() {
-			self
-				.queued_permissions
-				.push((expected, permissions, follow, reply));
-			self.ensure_reload();
-			return;
-		}
 		let Some(current) = self.head.as_ref() else {
 			let _ = reply.send(Err(Error::DocumentNotFound { document_id: self.document_id }));
 			return;
@@ -1851,7 +1839,7 @@ impl DocumentActor {
 			}));
 			return;
 		}
-		if self.activation_in_flight {
+		if self.reads_are_queued() || self.activation_in_flight {
 			let _ = reply.send(Err(Error::ExternalInvalidation { path: self.path.clone() }));
 			return;
 		}
@@ -2043,10 +2031,6 @@ impl DocumentActor {
 		for (transaction_id, expected, reply) in reserves {
 			self.handle_reserve(transaction_id, expected, reply);
 		}
-		let permissions = mem::take(&mut self.queued_permissions);
-		for (expected, permissions, follow, reply) in permissions {
-			self.start_set_permissions(expected, permissions, follow, reply);
-		}
 	}
 
 	fn fail_queued_reads(&mut self) {
@@ -2061,9 +2045,6 @@ impl DocumentActor {
 			let _ = reply.send(Err(Error::ExternalInvalidation { path: path.clone() }));
 		}
 		for (_, _, reply) in self.queued_reserves.drain(..) {
-			let _ = reply.send(Err(Error::ExternalInvalidation { path: path.clone() }));
-		}
-		for (_, _, _, reply) in self.queued_permissions.drain(..) {
 			let _ = reply.send(Err(Error::ExternalInvalidation { path: path.clone() }));
 		}
 	}
