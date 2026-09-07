@@ -29,6 +29,30 @@ use crate::{
 /// Failure to append, decode, or fold a session entry.
 #[derive(Debug, Error)]
 pub enum SessionError {
+	/// The durable settlement continuation ledger is malformed.
+	#[error("invalid durable continuation state")]
+	InvalidContinuationState,
+	/// Host continuation limit exceeds the finite supported bound.
+	#[error("continuation limit {limit} exceeds the supported maximum")]
+	InvalidContinuationLimit { limit: u64 },
+	/// A durable context retry key was reused for another operation or payload.
+	#[error("context request identity conflicts with an earlier acknowledgement")]
+	ContextRequestConflict,
+	/// Durable context retry metadata cannot be decoded.
+	#[error("invalid durable context receipt state")]
+	InvalidContextReceipt,
+	/// An extension generation or request was revoked before durable admission.
+	#[error("context request was revoked before the journal append")]
+	ContextAdmissionRevoked,
+	/// Compaction would remove an item protected by an extension pin.
+	#[error("compaction would remove pinned context item {id}")]
+	PinnedContext {
+		/// Stable item identity.
+		id: Str,
+	},
+	/// Durable context protection state is malformed; compaction fails closed.
+	#[error("invalid durable context pin state")]
+	InvalidContextPins,
 	/// Journal persistence or framing failed.
 	#[error(transparent)]
 	Journal(#[from] JournalError),
@@ -921,7 +945,30 @@ impl Session {
 	/// Records a content-addressed compaction summary, its hidden boundary,
 	/// maintenance facts, and bounded snapcompact frame references.
 	pub fn compaction(&mut self, compaction: Compaction) -> Result<EntryId, SessionError> {
+		if let Some(receipt) = &compaction.receipt {
+			let request = crate::context::ContextRequestKey {
+				owner:       receipt.owner.clone(),
+				key:         receipt.key.clone(),
+				fingerprint: receipt.fingerprint.clone(),
+			};
+			let replay = self
+				.context_compaction_result(&request)
+				.map_err(|error| match error {
+					crate::context::ContextPinError::IdempotencyConflict => {
+						SessionError::ContextRequestConflict
+					},
+					_ => SessionError::InvalidContextReceipt,
+				})?;
+			if replay.is_some() {
+				return self
+					.context_compaction_receipt(&request)
+					.map_err(|_| SessionError::InvalidContextReceipt)?
+					.map(|(entry, _)| entry)
+					.ok_or(SessionError::InvalidContextReceipt);
+			}
+		}
 		let by = self.turn_cause()?;
+		crate::context::validate_compaction_pins(self.dom(), compaction.boundary)?;
 		self.validate_compaction_frames(&compaction)?;
 		if !self
 			.chain_indices(self.head.ok_or(SessionError::NoActiveTurn)?)?
@@ -1014,7 +1061,7 @@ impl Session {
 		self.next_sid = 0;
 	}
 
-	fn chain_indices(&self, target: EntryId) -> Result<Vec<usize>, SessionError> {
+	pub(crate) fn chain_indices(&self, target: EntryId) -> Result<Vec<usize>, SessionError> {
 		let mut reverse = Vec::new();
 		let mut index = *self
 			.entry_index

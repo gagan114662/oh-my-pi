@@ -881,11 +881,12 @@ impl ControlLifecycleHost {
 impl LifecycleHost for ControlLifecycleHost {
 	fn freeze(&mut self) -> impl Future<Output = Result<(), Str>> + Send {
 		let dispatch = ControlDispatch {
-			operation: sf!("omp.lifecycle.freeze"),
-			arguments: serde_json::Map::new(),
-			authority: self.authority("freeze", InvocationPhase::Open, LifecyclePhase::Frozen),
-			policy:    CallbackConcurrency::Serialized,
-			deadline:  EventDeadline { at: Instant::now() + Duration::from_secs(10) },
+			reentrant_parent: None,
+			operation:        sf!("omp.lifecycle.freeze"),
+			arguments:        serde_json::Map::new(),
+			authority:        self.authority("freeze", InvocationPhase::Open, LifecyclePhase::Frozen),
+			policy:           CallbackConcurrency::Serialized,
+			deadline:         EventDeadline { at: Instant::now() + Duration::from_secs(10) },
 		};
 		async move {
 			self
@@ -928,6 +929,7 @@ impl LifecycleHost for ControlLifecycleHost {
 			}),
 		);
 		let dispatch = ControlDispatch {
+			reentrant_parent: None,
 			operation: sf!("omp.lifecycle.activate"),
 			arguments,
 			authority: self.authority(

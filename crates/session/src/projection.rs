@@ -27,6 +27,13 @@ use thiserror::Error;
 /// Durable property carrying an explicit provider-session reset request.
 pub const PROVIDER_RESET_PROP: &str = "omp/session-provider-reset";
 
+/// Stable journal-origin identity of a projected context item. One journal
+/// element can project multiple items (for example a call and its result), so
+/// the identity includes the element-local projection ordinal.
+pub const CONTEXT_ITEM_ID_PROP: &str = "omp/context-item-id";
+/// Journal entry that produced the projected context item's owning element.
+pub const CONTEXT_ENTRY_PROP: &str = "omp/context-entry";
+
 /// Structural tag for one provider-ordered assistant text or thinking block.
 ///
 /// The child carries [`PropId::Kind`] (`text` or `thinking`),
@@ -305,7 +312,9 @@ pub fn project_thread(dom: &Dom) -> Vec<Item> {
 	if let Some(compaction) = compaction
 		&& let Some(summary) = prop_text(compaction, PropId::Summary)
 	{
-		items.push(compaction_message_item(summary, &compaction_frames(compaction)));
+		let mut item = compaction_message_item(summary, &compaction_frames(compaction));
+		stamp_context_origin(&mut item, compaction, 0);
+		items.push(item);
 	}
 	project_window(dom, Window { after: boundary, through: None }, &mut items);
 	items
@@ -351,6 +360,12 @@ fn project_window(dom: &Dom, window: Window, items: &mut Vec<Item>) {
 			let Some(node) = dom.get(*child) else {
 				continue;
 			};
+			if matches!(
+				node.prop(&PropKey::Custom(Str::new_static(crate::continuation::COLLAPSED_PROP))),
+				Some(Value::Bool(true))
+			) {
+				continue;
+			}
 			if !element_in_window(node, window) {
 				continue;
 			}
@@ -385,9 +400,16 @@ fn project_window(dom: &Dom, window: Window, items: &mut Vec<Item>) {
 			) {
 				local = false;
 			}
+			if matches!(
+				node.prop(&PropKey::Custom(Str::new_static(crate::continuation::COLLAPSED_PROP))),
+				Some(Value::Bool(true))
+			) {
+				continue;
+			}
 			if !element_in_window(node, window) {
 				continue;
 			}
+			let start = items.len();
 			match &node.tag {
 				Tag::Known(KnownTag::User) => {
 					if let Some(mentions) = file_mentions(node) {
@@ -417,8 +439,33 @@ fn project_window(dom: &Dom, window: Window, items: &mut Vec<Item>) {
 				Tag::Custom(name) => project_tool(dom, *child, name.as_str(), node, items),
 				_ => {},
 			}
+			for (ordinal, item) in items[start..].iter_mut().enumerate() {
+				stamp_context_origin(item, node, ordinal);
+			}
 		}
 	}
+}
+
+fn stamp_context_origin(item: &mut Item, node: &Node, ordinal: usize) {
+	// Order advances on stream/tool updates and is a compaction ordering fact,
+	// not identity. Tools keep their original journal identity in Cause because
+	// Id is the provider's call id; built-in elements retain it in Id.
+	let identity = if matches!(node.tag, Tag::Custom(_)) {
+		prop_text(node, PropId::Cause)
+	} else {
+		prop_text(node, PropId::Id)
+	};
+	let Some(entry) = identity.and_then(|value| EntryId::from_str(value).ok()) else {
+		return;
+	};
+	let fields = &mut item.props.get_or_insert_default().fields;
+	fields.insert(CONTEXT_ENTRY_PROP.to_owned(), inference::Value {
+		kind: Some(inference::value::Kind::String(entry.to_string())),
+	});
+	fields.insert(CONTEXT_ITEM_ID_PROP.to_owned(), inference::Value {
+		kind: Some(inference::value::Kind::String(format!("{entry}:{ordinal}"))),
+	});
+	item.created_at_ms = entry.as_ulid().timestamp_ms();
 }
 
 /// Prop a local run carries when the host excludes it from the model's context

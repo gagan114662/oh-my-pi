@@ -754,9 +754,27 @@ pub const MAX_SNAPCOMPACT_FRAMES: usize = 80;
 /// Maximum aggregate encoded frame bytes one compaction may retain.
 pub const MAX_SNAPCOMPACT_FRAME_BYTES: u64 = 3_000_000;
 
+/// Atomic acknowledgement for one authenticated context compaction request.
+/// Stored in the compaction entry itself so crash recovery cannot repeat an
+/// already committed maintenance action whose reply was lost.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionReceipt {
+	/// Authenticated extension owner, never caller-authored.
+	pub owner:       Str,
+	/// Opaque client retry identity.
+	pub key:         Str,
+	/// Digest of operation and canonical arguments.
+	pub fingerprint: Str,
+	/// Original wire acknowledgement of the committed compaction.
+	pub outcome:     serde_json::Value,
+}
+
 /// `compaction@1` payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Compaction {
+	/// Original acknowledgement bound atomically to this compaction.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub receipt:       Option<CompactionReceipt>,
 	/// Content-addressed summary.
 	pub summary:       BlobRef,
 	/// Last entry hidden by the summary.
@@ -785,6 +803,7 @@ impl Compaction {
 	#[must_use]
 	pub const fn new(summary: BlobRef, boundary: EntryId) -> Self {
 		Self {
+			receipt: None,
 			summary,
 			boundary,
 			method: None,

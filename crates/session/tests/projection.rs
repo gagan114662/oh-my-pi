@@ -603,6 +603,67 @@ fn projection_through_keeps_only_entries_up_to_the_cut_and_no_summary() {
 }
 
 #[test]
+fn context_item_identity_survives_compaction_and_replay() {
+	use omp_proto::inference::v1::value;
+	use omp_session::projection::CONTEXT_ITEM_ID_PROP;
+	let directory = tempfile::tempdir().expect("temporary session directory");
+	let path = directory.path().join("context-identity.oms");
+	let mut session = Session::create(&path, ComponentRegistry::default()).expect("session");
+	session.begin_turn().expect("old turn");
+	session
+		.user("earlier", Vec::new())
+		.expect("earlier message");
+	let boundary = session.user("old", Vec::new()).expect("old message");
+	session.begin_turn().expect("kept turn");
+	let kept = session.user("kept", Vec::new()).expect("kept message");
+	let identity = |item: &omp_proto::thread::v1::Item| {
+		let fields = &item.props.as_ref().expect("origin props").fields;
+		let Some(value::Kind::String(id)) = fields[CONTEXT_ITEM_ID_PROP].kind.as_ref() else {
+			panic!("string item identity");
+		};
+		id.clone()
+	};
+	let before = project_thread(session.dom());
+	let kept_id = identity(&before[2]);
+	assert_eq!(kept_id, format!("{kept}:0"));
+	assert_eq!(before[2].created_at_ms, kept.as_ulid().timestamp_ms());
+	let summary = session.blobs().put(b"summary").expect("summary blob");
+	session
+		.compaction(omp_journal::data::Compaction::new(summary, boundary))
+		.expect("compact");
+	let after = project_thread(session.dom());
+	assert_eq!(identity(&after[1]), kept_id);
+	assert_ne!(identity(&after[0]), identity(&before[0]), "summary has its own journal origin");
+	drop(session);
+	let reopened = Session::open(&path, ComponentRegistry::default()).expect("reopen");
+	assert_eq!(project_thread(reopened.dom()), after);
+}
+
+#[test]
+fn context_call_and_result_have_distinct_journal_origin_identities() {
+	use omp_session::projection::CONTEXT_ITEM_ID_PROP;
+	let directory = tempfile::tempdir().expect("temporary session directory");
+	let mut session =
+		Session::create(directory.path().join("context-call.oms"), ComponentRegistry::default())
+			.expect("session");
+	session.begin_turn().expect("turn");
+	session.user("run a tool", Vec::new()).expect("user");
+	let call = session
+		.call("test", 1, "provider-call-id", None, Some(raw(serde_json::json!({}))), None)
+		.expect("call");
+	session
+		.settle(call, raw(serde_json::json!({"value": 1})))
+		.expect("settle");
+	let items = project_thread(session.dom());
+	assert!(matches!(items[1].kind, Some(item::Kind::ToolCall(_))));
+	assert!(matches!(items[2].kind, Some(item::Kind::ToolResult(_))));
+	assert_ne!(
+		items[1].props.as_ref().expect("call props").fields[CONTEXT_ITEM_ID_PROP],
+		items[2].props.as_ref().expect("result props").fields[CONTEXT_ITEM_ID_PROP]
+	);
+}
+
+#[test]
 fn compaction_uses_the_composed_session_blob_store_across_reopen() {
 	let directory = tempfile::tempdir().expect("temporary directory");
 	let session_dir = directory.path().join("sessions");

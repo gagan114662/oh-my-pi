@@ -33,6 +33,11 @@ on:
     branches: [main, omp2]
   workflow_dispatch:
     inputs:
+      context_tests:
+        description: Run the full context contract checkpoint in addition to normal CI
+        type: boolean
+        required: false
+        default: false
       http_tests:
         description: Run the HTTP streaming contract checkpoint in addition to normal CI
         type: boolean
@@ -301,6 +306,97 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  context_contracts:
+    name: Agent and session context contracts (Linux)
+    if: github.event_name == 'workflow_dispatch' && inputs.context_tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential pkg-config cmake ninja-build
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Run all agent and session tests and doctests
+        shell: bash
+        run: |
+          mkdir -p target/context-contracts
+          # Run both packages and both test engines even if an earlier one fails.
+          # nextest cannot execute doctests. No name filters or retries are used.
+          set +e
+          failed=0
+          for package in omp-session omp-agent; do
+            cargo nextest run --profile ci --locked -p "$package" --lib --tests --no-tests fail 2>&1 | tee "target/context-contracts/$package-nextest.log"
+            status=${PIPESTATUS[0]}
+            printf '%s\n' "$status" > "target/context-contracts/$package-nextest.exit"
+            if [ "$status" -ne 0 ]; then failed=1; fi
+            cargo test --doc --locked -p "$package" 2>&1 | tee "target/context-contracts/$package-doctest.log"
+            status=${PIPESTATUS[0]}
+            printf '%s\n' "$status" > "target/context-contracts/$package-doctest.exit"
+            if [ "$status" -ne 0 ]; then failed=1; fi
+          done
+          exit "$failed"
+      - name: Publish counts and require executed contract tests
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p target/context-contracts
+          python3 - <<'PY_SUMMARY'
+          import json, os, re
+          from pathlib import Path
+          root = Path("target/context-contracts")
+          rows = []
+          failures = []
+          for package in ("omp-session", "omp-agent"):
+              for engine in ("nextest", "doctest"):
+                  stem = root / f"{package}-{engine}"
+                  log = stem.with_suffix(".log")
+                  status = stem.with_suffix(".exit")
+                  text = log.read_text(errors="replace") if log.exists() else ""
+                  text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+                  exit_code = int(status.read_text()) if status.exists() else None
+                  if engine == "nextest":
+                      summaries = re.findall(r"Summary[^\n]*?([0-9]+) tests? run:", text)
+                      executed = int(summaries[-1]) if summaries else None
+                      # A successful command with no executed tests is not evidence.
+                      if not executed:
+                          failures.append(f"{package}: no executed nextest tests recorded")
+                  else:
+                      summaries = re.findall(r"test result: (?:ok|FAILED)\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored", text)
+                      executed = sum(int(passed) + int(failed) for passed, failed, ignored in summaries) if summaries else None
+                  if exit_code != 0:
+                      failures.append(f"{package} {engine}: exit {exit_code if exit_code is not None else 'not recorded'}")
+                  rows.append({"package": package, "engine": engine, "executed": executed, "exit_code": exit_code})
+          report = {"commit": os.environ["GITHUB_SHA"], "runs": rows, "failures": failures}
+          (root / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
+          lines = ["### Agent/session context contract checkpoint", "", f"Commit: `{report['commit']}`", "", "| Package | Engine | Executed tests | Exit |", "| --- | --- | ---: | --- |"]
+          for row in rows:
+              count = row['executed'] if row['executed'] is not None else "not recorded"
+              code = row['exit_code'] if row['exit_code'] is not None else "not recorded"
+              lines.append(f"| {row['package']} | {row['engine']} | {count} | {code} |")
+          lines.extend(["", "Both packages must execute nonzero nextest tests. A package with no runnable doctests may report zero; all available doctests are still requested.", "", *failures])
+          summary = "\n".join(lines) + "\n"
+          (root / "summary.md").write_text(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
+              output.write(summary)
+          if failures:
+              raise SystemExit(1)
+          PY_SUMMARY
+      - name: Upload context contract logs and summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: context-contracts-linux
+          path: target/context-contracts/
+          if-no-files-found: error
+          retention-days: 14
+
   rust:
     name: Rust workspace and acceptance proofs
     needs: [format, adr_status, runtime_spec, licenses, roster_coverage]
@@ -524,6 +620,28 @@ jobs:
         with:
           name: approved-command-wrapper
           path: target/approved-scope-proof/
+          if-no-files-found: error
+
+      - name: Prove embedded Python context reentry
+        if: github.event_name == 'workflow_dispatch' && inputs.context_tests
+        run: |
+          set -o pipefail
+          mkdir -p target/python-context-proof
+          set +e
+          cargo nextest run --profile ci --locked -p omp-py --test context_reentry_contract --no-tests fail 2>&1 | tee target/python-context-proof/nextest.log
+          test_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-py 2>&1 | tee target/python-context-proof/doctests.log
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > target/python-context-proof/nextest.exit
+          printf '%s\n' "$doc_status" > target/python-context-proof/doctests.exit
+          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+
+      - name: Publish embedded Python context evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.context_tests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-context-reentry
+          path: target/python-context-proof/
           if-no-files-found: error
 
       - name: Prove Linux environment host contracts

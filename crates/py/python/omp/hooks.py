@@ -1037,6 +1037,7 @@ async def _dispatch_hook_callback(
     name: str,
     payload: object,
     context: object | None = None,
+    pending_continuation: object | None = None,
 ) -> object:
     """Execute exactly one host-selected frozen subscription."""
     from ._context import Context
@@ -1087,11 +1088,22 @@ async def _dispatch_hook_callback(
             return await result
         return result
 
-    timeout = declaration.timeout or catalog.default_timeout
-    if timeout.seconds > 0:
-        result = await asyncio.wait_for(call_handler(), timeout.seconds)
-    else:
-        result = await call_handler()
+    from ._context import _pending_continuation
+    from .agents import Continue
+
+    pending = (
+        None if pending_continuation is None
+        else _value_from_wire(Continue, pending_continuation)
+    )
+    token = _pending_continuation.set(pending)
+    try:
+        timeout = declaration.timeout or catalog.default_timeout
+        if timeout.seconds > 0:
+            result = await asyncio.wait_for(call_handler(), timeout.seconds)
+        else:
+            result = await call_handler()
+    finally:
+        _pending_continuation.reset(token)
     if hook_phase is None:
         return _wire_value(result)
     decision = _validate_decision(result, hook_phase)

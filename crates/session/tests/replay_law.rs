@@ -444,6 +444,7 @@ fn receipt_and_compaction_facts_materialize_and_survive_reopen() {
 		.expect("advisor receipt");
 	session
 		.compaction(Compaction {
+			receipt: None,
 			summary,
 			boundary: receipt,
 			method: Some(Str::new_static("snapcompact")),

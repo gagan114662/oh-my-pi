@@ -1,7 +1,7 @@
 //! Multiplexed, generation-fenced extension-host invocation routing.
 
 use std::{
-	collections::{BTreeMap, VecDeque},
+	collections::{BTreeMap, BTreeSet, VecDeque},
 	fs, io,
 	path::{Path, PathBuf},
 	str::FromStr,
@@ -685,9 +685,19 @@ impl NestedCallbackDispatcher {
 			data: None,
 			direct_filesystem: None,
 		};
+		let reentrant_parent = omp_agent::context::control::current_context_origin()
+			.filter(|origin| {
+				origin.extension == target.extension
+					&& origin.layer == target.layer
+					&& origin.tier == target.tier
+					&& origin.host_generation == target.host_generation
+					&& origin.session_generation == target.session_generation
+			})
+			.map(|origin| origin.invocation);
 		self
 			.dispatcher
 			.dispatch(target, ControlDispatch {
+				reentrant_parent,
 				operation: sf!(operation),
 				arguments,
 				authority,
@@ -1255,9 +1265,13 @@ struct Pending {
 	response:   flume::Sender<Result<CowBytes<'static>, DispatchError>>,
 }
 
+#[derive(Default)]
 struct ExtensionActor {
-	running: usize,
-	queued:  VecDeque<DispatchRequest>,
+	running:    BTreeSet<u64>,
+	cancelling: BTreeSet<u64>,
+	waiting:    BTreeMap<u64, usize>,
+	parents:    BTreeMap<u64, u64>,
+	queued:     VecDeque<DispatchRequest>,
 }
 
 /// Failure while projecting a verified extension frame into a headless sink.
@@ -1302,6 +1316,10 @@ pub enum DispatchError {
 	/// A terminal frame named no live invocation.
 	#[error("stale worker frame correlation {0}")]
 	StaleCorrelation(u64),
+	/// Reentry requires a live callback suspended on an authenticated CONTROL
+	/// request.
+	#[error("callback parent {0} is not suspended on CONTROL")]
+	InvalidParent(u64),
 	/// The child disconnected before a terminal response.
 	#[error("extension host disconnected")]
 	HostGone,
@@ -1332,8 +1350,63 @@ impl DispatchRouter {
 		extension: impl Into<Str>,
 		request: DispatchRequest,
 	) -> Result<(Option<DispatchRequest>, DispatchPending), DispatchError> {
+		self.dispatch_inner(extension.into(), request, None)
+	}
+
+	/// Admits only descendants of a live, CONTROL-suspended callback.
+	pub fn dispatch_nested(
+		&mut self,
+		extension: impl Into<Str>,
+		request: DispatchRequest,
+		parent: u64,
+	) -> Result<(Option<DispatchRequest>, DispatchPending), DispatchError> {
+		self.dispatch_inner(extension.into(), request, Some(parent))
+	}
+
+	/// Marks a host-authenticated callback as waiting for nested CONTROL work.
+	pub fn begin_control_wait(&mut self, extension: &str, parent: u64) -> Result<(), DispatchError> {
+		let actor = self
+			.actors
+			.get_mut(extension)
+			.ok_or(DispatchError::InvalidParent(parent))?;
+		if !actor.running.contains(&parent) || actor.cancelling.contains(&parent) {
+			return Err(DispatchError::InvalidParent(parent));
+		}
+		*actor.waiting.entry(parent).or_default() += 1;
+		Ok(())
+	}
+
+	/// Releases one authenticated CONTROL wait; it grants no unrelated callback
+	/// entry.
+	pub fn end_control_wait(&mut self, extension: &str, parent: u64) -> bool {
+		if let Some(actor) = self.actors.get_mut(extension)
+			&& let Some(count) = actor.waiting.get_mut(&parent)
+		{
+			*count = count.saturating_sub(1);
+			if *count == 0 {
+				actor.waiting.remove(&parent);
+				return true;
+			}
+		}
+		false
+	}
+
+	fn dispatch_inner(
+		&mut self,
+		extension: Str,
+		request: DispatchRequest,
+		parent: Option<u64>,
+	) -> Result<(Option<DispatchRequest>, DispatchPending), DispatchError> {
 		if request.id == 0 {
 			return Err(DispatchError::ZeroId);
+		}
+		if let Some(parent) = parent
+			&& !self.actors.get(extension.as_str()).is_some_and(|actor| {
+				actor.running.contains(&parent)
+					&& !actor.cancelling.contains(&parent)
+					&& actor.waiting.contains_key(&parent)
+			}) {
+			return Err(DispatchError::InvalidParent(parent));
 		}
 		let (tx, rx) = flume::bounded(1);
 		if self.pending.lock().get(request.id).is_some() {
@@ -1344,13 +1417,13 @@ impl DispatchRouter {
 			deadline:   request.deadline,
 			response:   tx,
 		});
-		let actor = self
-			.actors
-			.entry(extension.into())
-			.or_insert_with(|| ExtensionActor { running: 0, queued: VecDeque::new() });
+		let actor = self.actors.entry(extension).or_default();
 		let deadline = request.deadline;
-		if actor.policy_admits(request.policy) {
-			actor.running += 1;
+		if let Some(parent) = parent {
+			actor.parents.insert(request.id, parent);
+		}
+		if actor.policy_admits(request.policy, parent) {
+			actor.running.insert(request.id);
 			Ok((Some(request), DispatchPending { response: rx, deadline }))
 		} else {
 			actor.queued.push_back(request);
@@ -1449,16 +1522,71 @@ impl DispatchRouter {
 				actual:   generation,
 			});
 		}
-		let _ = record.response.send(result);
+		let _ = record.response.try_send(result);
 		let Some(actor) = self.actors.get_mut(extension) else {
 			return Ok(None);
 		};
-		actor.running = actor.running.saturating_sub(1);
-		let next = actor.queued.pop_front();
-		if next.is_some() {
-			actor.running += 1;
-		}
+		actor.running.remove(&id);
+		actor.cancelling.remove(&id);
+		actor.waiting.remove(&id);
+		actor.parents.remove(&id);
+		let next = actor.next_ready();
 		Ok(next)
+	}
+
+	/// Revokes a callback subtree. Running slots remain occupied until the child
+	/// acknowledges cancellation; queued descendants are retired immediately.
+	/// Returns `(correlation, was_running)` for newly cancelled callbacks.
+	pub fn cancel_subtree(
+		&mut self,
+		extension: &str,
+		root: u64,
+		include_root: bool,
+	) -> Vec<(u64, bool)> {
+		let Some(actor) = self.actors.get_mut(extension) else {
+			return Vec::new();
+		};
+		let mut subtree = BTreeSet::from([root]);
+		loop {
+			let previous = subtree.len();
+			for (&child, parent) in &actor.parents {
+				if subtree.contains(parent) {
+					subtree.insert(child);
+				}
+			}
+			if subtree.len() == previous {
+				break;
+			}
+		}
+		if !include_root {
+			subtree.remove(&root);
+		}
+		let mut cancelled = Vec::new();
+		for id in subtree {
+			if actor.running.contains(&id) {
+				if actor.cancelling.insert(id) {
+					actor.waiting.remove(&id);
+					cancelled.push((id, true));
+				}
+			} else if let Some(position) = actor.queued.iter().position(|request| request.id == id) {
+				actor.queued.remove(position);
+				actor.parents.remove(&id);
+				cancelled.push((id, false));
+			}
+		}
+		cancelled
+	}
+
+	/// Wakes the cancelled waiter only after the host has revoked its authority.
+	pub fn notify_cancelled(&self, id: u64, was_running: bool) {
+		let mut pending = self.pending.lock();
+		if was_running {
+			if let Some(record) = pending.get(id) {
+				let _ = record.response.try_send(Err(DispatchError::Cancelled));
+			}
+		} else if let Some(record) = pending.remove(id) {
+			let _ = record.response.try_send(Err(DispatchError::Cancelled));
+		}
 	}
 
 	/// Removes a callback which has not entered the child actor yet.
@@ -1476,6 +1604,7 @@ impl DispatchRouter {
 			return Ok(false);
 		};
 		actor.queued.remove(position);
+		actor.parents.remove(&id);
 		if let Some(record) = self.pending.lock().remove(id) {
 			let _ = record.response.send(Err(DispatchError::Cancelled));
 		}
@@ -1486,7 +1615,7 @@ impl DispatchRouter {
 	/// closes.
 	pub fn disconnect(&mut self) {
 		self.pending.lock().retain(|_, record| {
-			let _ = record.response.send(Err(DispatchError::HostGone));
+			let _ = record.response.try_send(Err(DispatchError::HostGone));
 			false
 		});
 		self.actors.clear();
@@ -1499,7 +1628,7 @@ impl DispatchRouter {
 			if record.deadline.at > now {
 				return true;
 			}
-			let _ = record.response.send(Err(DispatchError::Deadline));
+			let _ = record.response.try_send(Err(DispatchError::Deadline));
 			false
 		});
 	}
@@ -1511,10 +1640,40 @@ impl DispatchRouter {
 }
 
 impl ExtensionActor {
-	fn policy_admits(&self, policy: CallbackConcurrency) -> bool {
-		policy.admits(self.running)
+	fn policy_admits(&self, policy: CallbackConcurrency, parent: Option<u64>) -> bool {
+		let mut suspended = 0;
+		let mut ancestor = parent;
+		while let Some(parent) = ancestor {
+			if !self.running.contains(&parent)
+				|| self.cancelling.contains(&parent)
+				|| !self.waiting.contains_key(&parent)
+			{
+				return false;
+			}
+			suspended += 1;
+			ancestor = self.parents.get(&parent).copied();
+		}
+		policy.admits(self.running.len().saturating_sub(suspended))
+	}
+
+	fn next_ready(&mut self) -> Option<DispatchRequest> {
+		let position = self
+			.queued
+			.iter()
+			.enumerate()
+			.find_map(|(index, request)| {
+				let parent = self.parents.get(&request.id).copied();
+				// Descendants may pass unrelated callbacks blocked by their waiting
+				// parent; ordinary queued callbacks retain FIFO order.
+				((index == 0 || parent.is_some()) && self.policy_admits(request.policy, parent))
+					.then_some(index)
+			})?;
+		let next = self.queued.remove(position)?;
+		self.running.insert(next.id);
+		Some(next)
 	}
 }
+
 #[cfg(test)]
 mod tests {
 	use omp_proto::ui::v1::{

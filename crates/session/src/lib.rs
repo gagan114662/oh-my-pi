@@ -5,6 +5,8 @@
 //! folded, and replay uses that same fold.
 
 mod component;
+pub mod context;
+pub mod continuation;
 pub mod custom_message;
 pub mod components {
 	//! Built-in journal-derived `<meta>` components.

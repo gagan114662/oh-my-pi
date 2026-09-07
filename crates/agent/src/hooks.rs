@@ -248,21 +248,20 @@ impl DomainReturn for () {
 }
 
 /// Domain result for `agent_settled`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AgentSettled {
 	/// Continue the agent loop with another turn.
-	Continue,
+	Continue(omp_session::continuation::Continuation),
 	/// Settle the current agent invocation.
 	Settle,
 }
 
 impl DomainReturn for AgentSettled {
 	fn decode_domain(bytes: &[u8]) -> Option<Self> {
-		match bytes {
-			b"continue" => Some(Self::Continue),
-			b"settle" => Some(Self::Settle),
-			_ => None,
+		if bytes == b"settle" {
+			return Some(Self::Settle);
 		}
+		serde_json::from_slice(bytes).ok().map(Self::Continue)
 	}
 
 	fn fail_open() -> Self {
@@ -325,7 +324,7 @@ impl HookEvent for ProviderErrorEvent {
 /// the yield stand.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentSettledEvent {
-	/// Revision-1 JSON `AgentSettledEvent` payload.
+	/// Revision-2 JSON `AgentSettledEvent` payload.
 	pub payload: Bytes,
 }
 
@@ -333,7 +332,7 @@ impl HookEvent for AgentSettledEvent {
 	type Return = AgentSettled;
 
 	const ID: HookEventId = HookEventId::HookEventAgentSettled;
-	const REV: u32 = 1;
+	const REV: u32 = 2;
 
 	fn encode_into(&self, out: &mut BytesMut) {
 		out.extend_from_slice(&self.payload);
@@ -449,18 +448,20 @@ impl GateDecision {
 /// [`HookGate::answer`].
 #[derive(Debug)]
 pub struct HookDispatch {
+	/// Trusted suspended callback whose nested operation caused this gate.
+	pub context_origin: Option<crate::context::control::ContextControlOrigin>,
 	/// Correlates the host reply with a pending decision.
-	pub dispatch_id:   u64,
+	pub dispatch_id:    u64,
 	/// Event identity.
-	pub event:         HookEventId,
+	pub event:          HookEventId,
 	/// Event revision.
-	pub rev:           u32,
+	pub rev:            u32,
 	/// Current decision stage.
-	pub phase:         HookPhase,
+	pub phase:          HookPhase,
 	/// Subscriptions selected for this host and stage.
-	pub subscriptions: Vec<Subscription>,
+	pub subscriptions:  Vec<Subscription>,
 	/// Reusable encoded event payload.
-	pub payload:       Bytes,
+	pub payload:        Bytes,
 }
 
 /// A durable record of one winning transform overwrite.
@@ -860,6 +861,7 @@ impl HookGate {
 
 	fn notify_payload(&self, event: HookEventId, rev: u32, payload: Bytes) {
 		let dispatch = HookDispatch {
+			context_origin: None,
 			dispatch_id: self.next_id.fetch_add(1, Ordering::Relaxed),
 			event,
 			rev,
@@ -978,6 +980,7 @@ impl HookGate {
 		let mut payload = BytesMut::new();
 		event.encode_into(&mut payload);
 		let dispatch = HookDispatch {
+			context_origin: crate::context::control::current_context_origin(),
 			dispatch_id,
 			event: event_id,
 			rev: GateEvent::REV,
@@ -1081,6 +1084,38 @@ impl HookGate {
 		let mut payload = BytesMut::new();
 		event.encode_into(&mut payload);
 		let payload = payload.freeze();
+		if self.delegated {
+			let dispatch_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+			let (reply, receive) = flume::bounded(1);
+			self
+				.pending
+				.lock()
+				.insert(dispatch_id, Pending { response: reply });
+			let _pending = PendingGuard { gate: self, id: dispatch_id };
+			let dispatch = HookDispatch {
+				context_origin: crate::context::control::current_context_origin(),
+				dispatch_id,
+				event: E::ID,
+				rev: E::REV,
+				phase: HookPhase::Review,
+				subscriptions: Vec::new(),
+				payload,
+			};
+			if self.dispatch.send_async(dispatch).await.is_ok()
+				&& let Ok(Ok(decisions)) =
+					tokio::time::timeout(self.decision_timeout(E::ID), receive.recv_async()).await
+			{
+				for (_, decision) in decisions {
+					if let GateDecision::Domain(bytes) = decision
+						&& let Some(value) = E::Return::decode_domain(&bytes)
+					{
+						result = result.merge_domain(value);
+					}
+				}
+			}
+			return DomainOutcome { winner: result, contributions };
+		}
+
 		for phase in HookPhase::ALL {
 			let mut subscriptions = self.selected(E::ID, phase, "", "");
 			subscriptions.sort_by_key(|subscription| subscription.source.clone());
@@ -1093,6 +1128,7 @@ impl HookGate {
 					.insert(dispatch_id, Pending { response: reply });
 				let _pending = PendingGuard { gate: self, id: dispatch_id };
 				let dispatch = HookDispatch {
+					context_origin: crate::context::control::current_context_origin(),
 					dispatch_id,
 					event: E::ID,
 					rev: E::REV,
@@ -1150,6 +1186,7 @@ impl HookGate {
 			let mut payload = BytesMut::new();
 			event.encode_into(&mut payload);
 			let dispatch = HookDispatch {
+				context_origin: crate::context::control::current_context_origin(),
 				dispatch_id: id,
 				event: event_id,
 				rev: GateEvent::REV,
@@ -1469,12 +1506,14 @@ mod tests {
 			gate
 				.answer(dispatch.dispatch_id, vec![(
 					9,
-					GateDecision::Domain(Bytes::from_static(b"continue")),
+					GateDecision::Domain(Bytes::from_static(br#"{"owner":"test","prompt":"next"}"#)),
 				)])
 				.unwrap();
 		};
 		let (outcome, ()) = tokio::join!(gate_future, driver);
-		assert_eq!(outcome.winner, super::AgentSettled::Continue);
+		assert!(
+			matches!(outcome.winner, super::AgentSettled::Continue(ref continuation) if continuation.prompt == "next")
+		);
 		assert_eq!(outcome.contributions.len(), 1);
 	}
 }

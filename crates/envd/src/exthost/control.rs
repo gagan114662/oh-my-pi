@@ -2108,6 +2108,7 @@ impl HostControlAuthorityFactory {
 			(ControlDomain::Provider, "provider", &self.envd.provider.provider),
 			(ControlDomain::Services, "services", &self.envd.provider.services),
 			(ControlDomain::Auxiliary, "auxiliary", &self.envd.auxiliary),
+			(ControlDomain::Context, "context", &self.envd.auxiliary),
 			(ControlDomain::Agents, "agents", &agents),
 			(ControlDomain::Mcp, "mcp", &self.external.mcp),
 		];
@@ -2325,6 +2326,7 @@ impl ControlAuthority for DomainEffectAuthority {
 
 #[derive(Clone, Copy)]
 enum ControlDomain {
+	Context,
 	Devices,
 	Hooks,
 	Sessions,
@@ -2345,6 +2347,7 @@ enum ControlDomain {
 impl ControlDomain {
 	fn handles(self, operation: &str) -> bool {
 		match self {
+			Self::Context => operation.starts_with("omp.context."),
 			Self::Devices => operation.starts_with("omp.devices."),
 			Self::Hooks => operation.starts_with("omp.hooks."),
 			Self::Sessions => operation.starts_with("omp.sessions."),
@@ -2638,10 +2641,9 @@ pub struct ControlHandle {
 	shared: Arc<ControlShared>,
 }
 struct LiveDispatchGuard {
-	shared:     Arc<ControlShared>,
-	id:         u64,
-	invocation: Str,
-	armed:      bool,
+	shared: Arc<ControlShared>,
+	id:     u64,
+	armed:  bool,
 }
 
 impl LiveDispatchGuard {
@@ -2655,26 +2657,46 @@ impl Drop for LiveDispatchGuard {
 		if !self.armed {
 			return;
 		}
-		let queued = self
-			.shared
+		cancel_dispatch_subtree(&self.shared, self.id, true);
+	}
+}
+
+/// Synchronously revoke every descendant before scheduling cancellation frames.
+/// Running correlation tombstones are retained until the child acknowledges, so
+/// unrelated serialized work cannot enter while a cancelled task is unwinding.
+fn cancel_dispatch_subtree(shared: &Arc<ControlShared>, root: u64, include_root: bool) {
+	let cancelled =
+		shared
 			.router
 			.lock()
-			.cancel_queued(self.shared.identity.extension.as_str(), self.id)
-			.unwrap_or(false);
-		if queued {
-			self.shared.invocations.lock().remove(&self.invocation);
-			self.shared.dispatch_by_id.lock().remove(&self.id);
-			self.shared.dispatch_progress.lock().remove(&self.id);
-			self.shared.dispatch_chunks.lock().remove(&self.id);
-			return;
+			.cancel_subtree(shared.identity.extension.as_str(), root, include_root);
+	let mut running = Vec::new();
+	for &(id, was_running) in &cancelled {
+		let invocation = shared.dispatch_by_id.lock().get(&id).cloned();
+		if let Some(invocation) = invocation {
+			shared.invocations.lock().remove(&invocation);
+			if was_running {
+				running.push(invocation);
+			} else {
+				shared.dispatch_by_id.lock().remove(&id);
+			}
 		}
-		if let Ok(runtime) = runtime::Handle::try_current() {
-			let shared = Arc::clone(&self.shared);
-			let invocation = self.invocation.clone();
-			runtime.spawn(async move {
+		shared.dispatch_progress.lock().remove(&id);
+		shared.dispatch_chunks.lock().remove(&id);
+	}
+	for (id, was_running) in cancelled {
+		shared.router.lock().notify_cancelled(id, was_running);
+	}
+
+	if !running.is_empty()
+		&& let Ok(runtime) = runtime::Handle::try_current()
+	{
+		let shared = Arc::clone(shared);
+		runtime.spawn(async move {
+			for invocation in running {
 				let _ = write_cancel_dispatch(&shared, invocation.as_str()).await;
-			});
-		}
+			}
+		});
 	}
 }
 
@@ -2720,16 +2742,18 @@ pub struct ControlAuthoritySnapshot {
 /// One typed callback invocation sent from Core to Python.
 #[derive(Clone, Debug)]
 pub struct ControlDispatch {
+	/// Trusted live callback waiting for the operation causing this descendant.
+	pub reentrant_parent: Option<Str>,
 	/// Exact documented callback operation.
-	pub operation: Str,
+	pub operation:        Str,
 	/// JSON-serializable callback arguments.
-	pub arguments: serde_json::Map<String, Value>,
+	pub arguments:        serde_json::Map<String, Value>,
 	/// Host-issued invocation authority.
-	pub authority: ControlInvocationAuthority,
+	pub authority:        ControlInvocationAuthority,
 	/// Declaration-level callback overlap policy.
-	pub policy:    CallbackConcurrency,
+	pub policy:           CallbackConcurrency,
 	/// Host-owned callback deadline.
-	pub deadline:  EventDeadline,
+	pub deadline:         EventDeadline,
 }
 
 /// CONTROL transport or host-to-child callback failure.
@@ -3150,6 +3174,7 @@ impl ControlRuntime {
 		self.shared.dispatch_progress.lock().remove(&correlation);
 		let payload = serde_json::to_vec(&Value::Object(body))?;
 		let extension = self.shared.identity.extension.clone();
+		cancel_dispatch_subtree(&self.shared, correlation, false);
 		let next = self.shared.router.lock().complete(
 			extension.as_str(),
 			correlation,
@@ -3335,39 +3360,66 @@ impl ControlHandle {
 			deadline: dispatch.deadline,
 			payload: omp_core::CowBytes::from(serde_json::to_vec(&body)?),
 		};
-		let routed = self
-			.shared
-			.router
-			.lock()
-			.dispatch(self.shared.identity.extension.clone(), request);
-		let (ready, pending) = match routed {
-			Ok(value) => value,
-			Err(error) => {
+		let parent = if let Some(parent) = &dispatch.reentrant_parent {
+			if !self.shared.invocations.lock().contains_key(parent) {
 				self.shared.invocations.lock().remove(&invocation);
-				return Err(error.into());
-			},
+				return Err(
+					ControlProtocolError::new("stale_invocation", "nested callback parent was revoked")
+						.into(),
+				);
+			}
+			let parent_id = self
+				.shared
+				.dispatch_by_id
+				.lock()
+				.iter()
+				.find_map(|(id, value)| (value == parent).then_some(*id));
+			let Some(parent_id) = parent_id else {
+				self.shared.invocations.lock().remove(&invocation);
+				return Err(
+					ControlProtocolError::new(
+						"stale_invocation",
+						"nested callback parent is not dispatched",
+					)
+					.into(),
+				);
+			};
+			Some(parent_id)
+		} else {
+			None
 		};
-		self
-			.shared
-			.dispatch_by_id
-			.lock()
-			.insert(id, invocation.clone());
-		self
-			.shared
-			.dispatch_progress
-			.lock()
-			.insert(id, DispatchProgressState {
-				invocation: invocation.clone(),
-				sender:     progress,
-				events:     0,
-				bytes:      0,
-			});
-		let mut guard = LiveDispatchGuard {
-			shared: Arc::clone(&self.shared),
-			id,
-			invocation: invocation.clone(),
-			armed: true,
+		let (ready, pending) = {
+			let mut router = self.shared.router.lock();
+			let routed = if let Some(parent) = parent {
+				router.dispatch_nested(self.shared.identity.extension.clone(), request, parent)
+			} else {
+				router.dispatch(self.shared.identity.extension.clone(), request)
+			};
+			let (ready, pending) = match routed {
+				Ok(value) => value,
+				Err(error) => {
+					self.shared.invocations.lock().remove(&invocation);
+					return Err(error.into());
+				},
+			};
+			self
+				.shared
+				.dispatch_by_id
+				.lock()
+				.insert(id, invocation.clone());
+			self
+				.shared
+				.dispatch_progress
+				.lock()
+				.insert(id, DispatchProgressState {
+					invocation: invocation.clone(),
+					sender:     progress,
+					events:     0,
+					bytes:      0,
+				});
+			(ready, pending)
 		};
+		let mut guard = LiveDispatchGuard { shared: Arc::clone(&self.shared), id, armed: true };
 		if let Some(ready) = ready {
 			if let Err(error) = write_dispatch_request(&self.shared, ready).await {
 				self.shared.invocations.lock().remove(&invocation);
@@ -3385,16 +3437,12 @@ impl ControlHandle {
 			}
 		}
 		let response = pending.response().await;
-		guard.disarm();
 		let payload = match response {
-			Ok(payload) => payload,
-			Err(error) => {
-				self.shared.invocations.lock().remove(&invocation);
-				self.shared.dispatch_by_id.lock().remove(&id);
-				self.shared.dispatch_progress.lock().remove(&id);
-				self.shared.dispatch_chunks.lock().remove(&id);
-				return Err(error.into());
+			Ok(payload) => {
+				guard.disarm();
+				payload
 			},
+			Err(error) => return Err(error.into()),
 		};
 		let body: Value = serde_json::from_slice(payload.as_ref())?;
 		let object = body
@@ -3420,7 +3468,11 @@ impl ControlHandle {
 				.into(),
 			);
 		}
-		write_cancel_dispatch(&self.shared, invocation).await
+		let id = self.last_frame(invocation).ok_or_else(|| {
+			ControlProtocolError::new("stale_invocation", "callback has no live correlation")
+		})?;
+		cancel_dispatch_subtree(&self.shared, id, true);
+		Ok(())
 	}
 
 	/// Returns whether a callback still owns live child authority.
@@ -3436,6 +3488,24 @@ impl ControlHandle {
 			.lock()
 			.iter()
 			.find_map(|(id, live)| (live.as_str() == invocation).then_some(*id))
+	}
+}
+
+/// Only authenticated CONTROL requests may suspend a live parent callback.
+struct ControlWaitGuard {
+	shared: Arc<ControlShared>,
+	parent: u64,
+}
+impl Drop for ControlWaitGuard {
+	fn drop(&mut self) {
+		let finished = self
+			.shared
+			.router
+			.lock()
+			.end_control_wait(self.shared.identity.extension.as_str(), self.parent);
+		if finished {
+			cancel_dispatch_subtree(&self.shared, self.parent, false);
+		}
 	}
 }
 
@@ -3470,6 +3540,33 @@ async fn serve_child_request(
 	shared
 		.authority
 		.authorize(&context, &operation, &arguments)?;
+	let _waiting = if operation == "omp.context.compact" {
+		if let Some(invocation) = &context.invocation {
+			let parent = shared
+				.dispatch_by_id
+				.lock()
+				.iter()
+				.find_map(|(id, live)| (live == &invocation.invocation).then_some(*id))
+				.ok_or_else(|| {
+					ControlProtocolError::new(
+						"stale_invocation",
+						"context caller is not a live callback",
+					)
+				})?;
+			shared
+				.router
+				.lock()
+				.begin_control_wait(shared.identity.extension.as_str(), parent)
+				.map_err(|_| {
+					ControlProtocolError::new("stale_invocation", "context caller is not running")
+				})?;
+			Some(ControlWaitGuard { shared: shared.clone(), parent })
+		} else {
+			None
+		}
+	} else {
+		None
+	};
 	shared
 		.authority
 		.request(context, Str::from(operation), arguments)
@@ -3615,15 +3712,40 @@ fn dispatch_body(
 
 async fn write_dispatch_request(
 	shared: &Arc<ControlShared>,
-	request: DispatchRequest,
+	mut request: DispatchRequest,
 ) -> Result<(), ControlRuntimeError> {
-	let body: serde_json::Map<String, Value> = serde_json::from_slice(request.payload.as_ref())?;
-	write_json_control_frame(shared, JsonControlFrame {
-		kind: String::from("Dispatch"),
-		correlation: Some(request.id),
-		body,
-	})
-	.await
+	loop {
+		let mut writer = shared.writer.lock().await;
+		let invocation = shared.dispatch_by_id.lock().get(&request.id).cloned();
+		let live = invocation
+			.as_ref()
+			.is_some_and(|invocation| shared.invocations.lock().contains_key(invocation));
+		if live {
+			let body = serde_json::from_slice(request.payload.as_ref())?;
+			return write_control_frame_locked(&mut writer, JsonControlFrame {
+				kind: String::from("Dispatch"),
+				correlation: Some(request.id),
+				body,
+			})
+			.await;
+		}
+		// Cancellation won before the Dispatch frame. There is no child task
+		// to acknowledge: retire the reserved slot here, while preserving FIFO.
+		drop(writer);
+		shared.dispatch_by_id.lock().remove(&request.id);
+		shared.dispatch_progress.lock().remove(&request.id);
+		shared.dispatch_chunks.lock().remove(&request.id);
+		let next = shared.router.lock().complete(
+			shared.identity.extension.as_str(),
+			request.id,
+			shared.identity.host_generation,
+			Err(DispatchError::Cancelled),
+		)?;
+		let Some(next) = next else {
+			return Ok(());
+		};
+		request = next;
+	}
 }
 
 async fn read_json_control_frame(
@@ -3668,6 +3790,14 @@ async fn write_json_control_frame(
 	shared: &Arc<ControlShared>,
 	frame: JsonControlFrame,
 ) -> Result<(), ControlRuntimeError> {
+	let mut writer = shared.writer.lock().await;
+	write_control_frame_locked(&mut writer, frame).await
+}
+
+async fn write_control_frame_locked(
+	writer: &mut OwnedWriteHalf,
+	frame: JsonControlFrame,
+) -> Result<(), ControlRuntimeError> {
 	let payload = serde_json::to_vec(&frame)?;
 	if payload.len() > MAX_CONTROL_FRAME_BYTES {
 		return Err(
@@ -3680,7 +3810,6 @@ async fn write_json_control_frame(
 	}
 	let size = u32::try_from(payload.len())
 		.map_err(|_| ControlProtocolError::new("frame_too_large", "CONTROL frame length overflow"))?;
-	let mut writer = shared.writer.lock().await;
 	writer.write_all(&size.to_be_bytes()).await?;
 	writer.write_all(&payload).await?;
 	writer.flush().await?;
@@ -3935,5 +4064,310 @@ mod convar_tests {
 			.await
 			.expect_err("conflicting declaration");
 		assert_eq!(error.code, "ConvarDeclarationConflict");
+	}
+}
+
+#[cfg(test)]
+mod context_reentry_tests {
+	use std::time::Instant;
+
+	use super::*;
+
+	struct NestedAuthority {
+		handle: Mutex<Option<ControlHandle>>,
+	}
+	#[async_trait]
+	impl ControlAuthority for NestedAuthority {
+		fn handles(&self, operation: &str) -> bool {
+			operation == "omp.context.compact"
+		}
+
+		fn authorize(
+			&self,
+			_context: &ControlRequestContext,
+			_operation: &str,
+			_arguments: &serde_json::Map<String, Value>,
+		) -> Result<(), ControlProtocolError> {
+			Ok(())
+		}
+
+		async fn request(
+			&self,
+			context: ControlRequestContext,
+			_operation: Str,
+			_arguments: serde_json::Map<String, Value>,
+		) -> Result<Value, ControlProtocolError> {
+			let parent = context.invocation.expect("authenticated parent");
+			let handle = self.handle.lock().clone().expect("bound handle");
+			let mut child = parent.clone();
+			child.invocation = sf!("nested-compaction-hook");
+			handle
+				.dispatch(ControlDispatch {
+					reentrant_parent: Some(parent.invocation),
+					operation:        sf!("omp.hooks.dispatch"),
+					arguments:        Default::default(),
+					authority:        child,
+					policy:           CallbackConcurrency::Serialized,
+					deadline:         EventDeadline {
+						at: Instant::now() + std::time::Duration::from_secs(5),
+					},
+				})
+				.await
+				.map_err(|_| {
+					ControlProtocolError::new("NestedCancelled", "nested callback was cancelled")
+				})
+		}
+
+		async fn effect(
+			&self,
+			_context: ControlRequestContext,
+			_effect: ControlEffect,
+		) -> Result<(), ControlProtocolError> {
+			Ok(())
+		}
+	}
+
+	fn identity() -> ControlConnectionIdentity {
+		ControlConnectionIdentity {
+			extension:          sf!("context-test"),
+			principal:          omp_core::Principal::new(sf!("test"), sf!("test")),
+			artifact_digest:    sf!("verified"),
+			layer:              sf!("project"),
+			tier:               sf!("trusted"),
+			trust:              sf!("trusted"),
+			host_generation:    7,
+			session_generation: 9,
+			capabilities:       Arc::default(),
+		}
+	}
+	fn parent() -> ControlInvocationAuthority {
+		ControlInvocationAuthority {
+			invocation:        sf!("parent-agent-settled"),
+			phase:             InvocationPhase::EffectsAuthorized,
+			session:           sf!("session"),
+			turn:              Some(0),
+			event:             Some(sf!("agent_settled")),
+			call:              None,
+			device:            None,
+			effects:           Box::new([]),
+			place_kind:        sf!("host"),
+			lifecycle:         omp_core::LifecyclePhase::Active,
+			roots:             Box::new([]),
+			remote:            false,
+			has_ui:            false,
+			headless:          true,
+			settings:          Default::default(),
+			secret_settings:   Box::new([]),
+			data:              None,
+			direct_filesystem: None,
+		}
+	}
+	async fn child_write(writer: &mut OwnedWriteHalf, kind: &str, correlation: u64, body: Value) {
+		let frame = JsonControlFrame {
+			kind:        kind.to_owned(),
+			correlation: Some(correlation),
+			body:        body.as_object().expect("body").clone(),
+		};
+		let bytes = serde_json::to_vec(&frame).expect("encode");
+		writer
+			.write_all(&(bytes.len() as u32).to_be_bytes())
+			.await
+			.expect("header");
+		writer.write_all(&bytes).await.expect("body");
+	}
+
+	async fn exercise(cancel: bool) {
+		let (host, child) = UnixStream::pair().expect("pair");
+		let authority = Arc::new(NestedAuthority { handle: Mutex::new(None) });
+		let (runtime, handle) = ControlRuntime::new(
+			host,
+			HostKey::new("project", "trusted", "context-test"),
+			identity(),
+			authority.clone(),
+		);
+		*authority.handle.lock() = Some(handle.clone());
+		let runtime = tokio::spawn(runtime.serve());
+		let root = tokio::spawn({
+			let handle = handle.clone();
+			async move {
+				handle
+					.dispatch(ControlDispatch {
+						reentrant_parent: None,
+						operation:        sf!("omp.hooks.dispatch"),
+						arguments:        Default::default(),
+						authority:        parent(),
+						policy:           CallbackConcurrency::Serialized,
+						deadline:         EventDeadline {
+							at: Instant::now() + std::time::Duration::from_secs(5),
+						},
+					})
+					.await
+			}
+		});
+		let (mut reader, mut writer) = child.into_split();
+		let root_frame = read_json_control_frame(&mut reader)
+			.await
+			.expect("read")
+			.expect("root frame");
+		assert_eq!(root_frame.kind, "Dispatch");
+		child_write(&mut writer, "Request", 100, json!({"operation": "omp.context.compact", "arguments": {}, "authority": root_frame.body["authority"]})).await;
+		let nested = read_json_control_frame(&mut reader)
+			.await
+			.expect("read")
+			.expect("nested frame");
+		assert_eq!(nested.kind, "Dispatch", "nested serialized callback runs while parent waits");
+		assert_eq!(nested.body["authority"]["invocation"], "nested-compaction-hook");
+		if cancel {
+			child_write(&mut writer, "CancelRequest", 100, json!({})).await;
+			let cancellation = read_json_control_frame(&mut reader)
+				.await
+				.expect("read")
+				.expect("cancel frame");
+			assert_eq!(cancellation.kind, "CancelDispatch");
+			assert!(
+				!handle.is_live("nested-compaction-hook"),
+				"cancelled descendant authority is revoked before acknowledgement"
+			);
+			child_write(&mut writer, "Request", 101, json!({"operation": "omp.context.compact", "arguments": {}, "authority": nested.body["authority"]})).await;
+			let denied = read_json_control_frame(&mut reader)
+				.await
+				.expect("orphan reply")
+				.expect("frame");
+			assert_eq!(denied.correlation, Some(101));
+			assert_eq!(
+				denied.body["error"]["code"], "stale_invocation",
+				"cancelled child cannot issue another CONTROL operation"
+			);
+			child_write(
+				&mut writer,
+				"DispatchResponse",
+				nested.correlation.expect("nested correlation"),
+				json!({"error": {"code": "cancelled", "message": "child unwound", "retryable": true}}),
+			)
+			.await;
+		} else {
+			child_write(
+				&mut writer,
+				"DispatchResponse",
+				nested.correlation.expect("correlation"),
+				json!({"authority": nested.body["authority"], "result": {"completed": true}}),
+			)
+			.await;
+			let response = read_json_control_frame(&mut reader)
+				.await
+				.expect("read")
+				.expect("compact reply");
+			assert_eq!(response.kind, "Response");
+			assert_eq!(response.correlation, Some(100));
+			assert_eq!(response.body["result"]["completed"], true);
+		}
+		child_write(
+			&mut writer,
+			"DispatchResponse",
+			root_frame.correlation.expect("root correlation"),
+			json!({"authority": root_frame.body["authority"], "result": {"settled": true}}),
+		)
+		.await;
+		assert_eq!(root.await.expect("root task").expect("root result")["settled"], true);
+		assert!(!handle.is_live("nested-compaction-hook"));
+		assert_eq!(
+			handle.last_frame("nested-compaction-hook"),
+			None,
+			"child acknowledgement retired its scheduler correlation before parent completion"
+		);
+		drop(reader);
+		drop(writer);
+		runtime.await.expect("runtime task").expect("clean EOF");
+	}
+
+	#[tokio::test]
+	async fn cancellation_before_dispatch_write_retires_slot_without_starting_child() {
+		tokio::time::timeout(std::time::Duration::from_secs(5), async {
+			let (host, child) = UnixStream::pair().expect("pair");
+			let authority = Arc::new(NestedAuthority { handle: Mutex::new(None) });
+			let (runtime, handle) = ControlRuntime::new(
+				host,
+				HostKey::new("project", "trusted", "context-test"),
+				identity(),
+				authority,
+			);
+			let writer_guard = handle.shared.writer.lock().await;
+			let runtime = tokio::spawn(runtime.serve());
+			let spawn = |name: &'static str| {
+				let handle = handle.clone();
+				tokio::spawn(async move {
+					let mut authority = parent();
+					authority.invocation = Str::new_static(name);
+					handle
+						.dispatch(ControlDispatch {
+							reentrant_parent: None,
+							operation: sf!("omp.hooks.dispatch"),
+							arguments: Default::default(),
+							authority,
+							policy: CallbackConcurrency::Serialized,
+							deadline: EventDeadline {
+								at: Instant::now() + std::time::Duration::from_secs(5),
+							},
+						})
+						.await
+				})
+			};
+			let cancelled = spawn("cancel-before-write");
+			while handle.last_frame("cancel-before-write").is_none() {
+				tokio::task::yield_now().await;
+			}
+			let unrelated = spawn("unrelated-after-cancel");
+			while handle.last_frame("unrelated-after-cancel").is_none() {
+				tokio::task::yield_now().await;
+			}
+			handle.cancel("cancel-before-write").await.expect("cancel");
+			assert!(!handle.is_live("cancel-before-write"));
+			drop(writer_guard);
+			let (mut reader, mut writer) = child.into_split();
+			let next = loop {
+				let frame = read_json_control_frame(&mut reader)
+					.await
+					.expect("read")
+					.expect("frame");
+				if frame.kind == "CancelDispatch" {
+					continue;
+				}
+				break frame;
+			};
+			assert_eq!(next.kind, "Dispatch");
+			assert_eq!(
+				next.body["authority"]["invocation"], "unrelated-after-cancel",
+				"revoked callback never entered Python"
+			);
+			child_write(
+				&mut writer,
+				"DispatchResponse",
+				next.correlation.expect("id"),
+				json!({"result": true}),
+			)
+			.await;
+			assert!(cancelled.await.expect("task").is_err());
+			assert_eq!(unrelated.await.expect("task").expect("result"), true);
+			assert_eq!(handle.last_frame("cancel-before-write"), None);
+			drop(reader);
+			drop(writer);
+			runtime.await.expect("runtime").expect("EOF");
+		})
+		.await
+		.expect("pre-write cancellation must release the actor slot");
+	}
+
+	#[tokio::test]
+	async fn authenticated_context_request_reenters_serialized_callback_over_control_transport() {
+		tokio::time::timeout(std::time::Duration::from_secs(5), exercise(false))
+			.await
+			.expect("no callback deadlock");
+	}
+
+	#[tokio::test]
+	async fn cancelling_context_request_revokes_and_cancels_nested_callback() {
+		tokio::time::timeout(std::time::Duration::from_secs(5), exercise(true))
+			.await
+			.expect("cancellation completes");
 	}
 }

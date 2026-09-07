@@ -121,7 +121,18 @@ async fn allow_keeps_the_projection_and_view_matches_the_request() {
 	let view = views.last().expect("view for the third request");
 	let refs = view["messages"].as_array().expect("message refs");
 	assert_eq!(refs.len(), texts.len(), "one MessageRef per conversation message");
-	assert_eq!(refs[0]["id"], "0");
+	let first_id = refs[0]["id"].as_str().expect("stable id");
+	let (entry, ordinal) = first_id
+		.rsplit_once(':')
+		.expect("journal id and local ordinal");
+	let entry: omp_journal::EntryId = entry.parse().expect("journal entry identity");
+	assert_eq!(ordinal, "0");
+	assert_eq!(refs[0]["created_at_ms"], entry.as_ulid().timestamp_ms());
+	assert_eq!(
+		refs[0]["id"], views[0]["messages"][0]["id"],
+		"earlier item identity survives later turns"
+	);
+	assert_eq!(refs[0]["event"], views[0]["messages"][0]["event"]);
 	assert_eq!(refs[0]["role"], "user");
 	assert_eq!(refs[0]["preview"], "first");
 	assert_eq!(refs[1]["role"], "assistant");
@@ -149,10 +160,12 @@ async fn deny_is_fail_open_and_inference_still_runs() {
 async fn transform_applies_the_context_patch_to_the_request_only() {
 	let (_, texts) = projected(HookPhase::Transform, |view| {
 		let mut effective = view.clone();
-		// Prune the first exchange (ids 0 and 1) with a placeholder and
+		// Prune the first exchange using the exact stable ids in the view and
 		// pin a note right before the pending user turn.
-		effective["prune"] =
-			serde_json::json!([{"ids": ["0", "1"], "reason": "old", "keep_placeholder": true}]);
+		let refs = view["messages"].as_array().expect("refs");
+		if refs.len() >= 2 {
+			effective["prune"] = serde_json::json!([{"ids": [refs[0]["id"], refs[1]["id"]], "reason": "old", "keep_placeholder": true}]);
+		}
 		effective["insert"] = serde_json::json!([{
 			"parts": [{"text": "remember the budget"}],
 			"anchor": {"relation": "tail"},
@@ -166,7 +179,7 @@ async fn transform_applies_the_context_patch_to_the_request_only() {
 		})
 	})
 	.await;
-	// The third request saw ids 0..=4: `first`, `one`, `second`, `two`, `third`.
+	// The third view contains `first`, `one`, `second`, `two`, `third`.
 	assert_eq!(texts, vec![
 		(Role::User, "[context pruned: old]".to_owned()),
 		(Role::User, "second".to_owned()),
@@ -180,8 +193,9 @@ async fn transform_applies_the_context_patch_to_the_request_only() {
 async fn transform_with_an_invalid_patch_is_rejected_atomically() {
 	let (_, texts) = projected(HookPhase::Transform, |view| {
 		let mut effective = view.clone();
-		effective["prune"] = serde_json::json!([{"ids": ["0"]}]);
-		effective["reorder"] = serde_json::json!([{"ids": ["1"], "before": "404"}]);
+		let refs = view["messages"].as_array().expect("refs");
+		effective["prune"] = serde_json::json!([{"ids": [refs[0]["id"]]}]);
+		effective["reorder"] = serde_json::json!([{"ids": [refs.last().expect("last ref")["id"]], "before": "missing-journal-item"}]);
 		GateDecision::Modify(HookPatch {
 			target: None,
 			args:   Some(Bytes::from(serde_json::to_vec(&effective).expect("patch"))),

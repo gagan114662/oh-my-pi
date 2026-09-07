@@ -36,11 +36,11 @@ use tokio_util::sync::CancellationToken;
 use tower::Service;
 
 use crate::{
-	CallControl, CancelTree, Director as _, DirectorCx, DirectorError, DirectorRegistry,
-	DirectorStack, DispatchError, DispatchPolicy, Dispatcher, ExternalToolExecutor,
-	FileMentionService, FileMentionSource, KernelEvent, LiveComponent, LiveComponentError,
-	LoopDecision, MaterializedFileMention, MutDirectorCx, Prepared, PreparedCall, Received,
-	ReplyObligations, RouteFacts, SessionTool, ToolCancellation, TurnView, Up,
+	CallControl, CancelTree, DirectorCx, DirectorError, DirectorRegistry, DirectorStack,
+	DispatchError, DispatchPolicy, Dispatcher, ExternalToolExecutor, FileMentionService,
+	FileMentionSource, KernelEvent, LiveComponent, LiveComponentError, LoopDecision,
+	MaterializedFileMention, MutDirectorCx, Prepared, PreparedCall, Received, ReplyObligations,
+	RouteFacts, SessionTool, ToolCancellation, TurnView, Up,
 	directors::compaction::CompactionDirector,
 	parse_file_mentions,
 	steering::{
@@ -405,6 +405,7 @@ pub struct Kernel<C> {
 	runtime_flags:         RuntimeFlags,
 	pub(crate) mailbox_tx: flume::Sender<Up>,
 	mailbox_rx:            flume::Receiver<Up>,
+	context_control:       crate::context::control::ContextControl,
 	/// Reply channels of the approval prompts journaled from the mailbox.
 	approvals:             crate::ApprovalDesk,
 }
@@ -449,6 +450,7 @@ impl<C> Kernel<C> {
 			route: RouteFacts::default(),
 			con: None,
 			runtime_flags: RuntimeFlags::default(),
+			context_control: crate::context::control::ContextControl::new(mailbox_tx.clone()),
 			mailbox_tx,
 			mailbox_rx,
 		}
@@ -630,6 +632,13 @@ impl<C> Kernel<C> {
 	#[must_use]
 	pub fn mailbox(&self) -> flume::Sender<Up> {
 		self.mailbox_tx.clone()
+	}
+
+	/// Receives CONTROL while the host owns an idle kernel. The host must stop
+	/// polling this receiver while a kernel turn owns the mailbox.
+	#[must_use]
+	pub fn idle_control_receiver(&self) -> flume::Receiver<Up> {
+		self.mailbox_rx.clone()
 	}
 
 	/// Creates the approval route environment policy prompts through: every
@@ -1261,7 +1270,7 @@ impl<C: Inference> Kernel<C> {
 				if let Some(con) = &self.con {
 					directors.apply_binds(session.dom(), con);
 				}
-				let mut request = self.finish_request(self.project_request(session)?).await?;
+				let mut request = self.finish_request(session).await?;
 				let model = self.client.selected_model();
 				if let (Some(hooks), Some(previous), Some(current)) =
 					(&self.lifecycle_hooks, &last_model, &model)
@@ -1334,25 +1343,90 @@ impl<C: Inference> Kernel<C> {
 					Some(control.clone()),
 					self.approvals.clone(),
 				);
-				let preflight = {
-					let mut cx = MutDirectorCx {
-						session,
-						inference: &mut self.client,
-						blobs: &self.dispatcher.policy().spill,
-						route: &route,
-						turn,
-						director: None,
-						events: Some(&self.events),
-						con: self.con.as_deref(),
-						hooks: self.lifecycle_hooks.as_ref(),
-					};
-					let preparing = directors.before_inference(&mut cx, &request);
-					tokio::pin!(preparing);
-					tokio::select! {
-						biased;
-						result = &mut preparing => PreflightSignal::Ready(result),
-						() = control.cancelled() => PreflightSignal::Cancelled,
-						message = preflight_control.recv() => PreflightSignal::Control(message),
+				let preflight = 'frames: {
+					let mut index = 0;
+					let mut aggregate = Prepared::Unchanged;
+					loop {
+						let step = {
+							let mut cx = MutDirectorCx {
+								session,
+								inference: &mut self.client,
+								blobs: &self.dispatcher.policy().spill,
+								route: &route,
+								turn,
+								director: None,
+								events: Some(&self.events),
+								con: self.con.as_deref(),
+								hooks: self.lifecycle_hooks.as_ref(),
+							};
+							let preparing = directors.before_inference_frame(&mut cx, &request, index);
+							tokio::pin!(preparing);
+							tokio::select! {
+								biased;
+								result = &mut preparing => result,
+								() = control.cancelled() => break 'frames PreflightSignal::Cancelled,
+								message = preflight_control.recv() => break 'frames PreflightSignal::Control(message),
+							}
+						};
+						let step = match step {
+							Ok(Some(step)) => step,
+							Ok(None) => break PreflightSignal::Ready(Ok(aggregate)),
+							Err(error) => break PreflightSignal::Ready(Err(error)),
+						};
+						index += 1;
+						let result = match step {
+							crate::director::PreflightStep::Ready(prepared) => Ok(prepared),
+							crate::director::PreflightStep::Compaction(work) => {
+								let Some(prepared) = work.prepared else {
+									continue;
+								};
+								let result = {
+									let summarizing = work.director.summarize_prepared(
+										prepared,
+										&mut self.client,
+										self.lifecycle_hooks.as_ref(),
+										Some(&self.events),
+									);
+									tokio::pin!(summarizing);
+									loop {
+										tokio::select! {
+											biased;
+											() = control.cancelled() => {
+												self.events.publish(KernelEvent::CompactionSettled { applied: false });
+												break 'frames PreflightSignal::Cancelled;
+											},
+											message = preflight_control.recv() => match message {
+												message @ Up::SessionMutation(_) => { let _ = preflight_control.handle(session, message)?; },
+												Up::ContextCompact(request) => request.reject_busy(),
+												message => {
+													self.events.publish(KernelEvent::CompactionSettled { applied: false });
+													break 'frames PreflightSignal::Control(message);
+												},
+											},
+											result = &mut summarizing => break result,
+										}
+									}
+								};
+								let result = match result {
+									Ok(Some(summary)) => work.director.commit_prepared(
+										session,
+										summary,
+										self.lifecycle_hooks.as_ref(),
+									),
+									Ok(None) => Ok(Prepared::Unchanged),
+									Err(error) => Err(error),
+								};
+								self.events.publish(KernelEvent::CompactionSettled {
+									applied: matches!(result, Ok(Prepared::Rebuild)),
+								});
+								result
+							},
+						};
+						match result {
+							Ok(Prepared::Rebuild) => aggregate = Prepared::Rebuild,
+							Ok(Prepared::Unchanged) => {},
+							Err(error) => break PreflightSignal::Ready(Err(error)),
+						}
 					}
 				};
 				let prepared = match preflight {
@@ -1384,7 +1458,7 @@ impl<C: Inference> Kernel<C> {
 				};
 				self.apply_live_components(session)?;
 				if prepared == Prepared::Rebuild {
-					request = self.finish_request(self.project_request(session)?).await?;
+					request = self.finish_request(session).await?;
 					directors = DirectorStack::from_dom(session.dom(), &self.director_registry);
 				}
 				let director_cx = DirectorCx::new(turn, &route);
@@ -1757,9 +1831,8 @@ impl<C: Inference> Kernel<C> {
 				LoopDecision::Continue { .. } => continue,
 				LoopDecision::Yield => {
 					// An extension may block the stop and demand another turn.
-					if let Some(hooks) = &self.lifecycle_hooks
-						&& hooks
-							.agent_settled(serde_json::json!({
+					if let Some(hooks) = self.lifecycle_hooks.clone() {
+						let settling = hooks.agent_settled(serde_json::json!({
 								"submission_id": turn.to_string(),
 								"reason": if was_steered { "stop" } else { "stop" },
 								"committed_turns": requests_started,
@@ -1767,10 +1840,35 @@ impl<C: Inference> Kernel<C> {
 								"pending_jobs": self.dispatcher.jobs().list().iter().map(|job| job.id.clone()).collect::<Vec<_>>(),
 								"continuations_used": 0,
 								"incomplete_todos": [],
-							}))
-							.await == crate::AgentSettled::Continue
-					{
-						continue;
+							}));
+						tokio::pin!(settling);
+						let decision = loop {
+							tokio::select! {
+								biased;
+								() = control.cancelled() => {
+									turn_cancel.cancel_turn();
+									return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
+								},
+								message = self.mailbox_rx.recv_async() => {
+									if let Ok(message) = message {
+													 if matches!(message, Up::Interrupt | Up::Cancel) {
+														  turn_cancel.cancel_turn();
+														  return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
+													 }
+													 self.handle_idle_control(session, message).await?;
+												}
+								},
+								decision = &mut settling => break decision,
+							}
+						};
+						if let crate::AgentSettled::Continue(continuation) = decision
+							&& session.continue_from_settlement(
+								&continuation,
+								crate::continuation_cap(self.con.as_deref(), &continuation.owner),
+							)? {
+							self.apply_live_components(session)?;
+							continue;
+						}
 					}
 					let stop = if was_steered {
 						TurnStop::Steered
@@ -2005,21 +2103,64 @@ impl<C: Inference> Kernel<C> {
 	/// request assembly. The projection ([`Self::project_request`]) is
 	/// synchronous over the session so no session borrow crosses the hook
 	/// await (`Session` is not `Sync`).
-	async fn finish_request(&self, projected: ProjectedRequest) -> Result<ChatRequest, KernelError> {
-		let ProjectedRequest { facts, mut messages, tools } = projected;
-		// `thread_projection` (Python `ContextView` → `ContextPatch`): an
-		// extension edits this request's working copy of the projection;
-		// the journal and DOM stay untouched.
-		if let Some(hooks) = &self.lifecycle_hooks {
-			let outcome = crate::context::gate_thread_projection(hooks, &facts, &mut messages).await?;
-			if outcome.applied > 0 {
-				tracing::debug!(
-					applied = outcome.applied,
-					note = outcome.note.as_deref().unwrap_or(""),
-					"thread_projection patched the request projection"
-				);
+	async fn finish_request(&self, session: &mut Session) -> Result<ChatRequest, KernelError> {
+		let mut projected = self.project_request(session)?;
+		if let Some(hooks) = self.lifecycle_hooks.clone()
+			&& hooks
+				.hook_gate()
+				.subscribed(HookEventId::HookEventThreadProjection)
+		{
+			let head = crate::context::prompt_head_len(&projected.messages);
+			let view = crate::context::context_view(&projected.facts, &projected.messages[head..]);
+			let before = session.head();
+			let gate = hooks.gate(HookEventId::HookEventThreadProjection, view);
+			tokio::pin!(gate);
+			let control = CallControl::new(
+				self.mailbox_rx.clone(),
+				self.cancel.begin_turn(),
+				self.cancel.clone(),
+				None,
+				self.approvals.clone(),
+			);
+			let result = loop {
+				tokio::select! {
+					result = &mut gate => break result,
+					message = self.mailbox_rx.recv_async() => {
+						let Ok(message) = message else { break gate.await; };
+						if let Received::Rewound(work) = control.handle(session, message)? {
+							self.dispatcher.jobs().apply_lifecycle(session, &work).await;
+						}
+					}
+				}
+			};
+			if session.head() != before {
+				// CONTROL may have pinned a viewed item while this gate was pending.
+				// Rebuild from the same authoritative session before applying its patch.
+				projected = self.project_request(session)?;
+			}
+			match result {
+				Ok(effective) => {
+					let head = crate::context::prompt_head_len(&projected.messages);
+					let mut working = projected.messages[head..].to_vec();
+					match crate::context::apply_context_patch_with_origins(
+						&mut working,
+						&effective,
+						&projected.facts.origins,
+					) {
+						Ok(_) => {
+							projected.messages.truncate(head);
+							projected.messages.extend(working);
+						},
+						Err(error) => tracing::warn!(%error, "thread_projection patch rejected"),
+					}
+				},
+				Err(crate::LifecycleHookError::Denied { reason, .. }) => {
+					tracing::warn!(%reason, "thread_projection denied; projection preserved")
+				},
+				Err(error) => return Err(error.into()),
 			}
 		}
+		let ProjectedRequest { messages, tools, .. } = projected;
 		Ok(ChatRequest {
 			messages:          messages.into(),
 			tools:             tools.into(),
@@ -2039,56 +2180,90 @@ impl<C: Inference> Kernel<C> {
 		})
 	}
 
+	fn context_projector(&self) -> ContextProjector {
+		ContextProjector {
+			prompt: self.prompt.clone(),
+			con:    self.con.clone(),
+			route:  self.current_route(),
+			model:  self.client.selected_model().unwrap_or_default(),
+		}
+	}
+
+	/// Binds CONTROL to this kernel's actual prompt/route projection and
+	/// mailbox.
+	pub fn context_control(&self) -> crate::context::control::ContextControl {
+		self.context_control.refresh(self.context_projector());
+		self.context_control.clone()
+	}
+
+	/// Applies a mailbox request on the existing idle Session owner.
+	pub async fn handle_idle_control(
+		&mut self,
+		session: &mut Session,
+		message: Up,
+	) -> Result<(), KernelError> {
+		self.context_control.refresh(self.context_projector());
+		if let Up::ContextCompact(request) = message {
+			if let Some(request) = request.take() {
+				match request.guard.replay(session) {
+					Ok(Some(outcome)) => {
+						let _ = request.reply.send(Ok(outcome));
+						return Ok(());
+					},
+					Err(error) => {
+						let _ = request.reply.send(Err(error));
+						return Ok(());
+					},
+					Ok(None) => {},
+				}
+				let outcome = request.guard.outcome.clone();
+				let control = RunControl::new(request.guard.cancellation.clone(), None);
+				let compacting = self.compact_with_guard(
+					session,
+					request.focus,
+					"extension",
+					control,
+					Some(request.guard),
+				);
+				let result =
+					crate::context::control::with_context_origin(request.origin, compacting).await;
+				let result = match result {
+					Ok(true) => outcome.lock().take().ok_or_else(|| {
+						crate::context::control::ContextControlError::new(
+							"ContextStateError",
+							"compaction completed without its journal outcome",
+						)
+					}),
+					Ok(false) => Err(crate::context::control::ContextControlError::new(
+						"CompactionRefused",
+						"no eligible history was compacted",
+					)),
+					Err(error) => {
+						Err(crate::context::control::ContextControlError::new("CompactionRefused", error))
+					},
+				};
+				let _ = request.reply.send(result);
+			}
+			return Ok(());
+		}
+		let control = CallControl::new(
+			self.mailbox_rx.clone(),
+			self.cancel.begin_turn(),
+			self.cancel.clone(),
+			None,
+			self.approvals.clone(),
+		);
+		if let Received::Rewound(work) = control.handle(session, message)? {
+			self.dispatcher.jobs().apply_lifecycle(session, &work).await;
+		}
+		Ok(())
+	}
+
 	/// Projects the session into the working copy of the next request.
 	fn project_request(&self, session: &Session) -> Result<ProjectedRequest, KernelError> {
 		let route = self.current_route();
-		let mut items = self
-			.prompt
-			.system_items(session.dom())
-			.map_err(KernelError::Prompt)?;
-		// `ai_prompt_mode` is the engagement layer a mode Director binds
-		// (plan, vibe, autoresearch); the mode prompt joins the stable band
-		// right after the projected system prompt.
-		if let Some(text) = self
-			.con
-			.as_deref()
-			.map(|con| crate::AI_PROMPT_MODE.get(con))
-			.filter(|mode| !mode.is_empty())
-			.and_then(|mode| crate::directors::mode_prompt(mode.as_str()))
-		{
-			items.push(Item {
-				kind: Some(item::Kind::Message(Message {
-					role: Role::System as i32,
-					parts: vec![ThreadPart { kind: Some(part::Kind::Text(text.to_owned())) }],
-					..Default::default()
-				})),
-				..Default::default()
-			});
-		}
-		items.extend(crate::prompt::project_thread_with_attachments(session.dom(), session.blobs())?);
-		let mut messages = InferenceMessage::from_thread_items(&items)?;
-		crate::events::strip_unsigned_reasoning(&mut messages);
-		crate::vision::apply(session.dom(), &route, &mut messages);
-		let facts = crate::context::ContextFacts {
-			session_id:         session
-				.journal_path()
-				.file_stem()
-				.and_then(|stem| stem.to_str())
-				.map_or_else(Str::default, Str::new),
-			turn_id:            current_turn(session)
-				.map(|turn| Str::new(turn.to_string()))
-				.unwrap_or_default(),
-			model:              self.client.selected_model().unwrap_or_default(),
-			epoch:              u64::try_from(session.dom().count("compaction").unwrap_or(0))
-				.unwrap_or(u64::MAX),
-			context_window:     route.context_window,
-			threshold_fraction: self
-				.con
-				.as_deref()
-				.map_or(0.8, |con| crate::AI_COMPACT_THRESHOLD.get(con)),
-			prompt_hash:        Str::new(prompt_hash_of(&messages)),
-			prompt_head_tokens: crate::context::prompt_head_tokens(&messages),
-		};
+		self.context_control.refresh(self.context_projector());
+		let (facts, messages) = self.context_projector().project(session)?;
 		let caps = route.lowering_caps();
 		let registry = self.dispatcher.registry();
 		let goal_visible = self.runtime_flags.goal_enabled
@@ -3124,11 +3299,26 @@ impl<C: Inference> Kernel<C> {
 		method: &'static str,
 		control: RunControl,
 	) -> Result<bool, KernelError> {
+		self
+			.compact_with_guard(session, focus, method, control, None)
+			.await
+	}
+
+	async fn compact_with_guard(
+		&mut self,
+		session: &mut Session,
+		focus: Option<Str>,
+		method: &'static str,
+		control: RunControl,
+		guard: Option<crate::context::control::ContextCommitGuard>,
+	) -> Result<bool, KernelError> {
 		let Ok(turn) = current_turn(session) else {
 			return Ok(false);
 		};
-		let request = self.finish_request(self.project_request(session)?).await?;
-		let director = CompactionDirector::manual(focus).with_method(method);
+		let request = self.finish_request(session).await?;
+		let director = CompactionDirector::manual(focus)
+			.with_method(method)
+			.with_context_guard(guard);
 		let route = self.current_route();
 		let turn_cancel = self.cancel.begin_turn();
 		let preflight_control = CallControl::new(
@@ -3138,12 +3328,8 @@ impl<C: Inference> Kernel<C> {
 			Some(control.clone()),
 			self.approvals.clone(),
 		);
-		// Only an interrupt/cancel may end the summary inference; every other
-		// mailbox message (steering, peer, approvals) is journaled once the
-		// session is free again, exactly as a blocking `/compact` in pi.
-		let mut deferred = Vec::new();
-		let signal = {
-			let mut cx = MutDirectorCx {
+		let prepared = {
+			let cx = MutDirectorCx {
 				session,
 				inference: &mut self.client,
 				blobs: &self.dispatcher.policy().spill,
@@ -3154,47 +3340,138 @@ impl<C: Inference> Kernel<C> {
 				con: self.con.as_deref(),
 				hooks: self.lifecycle_hooks.as_ref(),
 			};
-			let preparing = director.before_inference(&mut cx, &request);
-			tokio::pin!(preparing);
+			director.prepare(&cx, &request)?
+		};
+		let Some(prepared) = prepared else {
+			return Ok(false);
+		};
+		let mut deferred = Vec::new();
+		let result = {
+			// The future owns a snapshot and borrows only inference/hooks. The
+			// actor remains the sole Session owner while nested context requests run.
+			let summarizing = director.summarize_prepared(
+				prepared,
+				&mut self.client,
+				self.lifecycle_hooks.as_ref(),
+				Some(&self.events),
+			);
+			tokio::pin!(summarizing);
 			loop {
-				let signal = tokio::select! {
+				tokio::select! {
 					biased;
-					result = &mut preparing => PreflightSignal::Ready(result),
-					() = control.cancelled() => PreflightSignal::Cancelled,
-					message = preflight_control.recv() => PreflightSignal::Control(message),
-				};
-				match signal {
-					PreflightSignal::Control(message @ (Up::Interrupt | Up::Cancel)) => {
-						break PreflightSignal::Control(message);
+					() = control.cancelled() => { turn_cancel.cancel_turn(); break Ok(None); },
+					message = preflight_control.recv() => match message {
+						message @ (Up::Interrupt | Up::Cancel) => {
+							let _ = preflight_control.handle(session, message)?;
+							turn_cancel.cancel_turn();
+							break Ok(None);
+						},
+						message @ Up::SessionMutation(_) => {
+							let _ = preflight_control.handle(session, message)?;
+						},
+						Up::ContextCompact(request) => request.reject_busy(),
+						message => deferred.push(message),
 					},
-					PreflightSignal::Control(message) => deferred.push(message),
-					other => break other,
+					result = &mut summarizing => break result,
 				}
 			}
 		};
+		// Final admission and current pin validation happen synchronously at
+		// the journal append, after every awaited hook and inference boundary.
+		let result = match result {
+			Ok(Some(summary)) => {
+				director.commit_prepared(session, summary, self.lifecycle_hooks.as_ref())
+			},
+			Ok(None) => Ok(Prepared::Unchanged),
+			Err(error) => Err(error),
+		};
+		self.events.publish(KernelEvent::CompactionSettled {
+			applied: matches!(result, Ok(Prepared::Rebuild)),
+		});
 		for message in deferred {
 			let _ = preflight_control.handle(session, message)?;
 		}
-		let prepared = match signal {
-			PreflightSignal::Ready(result) => result?,
-			PreflightSignal::Cancelled => {
-				turn_cancel.cancel_turn();
-				self
-					.events
-					.publish(KernelEvent::CompactionSettled { applied: false });
-				return Ok(false);
-			},
-			PreflightSignal::Control(message) => {
-				let _ = preflight_control.handle(session, message)?;
-				turn_cancel.cancel_turn();
-				self
-					.events
-					.publish(KernelEvent::CompactionSettled { applied: false });
-				return Ok(false);
-			},
-		};
+		let prepared = result?;
 		self.apply_live_components(session)?;
 		Ok(prepared == Prepared::Rebuild)
+	}
+}
+
+/// The kernel's live context projection recipe, shared with actor-owned CONTROL
+/// reads.
+#[derive(Clone)]
+pub(crate) struct ContextProjector {
+	prompt: Arc<dyn PromptSource>,
+	con:    Option<Arc<omp_con::Ctx>>,
+	route:  RouteFacts,
+	model:  Str,
+}
+
+impl ContextProjector {
+	pub(crate) fn pin_budget(&self, window: u64) -> u64 {
+		let fraction = self
+			.con
+			.as_deref()
+			.map_or(0.25, |con| crate::AI_CONTEXT_PIN_FRACTION.get(con));
+		(window as f64 * fraction).floor() as u64
+	}
+
+	pub(crate) fn project(
+		&self,
+		session: &Session,
+	) -> Result<(crate::context::ContextFacts, Vec<InferenceMessage>), KernelError> {
+		let route = self.route;
+		let mut items = self
+			.prompt
+			.system_items(session.dom())
+			.map_err(KernelError::Prompt)?;
+		// `ai_prompt_mode` is the engagement layer a mode Director binds
+		// (plan, vibe, autoresearch); the mode prompt joins the stable band
+		// right after the projected system prompt.
+		if let Some(text) = self
+			.con
+			.as_deref()
+			.map(|con| crate::AI_PROMPT_MODE.get(con))
+			.filter(|mode| !mode.is_empty())
+			.and_then(|mode| crate::directors::mode_prompt(mode.as_str()))
+		{
+			items.push(Item {
+				kind: Some(item::Kind::Message(Message {
+					role: Role::System as i32,
+					parts: vec![ThreadPart { kind: Some(part::Kind::Text(text.to_owned())) }],
+					..Default::default()
+				})),
+				..Default::default()
+			});
+		}
+		items.extend(crate::prompt::project_thread_with_attachments(session.dom(), session.blobs())?);
+		let mut messages = InferenceMessage::from_thread_items(&items)?;
+		crate::events::strip_unsigned_reasoning(&mut messages);
+		crate::vision::apply(session.dom(), &route, &mut messages);
+		let facts = crate::context::ContextFacts {
+			session_id:         session
+				.journal_path()
+				.file_stem()
+				.and_then(|stem| stem.to_str())
+				.map_or_else(Str::default, Str::new),
+			turn_id:            current_turn(session)
+				.map(|turn| Str::new(turn.to_string()))
+				.unwrap_or_default(),
+			model:              self.model.clone(),
+			epoch:              u64::try_from(session.dom().count("compaction").unwrap_or(0))
+				.unwrap_or(u64::MAX),
+			context_window:     route.context_window,
+			threshold_fraction: self
+				.con
+				.as_deref()
+				.map_or(0.8, |con| crate::AI_COMPACT_THRESHOLD.get(con)),
+			prompt_hash:        Str::new(prompt_hash_of(&messages)),
+			prompt_head_tokens: crate::context::prompt_head_tokens(&messages),
+			origins:            session
+				.context_origins(&items[crate::context::prompt_head_len(&messages)..])
+				.map_err(|_| omp_session::SessionError::InvalidContextPins)?,
+		};
+		Ok((facts, messages))
 	}
 }
 

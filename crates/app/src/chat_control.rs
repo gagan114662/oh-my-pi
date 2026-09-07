@@ -708,11 +708,18 @@ impl<C: omp_agent::Inference> Controller<C> {
 			.expect("controller installs the pending-input gate");
 		loop {
 			let goal_continuation_ready = self.goal_continuation_ready();
+			let kernel_control = self.kernel.idle_control_receiver();
 			let flow = tokio::select! {
 				biased;
 				command = command_rx.recv_async() => match command {
 					Ok(command) => self.apply_idle(command).await?,
 					Err(_) => Flow::Quit,
+				},
+				message = kernel_control.recv_async() => {
+					if let Ok(message) = message {
+						self.kernel.handle_idle_control(&mut self.session, message).await?;
+					}
+					Flow::Idle
 				},
 				() = input_gate.changed() => Flow::Idle,
 				done = self.tan_rx.recv_async() => {
@@ -2380,6 +2387,7 @@ impl<C: omp_agent::Inference> Controller<C> {
 		self
 			.session
 			.compaction(omp_journal::data::Compaction {
+				receipt: None,
 				summary,
 				boundary,
 				method: Some(Str::new_static("clear")),

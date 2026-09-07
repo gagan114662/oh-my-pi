@@ -647,7 +647,8 @@ async fn compaction_done_reports_the_outcome_to_observers() {
 	assert_eq!(outcome["tiers_run"], serde_json::json!(["local"]));
 	assert_eq!(outcome["from_extension"], serde_json::Value::Null);
 	assert_eq!(outcome["summary_bytes"], "observed summary".len());
-	assert_eq!(outcome["epoch"], 0);
+	assert_eq!(outcome["epoch"], 1);
+	assert_eq!(outcome["epoch"], session.dom().count("compaction").expect("epoch"));
 }
 
 #[tokio::test]

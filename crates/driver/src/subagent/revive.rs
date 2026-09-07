@@ -451,6 +451,7 @@ async fn idle(
 				Ok(Up::SessionMutation(request)) => {
 					request.apply(session);
 				},
+				Ok(Up::ContextCompact(request)) => request.reject_busy(),
 				Ok(Up::Subscribe(reply)) => {
 					let _ = reply.send(session.subscribe());
 				},

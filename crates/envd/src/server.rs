@@ -923,7 +923,138 @@ impl Drop for AgentControlBinding {
 
 type ProductionResolverTable = ResolverTable<UrlResolver>;
 
+type ContextControlSlot =
+	Arc<parking_lot::RwLock<Option<(u64, omp_agent::context::control::ContextControl)>>>;
+
+struct ProductionContextControlFactory {
+	slot: ContextControlSlot,
+}
+
+impl ControlAuthorityFactory for ProductionContextControlFactory {
+	fn bind(
+		&self,
+		identity: Arc<ControlConnectionIdentity>,
+	) -> Result<Arc<dyn ControlAuthority>, ControlCompositionError> {
+		Ok(Arc::new(ProductionContextControlAuthority {
+			identity,
+			slot: self.slot.clone(),
+			lease: omp_agent::context::control::ContextControlLease::admitted(),
+		}))
+	}
+}
+
+struct ProductionContextControlAuthority {
+	identity: Arc<ControlConnectionIdentity>,
+	slot:     ContextControlSlot,
+	lease:    omp_agent::context::control::ContextControlLease,
+}
+
+impl Drop for ProductionContextControlAuthority {
+	fn drop(&mut self) {
+		self.lease.revoke();
+	}
+}
+
+#[async_trait::async_trait]
+impl ControlAuthority for ProductionContextControlAuthority {
+	fn handles(&self, operation: &str) -> bool {
+		matches!(
+			operation,
+			"omp.context.view"
+				| "omp.context.usage"
+				| "omp.context.epoch"
+				| "omp.context.pin"
+				| "omp.context.unpin"
+				| "omp.context.compact"
+				| "omp.context.message.parts"
+				| "omp.context.message.verdict"
+				| "omp.context.message.raw_args"
+		)
+	}
+
+	fn authorize(
+		&self,
+		context: &ControlRequestContext,
+		operation: &str,
+		_arguments: &serde_json::Map<String, serde_json::Value>,
+	) -> Result<(), ControlProtocolError> {
+		if !same_control_connection(&self.identity, &context.connection) {
+			return Err(ControlProtocolError::new(
+				"StaleGeneration",
+				"context authority belongs to a replaced connection",
+			));
+		}
+		let spec = omp_tool::operation_spec(operation)
+			.filter(|_| self.handles(operation))
+			.ok_or_else(|| ControlProtocolError::new("unhandled_operation", operation))?;
+		let phase = context
+			.invocation
+			.as_ref()
+			.map_or(omp_core::InvocationPhase::Open, |invocation| invocation.phase);
+		if !phase.has_reached(spec.minimum_phase) {
+			return Err(ControlProtocolError::new(
+				"InvalidPhase",
+				"context operation is not admitted in this phase",
+			));
+		}
+		Ok(())
+	}
+
+	async fn request(
+		&self,
+		context: ControlRequestContext,
+		operation: Str,
+		arguments: serde_json::Map<String, serde_json::Value>,
+	) -> Result<serde_json::Value, ControlProtocolError> {
+		self.authorize(&context, &operation, &arguments)?;
+		let control = self
+			.slot
+			.read()
+			.as_ref()
+			.map(|(_, control)| control.clone())
+			.ok_or_else(|| {
+				ControlProtocolError::new(
+					"ContextUnavailable",
+					"the active kernel context owner is not bound",
+				)
+			})?;
+		// Layer/tier/extension come exclusively from the authenticated connection.
+		let owner = Str::new(
+			serde_json::json!([self.identity.layer, self.identity.tier, self.identity.extension])
+				.to_string(),
+		);
+		let origin = context.invocation.as_ref().map(|invocation| {
+			omp_agent::context::control::ContextControlOrigin {
+				invocation:         invocation.invocation.clone(),
+				extension:          self.identity.extension.clone(),
+				layer:              self.identity.layer.clone(),
+				tier:               self.identity.tier.clone(),
+				host_generation:    self.identity.host_generation,
+				session_generation: self.identity.session_generation,
+			}
+		});
+		let result = control
+			.for_invocation(origin)
+			.request(owner, operation.clone(), arguments, self.lease.clone())
+			.await
+			.map_err(|error| ControlProtocolError::new(error.code, error.message))?;
+		Ok(serde_json::json!({"schema": format!("{operation}.v1"), "result": result}))
+	}
+
+	async fn effect(
+		&self,
+		_context: ControlRequestContext,
+		_effect: ControlEffect,
+	) -> Result<(), ControlProtocolError> {
+		Err(ControlProtocolError::new(
+			"InvalidContextEffect",
+			"context mutations require acknowledged CONTROL requests",
+		))
+	}
+}
+
 struct ProductionControlBindings {
+	context:   ContextControlSlot,
 	factory:   Arc<HostControlAuthorityFactory>,
 	resources: Arc<sync::OnceLock<Arc<ProductionResolverTable>>>,
 	callbacks: Arc<CallbackDispatcherSlot>,
@@ -1836,6 +1967,7 @@ fn production_control_authorities(
 	quota_runtime: ControlQuotaRuntime,
 	extension_tool_call_timeout: Duration,
 ) -> ProductionControlBindings {
+	let context: ContextControlSlot = Arc::default();
 	let resources = Arc::new(sync::OnceLock::new());
 	let manifests = Arc::new(
 		extensions
@@ -1910,8 +2042,15 @@ fn production_control_authorities(
 	let provider_owner = gated(DeclaredExternalDomain::Provider);
 	let services = gated(DeclaredExternalDomain::Services);
 	let auxiliary: Arc<dyn ControlAuthorityFactory> = Arc::new(CompositeControlFactory {
-		owners: vec![Arc::clone(&envd), parameters, workers, direct_filesystem, convars]
-			.into_boxed_slice(),
+		owners: vec![
+			Arc::clone(&envd),
+			parameters,
+			workers,
+			direct_filesystem,
+			convars,
+			Arc::new(ProductionContextControlFactory { slot: context.clone() }),
+		]
+		.into_boxed_slice(),
 	});
 	let artifacts: Arc<dyn ControlAuthorityFactory> =
 		Arc::new(FixedControlAuthorityFactory::new(Arc::new(UndeclaredControlAuthority)));
@@ -1933,6 +2072,7 @@ fn production_control_authorities(
 		Arc::new(ProductionMcpControlFactory { mcp: Arc::clone(mcp) }),
 	);
 	ProductionControlBindings {
+		context,
 		factory: Arc::new(
 			HostControlAuthorityFactory::new(envd, external).with_quota_runtime(quota_runtime),
 		),
@@ -1983,6 +2123,7 @@ pub struct EnvServer {
 	provider_response_hooks: omp_ai::ProviderResponseHooks,
 	admission_gate:          Arc<HookGate>,
 	checkpoint_control:      AgentCheckpointControl,
+	context_control:         ContextControlSlot,
 	previews:                StagedProposalRegistry,
 	schedules:               DurableScheduleActor,
 	workers:                 Arc<WorkerSupervisor>,
@@ -2339,6 +2480,7 @@ impl EnvServer {
 		provider_response_hooks: omp_ai::ProviderResponseHooks,
 		admission_gate: Arc<HookGate>,
 		checkpoint_control: AgentCheckpointControl,
+		context_control: ContextControlSlot,
 		previews: StagedProposalRegistry,
 		schedules: DurableScheduleActor,
 		authority: Arc<AuthorityTable>,
@@ -2378,6 +2520,7 @@ impl EnvServer {
 			provider_response_hooks,
 			admission_gate,
 			checkpoint_control,
+			context_control,
 			previews,
 			schedules,
 			workers: Arc::new(WorkerSupervisor::new(
@@ -2614,6 +2757,7 @@ impl EnvServer {
 			provider_response_hooks,
 			admission_gate,
 			checkpoint_control,
+			control_bindings.context.clone(),
 			previews,
 			schedules,
 			authority,
@@ -2901,6 +3045,7 @@ impl EnvServer {
 			provider_response_hooks,
 			admission_gate,
 			checkpoint_control,
+			control_bindings.context.clone(),
 			previews,
 			schedules,
 			authority,
@@ -3117,6 +3262,7 @@ impl EnvServer {
 			provider_response_hooks,
 			admission_gate,
 			session.checkpoint_control,
+			control_bindings.context.clone(),
 			StagedProposalRegistry::new(),
 			schedules,
 			authority,
@@ -3451,8 +3597,15 @@ impl EnvServer {
 
 	/// Binds the active Agent Journal mailbox to checkpoint and staged-preview
 	/// CONTROL until the returned lease is dropped.
-	pub(crate) fn bind_agent_control(self: &Arc<Self>, sender: KernelSender) -> AgentControlBinding {
+	pub(crate) fn bind_agent_control(
+		self: &Arc<Self>,
+		sender: KernelSender,
+		context: omp_agent::context::control::ContextControl,
+	) -> AgentControlBinding {
 		let id = NEXT_AGENT_CONTROL_BINDING.fetch_add(1, Ordering::Relaxed);
+		if let Some((_, previous)) = self.context_control.write().replace((id, context)) {
+			previous.revoke();
+		}
 		self.checkpoint_control.bind(id, sender.clone());
 		let diagnostics = self.environment.as_ref().map(|environment| {
 			let diagnostics = Arc::new(LateDiagnosticsBatcher {
@@ -3494,6 +3647,13 @@ impl EnvServer {
 	}
 
 	fn release_agent_control(&self, id: u64) {
+		let mut context = self.context_control.write();
+		if context.as_ref().is_some_and(|(binding, _)| *binding == id) {
+			if let Some((_, control)) = context.take() {
+				control.revoke();
+			}
+		}
+		drop(context);
 		if let Some(environment) = &self.environment {
 			environment.documents.unbind_late_diagnostics(id);
 		}
@@ -12648,6 +12808,7 @@ mod tests {
 			omp_ai::ProviderResponseHooks::default(),
 			Arc::new(HookGate::channel().0),
 			AgentCheckpointControl::default(),
+			Arc::default(),
 			StagedProposalRegistry::new(),
 			schedules,
 			Arc::new(AuthorityTable::default()),
@@ -14121,5 +14282,158 @@ mod runtime_operation_contracts {
 	#[test]
 	fn missing_mcp_operation_is_invalid_input_not_a_public_operation() {
 		assert_eq!(mcp_operation(&pb::McpOp::default()), None);
+	}
+}
+
+#[cfg(all(test, unix))]
+mod context_control_tests {
+	use super::*;
+
+	struct NoInference;
+	impl omp_agent::Inference for NoInference {
+		async fn chat(
+			&mut self,
+			_request: omp_ai::ChatRequest,
+		) -> Result<omp_ai::ChatStream, omp_ai::Error> {
+			panic!("context read/pin must not invoke a provider")
+		}
+	}
+
+	fn identity(extension: &str, generation: u64) -> Arc<ControlConnectionIdentity> {
+		Arc::new(ControlConnectionIdentity {
+			extension:          Str::new(extension),
+			principal:          omp_core::Principal::new(sf!("test"), sf!("test")),
+			artifact_digest:    sf!("verified-digest"),
+			layer:              sf!("project"),
+			tier:               sf!("trusted"),
+			trust:              sf!("trusted"),
+			host_generation:    generation,
+			session_generation: 4,
+			capabilities:       Arc::default(),
+		})
+	}
+
+	async fn round_trip(
+		kernel: &mut omp_agent::Kernel<NoInference>,
+		session: &mut omp_session::Session,
+		authority: &Arc<dyn ControlAuthority>,
+		identity: Arc<ControlConnectionIdentity>,
+		operation: &str,
+		arguments: serde_json::Value,
+	) -> Result<serde_json::Value, ControlProtocolError> {
+		let receiver = kernel.idle_control_receiver();
+		let request = authority.request(
+			ControlRequestContext { connection: identity, request_id: 1, invocation: None },
+			Str::new(operation),
+			arguments.as_object().expect("args").clone(),
+		);
+		let actor = async {
+			let message = receiver.recv_async().await.expect("queued operation");
+			kernel
+				.handle_idle_control(session, message)
+				.await
+				.expect("actor");
+		};
+		let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+			tokio::join!(request, actor)
+		})
+		.await
+		.expect("production authority reaches Session owner");
+		result
+	}
+
+	#[tokio::test]
+	async fn production_context_owner_without_live_kernel_returns_explicit_unavailable() {
+		let factory = ProductionContextControlFactory { slot: Arc::default() };
+		let identity = identity("first", 7);
+		let authority = factory.bind(identity.clone()).expect("authority");
+		assert!(authority.handles("omp.context.view"));
+		assert!(!authority.handles("omp.context.undeclared"));
+		let result = authority
+			.request(
+				ControlRequestContext { connection: identity, request_id: 1, invocation: None },
+				sf!("omp.context.view"),
+				Default::default(),
+			)
+			.await
+			.expect_err("unbound owner");
+		assert_eq!(result.code, "ContextUnavailable");
+	}
+
+	#[tokio::test]
+	async fn production_context_owner_uses_authenticated_identity_and_rejects_foreign_unpin() {
+		let directory = tempfile::tempdir().expect("directory");
+		let mut session = omp_session::Session::create(
+			directory.path().join("context.oms"),
+			omp_session::ComponentRegistry::default(),
+		)
+		.expect("session");
+		session.begin_turn().expect("turn");
+		let entry = session
+			.user("real protected body", Vec::new())
+			.expect("history");
+		let mut kernel = omp_agent::Kernel::new(
+			NoInference,
+			Arc::new(omp_tool::Registry::new()),
+			omp_agent::DispatchPolicy::new(
+				omp_journal::blob::BlobStore::open(directory.path().join("blobs")).expect("blobs"),
+			),
+			omp_agent::StaticPrompt(sf!("system")),
+		)
+		.with_route_facts(omp_agent::RouteFacts { context_window: 10000, ..Default::default() });
+		let slot = Arc::new(parking_lot::RwLock::new(Some((1, kernel.context_control()))));
+		let factory = ProductionContextControlFactory { slot };
+		let first = identity("first", 7);
+		let second = identity("second", 7);
+		let owner = factory.bind(first.clone()).expect("owner");
+		let other = factory.bind(second.clone()).expect("other");
+		let id = format!("{entry}:0");
+		let pin = round_trip(
+			&mut kernel,
+			&mut session,
+			&owner,
+			first.clone(),
+			"omp.context.pin",
+			serde_json::json!({"ids": [id], "reason": "keep", "idempotency_key": "pin", "owner": "forged"}),
+		)
+		.await
+		.expect("pin");
+		assert_eq!(pin["schema"], "omp.context.pin.v1");
+		assert_eq!(pin["result"], 1);
+		let pins = omp_session::context::context_pins(session.dom()).expect("pins");
+		assert_eq!(
+			pins[&Str::new(&id)].owner.as_str(),
+			serde_json::json!(["project", "trusted", "first"]).to_string()
+		);
+		let before = session.head();
+		let denied = round_trip(
+			&mut kernel,
+			&mut session,
+			&other,
+			second,
+			"omp.context.unpin",
+			serde_json::json!({"ids": [id], "idempotency_key": "unpin", "owner": "first"}),
+		)
+		.await
+		.expect_err("foreign owner");
+		assert_eq!(denied.code, "PermissionDenied");
+		assert_eq!(session.head(), before);
+		let stale = owner
+			.request(
+				ControlRequestContext {
+					connection: identity("first", 6),
+					request_id: 2,
+					invocation: None,
+				},
+				sf!("omp.context.view"),
+				Default::default(),
+			)
+			.await
+			.expect_err("old generation");
+		assert_eq!(stale.code, "StaleGeneration");
+		assert!(
+			kernel.idle_control_receiver().try_recv().is_err(),
+			"rejected identity never queues work"
+		);
 	}
 }

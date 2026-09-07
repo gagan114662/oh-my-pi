@@ -1260,6 +1260,7 @@ impl ConsoleUsageFetcher for ExtensionUsageFetcher {
 			let result = self
 				.dispatcher
 				.dispatch(Arc::clone(&self.identity), ControlDispatch {
+					reentrant_parent: None,
 					operation: sf!("omp.hooks.dispatch"),
 					arguments,
 					authority: ControlInvocationAuthority {
@@ -1523,7 +1524,9 @@ impl HookControlFactory {
 		});
 		let decision = match (event, identity) {
 			(Some(event), Some((identity, session))) => {
-				let payload = if dispatch.phase == HookPhase::Observe {
+				let payload = if dispatch.phase == HookPhase::Observe
+					|| dispatch.event == HookEventId::HookEventAgentSettled
+				{
 					serde_json::from_slice::<JsonValue>(&dispatch.payload).ok()
 				} else {
 					dispatch
@@ -1578,11 +1581,20 @@ impl HookControlFactory {
 						if dispatch.phase == HookPhase::Observe {
 							self.observe(&context, event_id.as_str(), &payload).await;
 							GateDecision::Defer
+						} else if dispatch.event == HookEventId::HookEventAgentSettled {
+							omp_agent::context::control::with_context_origin(
+								dispatch.context_origin.clone(),
+								self.compose_settled(&context, &arguments),
+							)
+							.await
 						} else {
 							let composed = if shutdown_bounded {
 								match tokio::time::timeout(
 									time::Duration::from_secs(2),
-									self.compose(&context, &arguments),
+									omp_agent::context::control::with_context_origin(
+										dispatch.context_origin.clone(),
+										self.compose(&context, &arguments),
+									),
 								)
 								.await
 								{
@@ -1590,7 +1602,11 @@ impl HookControlFactory {
 									Err(_) => Ok(json!({"kind": "defer"})),
 								}
 							} else {
-								self.compose(&context, &arguments).await
+								omp_agent::context::control::with_context_origin(
+									dispatch.context_origin.clone(),
+									self.compose(&context, &arguments),
+								)
+								.await
 							};
 							match composed {
 								Ok(value) => gate_decision_from_json(value, payload),
@@ -1835,6 +1851,7 @@ impl HookControlFactory {
 			let _ = self
 				.dispatcher
 				.dispatch(Arc::clone(&subscription.identity), ControlDispatch {
+					reentrant_parent: None,
 					operation: sf!("omp.hooks.dispatch"),
 					arguments,
 					authority: ControlInvocationAuthority {
@@ -2022,6 +2039,93 @@ impl HookControlFactory {
 			}
 		});
 		let _ = futures::future::join_all(deliveries).await;
+	}
+
+	async fn compose_settled(
+		&self,
+		context: &ControlRequestContext,
+		arguments: &JsonMap<String, JsonValue>,
+	) -> GateDecision {
+		let settle = || GateDecision::Domain(bytes::Bytes::from_static(b"settle"));
+		if arguments.get("event_rev").and_then(JsonValue::as_u64) != Some(2) {
+			return settle();
+		}
+		let payload = arguments.get("payload").cloned().unwrap_or(JsonValue::Null);
+		let mut rows = self
+			.subscriptions
+			.read()
+			.values()
+			.flatten()
+			.filter(|row| row.event == "agent_settled" && row.phase == "domain")
+			.cloned()
+			.collect::<Vec<_>>();
+		rows.sort_by(|left, right| {
+			left
+				.identity
+				.layer
+				.cmp(&right.identity.layer)
+				.then_with(|| left.identity.tier.cmp(&right.identity.tier))
+				.then_with(|| left.identity.extension.cmp(&right.identity.extension))
+				.then_with(|| left.name.cmp(&right.name))
+		});
+		let mut winner: Option<omp_session::continuation::Continuation> = None;
+		for row in rows {
+			let pending = winner.as_ref().map(|winner| {
+				let mut value = serde_json::to_value(winner).expect("continuation serialization");
+				value
+					.as_object_mut()
+					.expect("continuation object")
+					.remove("owner");
+				value
+			});
+			let callback = json!({"event": "agent_settled", "phase": "domain", "name": row.name,
+				"payload": payload, "pending_continuation": pending});
+			let result = self
+				.callbacks
+				.dispatch(
+					Arc::clone(&row.identity),
+					context,
+					"omp.hooks.dispatch",
+					callback.as_object().expect("callback object").clone(),
+					row.concurrency,
+					row.timeout.unwrap_or(row.event_policy.timeout),
+					Some(sf!("agent_settled")),
+					None,
+				)
+				.await;
+			let Ok(value) = result else {
+				return settle();
+			};
+			if value.is_null() || value.as_object().is_some_and(JsonMap::is_empty) {
+				if winner.is_some() {
+					return settle();
+				}
+				continue;
+			}
+			let Some(mut object) = value.as_object().cloned() else {
+				return settle();
+			};
+			// Owner is derived exclusively from the verified callback identity.
+			object.insert(
+				"owner".to_owned(),
+				JsonValue::String(
+					json!([row.identity.layer, row.identity.tier, row.identity.extension]).to_string(),
+				),
+			);
+			let Ok(continuation) = serde_json::from_value::<omp_session::continuation::Continuation>(
+				JsonValue::Object(object),
+			) else {
+				return settle();
+			};
+			if winner.is_none() {
+				winner = Some(continuation);
+			}
+		}
+		winner.map_or_else(settle, |continuation| {
+			GateDecision::Domain(bytes::Bytes::from(
+				serde_json::to_vec(&continuation).expect("continuation serialization"),
+			))
+		})
 	}
 
 	async fn compose(
@@ -2851,6 +2955,7 @@ impl ProviderResponseObserver for HookControlFactory {
 				let _ = owner
 					.dispatcher
 					.dispatch(Arc::clone(&subscription.identity), ControlDispatch {
+						reentrant_parent: None,
 						operation: sf!("omp.hooks.dispatch"),
 						arguments,
 						authority: ControlInvocationAuthority {
@@ -2941,6 +3046,7 @@ impl ProviderResponseObserver for HookControlFactory {
 				let _ = owner
 					.dispatcher
 					.dispatch(Arc::clone(&subscription.identity), ControlDispatch {
+						reentrant_parent: None,
 						operation: sf!("omp.hooks.dispatch"),
 						arguments,
 						authority: ControlInvocationAuthority {
@@ -6826,5 +6932,209 @@ mod tests {
 				.expect_err("invalid prelude signature was accepted");
 			assert!(error.to_string().contains(expected), "{error}");
 		}
+	}
+}
+
+#[cfg(test)]
+mod context_settlement_tests {
+	use super::*;
+
+	struct RecordedInference(Arc<Mutex<Vec<omp_ai::ChatRequest>>>);
+	impl omp_agent::Inference for RecordedInference {
+		async fn chat(
+			&mut self,
+			request: omp_ai::ChatRequest,
+		) -> Result<omp_ai::ChatStream, omp_ai::Error> {
+			let request_number = {
+				let mut requests = self.0.lock();
+				requests.push(request);
+				requests.len()
+			};
+			Ok(omp_ai::ChatStream::ordinary(Box::pin(futures::stream::iter([
+				Ok(omp_ai::ChatEvent::Started(omp_ai::ResponseMeta {
+					request_id:          omp_ai::RequestId::from(format!(
+						"context-proof-{request_number}"
+					)),
+					provider:            omp_ai::ProviderId::from("context-proof"),
+					route:               omp_ai::RouteId::from("context-proof/test"),
+					model:               None,
+					provider_request_id: None,
+					created_at:          std::time::SystemTime::UNIX_EPOCH,
+				})),
+				Ok(omp_ai::ChatEvent::BlockStarted { index: 0, kind: omp_ai::BlockKind::Text }),
+				Ok(omp_ai::ChatEvent::TextDelta { index: 0, text: sf!("real inference response") }),
+				Ok(omp_ai::ChatEvent::Completed(omp_ai::Completion {
+					reason:  omp_ai::FinishReason::Stop,
+					blocks:  1,
+					usage:   omp_ai::Usage::default(),
+					receipt: omp_ai::ExecutionReceipt::default().into(),
+				})),
+			]))))
+		}
+	}
+
+	struct ContextCallback {
+		control:     Mutex<Option<omp_agent::context::control::ContextControl>>,
+		settlements: AtomicU64,
+		compactions: AtomicU64,
+	}
+	#[async_trait::async_trait]
+	impl CallbackDispatcher for ContextCallback {
+		async fn dispatch(
+			&self,
+			target: Arc<ControlConnectionIdentity>,
+			dispatch: ControlDispatch,
+		) -> Result<JsonValue, ControlProtocolError> {
+			assert_eq!(
+				dispatch.policy,
+				CallbackConcurrency::Serialized,
+				"production owner must preserve declaration policy"
+			);
+			if dispatch.arguments["event"] == "compaction" {
+				assert!(
+					dispatch.reentrant_parent.is_some(),
+					"nested hook retains trusted parent identity"
+				);
+				self.compactions.fetch_add(1, Ordering::SeqCst);
+				return Ok(JsonValue::Null);
+			}
+			assert_eq!(dispatch.arguments["event"], "agent_settled");
+			if self.settlements.fetch_add(1, Ordering::SeqCst) != 0 {
+				return Ok(json!({}));
+			}
+			let control = self.control.lock().clone().expect("context control bound");
+			let origin = omp_agent::context::control::ContextControlOrigin {
+				invocation:         dispatch.authority.invocation,
+				extension:          target.extension.clone(),
+				layer:              target.layer.clone(),
+				tier:               target.tier.clone(),
+				host_generation:    target.host_generation,
+				session_generation: target.session_generation,
+			};
+			let result = control.for_invocation(Some(origin)).request(sf!("test-owner"), sf!("omp.context.compact"),
+				json!({"tier": "local", "focus": "exact retained facts", "idempotency_key": "nested"}).as_object().expect("arguments").clone(),
+				omp_agent::context::control::ContextControlLease::admitted()).await.map_err(|error| ControlProtocolError::new(error.code, error.message))?;
+			assert_eq!(result["epoch"], 1);
+			Ok(
+				json!({"prompt": "continue with the actual requested goal", "visible": false, "role": "system", "label": "goal-test", "collapse_prior": true}),
+			)
+		}
+	}
+
+	#[tokio::test]
+	async fn delegated_settlement_awaits_context_compaction_then_journals_exact_continue_payload() {
+		let callback = Arc::new(ContextCallback {
+			control:     Mutex::new(None),
+			settlements: AtomicU64::new(0),
+			compactions: AtomicU64::new(0),
+		});
+		let identity = Arc::new(ControlConnectionIdentity {
+			extension:          sf!("context-goal"),
+			principal:          omp_core::Principal::new(sf!("test"), sf!("test")),
+			artifact_digest:    sf!("verified"),
+			layer:              sf!("project"),
+			tier:               sf!("trusted"),
+			trust:              sf!("trusted"),
+			host_generation:    7,
+			session_generation: 1,
+			capabilities:       Arc::default(),
+		});
+		let policy = |revision| HookEventPolicy {
+			revision,
+			timeout: time::Duration::from_secs(5),
+			on_failure: HookFailurePolicy::Defer,
+			default: json!({"kind": "defer"}),
+			composition: BTreeMap::new(),
+		};
+		let owner = HookControlFactory::new(
+			RegistryControlFactory::new(BTreeMap::new()),
+			callback.clone(),
+			BTreeMap::from([(sf!("agent_settled"), policy(2)), (sf!("compaction"), policy(1))]),
+			BTreeMap::new(),
+			time::Duration::from_secs(5),
+		);
+		// The fixture supplies verified roster rows directly; execution uses the
+		// production delegated gate, composer and nested callback builder.
+		owner.subscriptions.write().insert(
+			connection_key(&identity),
+			["agent_settled", "compaction"]
+				.into_iter()
+				.map(|event| HookSubscription {
+					identity:     identity.clone(),
+					session:      sf!("session"),
+					event:        Str::new(event),
+					phase:        sf!("domain"),
+					name:         Str::new(event),
+					order:        0,
+					on_failure:   None,
+					timeout:      None,
+					concurrency:  CallbackConcurrency::Serialized,
+					providers:    None,
+					servers:      None,
+					method_globs: Box::new([]),
+					event_policy: policy(if event == "agent_settled" { 2 } else { 1 }),
+				})
+				.collect(),
+		);
+		owner.admission_gate.replace_masks(
+			(1_u128 << (HookEventId::HookEventAgentSettled as u32))
+				| (1_u128 << (HookEventId::HookEventCompaction as u32)),
+			0,
+		);
+		let directory = tempfile::tempdir().expect("directory");
+		let requests = Arc::new(Mutex::new(Vec::new()));
+		let con = Arc::new(omp_con::Ctx::new());
+		omp_ai::settings::AI_COMPACTION_KEEP_RECENT_TOKENS
+			.set(&con, 0)
+			.expect("keep none");
+		let mut kernel = omp_agent::Kernel::new(
+			RecordedInference(requests.clone()),
+			Arc::new(Registry::new()),
+			omp_agent::DispatchPolicy::new(
+				omp_journal::blob::BlobStore::open(directory.path().join("blobs")).expect("blobs"),
+			),
+			omp_agent::StaticPrompt(sf!("system")),
+		)
+		.with_hook_gate(owner.admission_gate())
+		.with_con_context(con)
+		.with_route_facts(omp_agent::RouteFacts { context_window: 10000, ..Default::default() });
+		*callback.control.lock() = Some(kernel.context_control());
+		let mut session = omp_session::Session::create(
+			directory.path().join("settlement.oms"),
+			omp_session::ComponentRegistry::default(),
+		)
+		.expect("session");
+		tokio::time::timeout(
+			time::Duration::from_secs(5),
+			kernel.run_turn(
+				&mut session,
+				omp_agent::TurnInput { text: sf!("initial goal"), attachments: Vec::new() },
+				omp_agent::RunControl::default(),
+			),
+		)
+		.await
+		.expect("nested compaction must not deadlock")
+		.expect("turn");
+		assert_eq!(callback.compactions.load(Ordering::SeqCst), 1);
+		assert_eq!(callback.settlements.load(Ordering::SeqCst), 2);
+		let requests = requests.lock();
+		assert_eq!(requests.len(), 3, "initial answer, actual summary, continuation answer");
+		assert!(requests[2].messages.iter().any(|message| message.role == omp_ai::Role::System && message.content.iter().any(|part| matches!(part, omp_ai::ContentPart::Text { text, .. } if text == "continue with the actual requested goal"))));
+		let continuation = session
+			.dom()
+			.select("developer")
+			.expect("selector")
+			.filter_map(|handle| session.dom().get(handle))
+			.find(|node| {
+				node
+					.prop(&omp_dom::PropId::Name.into())
+					.and_then(omp_dom::Value::as_str)
+					== Some("goal-test")
+			})
+			.expect("journaled exact label");
+		assert_eq!(
+			continuation.prop(&omp_dom::PropKey::Custom(sf!("display"))),
+			Some(&omp_dom::Value::Bool(false))
+		);
 	}
 }

@@ -1760,6 +1760,7 @@ impl PyCallback {
 		arguments.insert("callable".into(), JsonValue::String(self.callable.to_string()));
 		let target = self.route.current();
 		let dispatch = ControlDispatch {
+			reentrant_parent: None,
 			operation: Str::new_static(operation),
 			arguments,
 			authority: target.authority,

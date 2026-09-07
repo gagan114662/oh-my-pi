@@ -1351,14 +1351,19 @@ impl ComposedInference {
 	/// Routes environment-originated checkpoint controls to the kernel mailbox
 	/// and clears transient checkpoint state whenever that kernel selects a
 	/// different durable session.
-	pub fn refresh_agent_control(&self, sender: omp_agent::KernelSender, dom: &omp_dom::Dom) {
+	pub fn refresh_agent_control(
+		&self,
+		sender: omp_agent::KernelSender,
+		dom: &omp_dom::Dom,
+		context: omp_agent::context::control::ContextControl,
+	) {
 		let (environment, slot) = match self {
 			Self::Production(inference) => (&inference._environment, &inference._agent_control),
 			Self::Gateway { _environment, _agent_control, .. } => (_environment, _agent_control),
 		};
 		let mut slot = slot.lock();
 		if slot.is_none() {
-			*slot = Some(environment.bind_agent_control(sender));
+			*slot = Some(environment.bind_agent_control(sender, context));
 		}
 		slot
 			.as_ref()
@@ -2061,7 +2066,7 @@ pub async fn compose_kernel(
 	let session_mutator = crate::subagent::workpool_scheduler::SessionMutator::new(up.clone());
 	kernel
 		.inference()
-		.refresh_agent_control(up.clone(), session.dom());
+		.refresh_agent_control(up.clone(), session.dom(), kernel.context_control());
 	let autoreply = crate::subagent::autoreply::producer(
 		kernel.inference(),
 		&live_sessions,

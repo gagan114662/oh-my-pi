@@ -196,16 +196,16 @@ async fn routes_requests_callbacks_and_effects_to_domain_owners() {
 			.expect("routed request/callback");
 		assert_eq!(result, Value::String(expected.to_owned()));
 	}
-	// Spec rows describe the declared Python surface; they must not be mistaken
-	// for a wired production owner. These operations still have no domain route.
+	// Context is routed through the live auxiliary owner; metadata alone cannot
+	// satisfy this assertion because the real domain router must select it.
 	for operation in ["omp.context.view", "omp.context.pin", "omp.context.compact"] {
 		assert!(omp_tool::operation_spec(operation).is_some());
-		assert!(!router.handles(operation));
-		let error = router
+		assert!(router.handles(operation));
+		let result = router
 			.request(context(99), Str::from(operation), serde_json::Map::new())
 			.await
-			.expect_err("declared context operations still lack an owner");
-		assert_eq!(error.code, "unhandled_operation");
+			.expect("context operation reaches its owner");
+		assert_eq!(result, Value::String("auxiliary".to_owned()));
 	}
 	assert!(!router.handles("omp.journal.append"));
 	assert!(!router.handles("omp.state.latest"));

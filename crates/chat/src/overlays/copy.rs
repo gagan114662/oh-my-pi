@@ -1781,6 +1781,7 @@ mod tests {
 		session.user("second", Vec::new()).expect("user two");
 		session
 			.compaction(Compaction {
+				receipt: None,
 				summary,
 				boundary,
 				method: Some(Str::new_static("remote")),

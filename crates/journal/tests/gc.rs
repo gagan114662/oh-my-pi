@@ -327,6 +327,7 @@ fn snapcompact_frames_remain_rooted_and_copy_with_their_session() {
 		.append(draft(KindName::Journal, None, None))
 		.expect("genesis");
 	let payload = Compaction {
+		receipt: None,
 		summary,
 		boundary: genesis.id,
 		method: Some(Str::new_static("snapcompact")),
