@@ -541,6 +541,26 @@ jobs:
           path: target/proxy-header-proof/
           if-no-files-found: error
 
+      - name: Prove command terminal backpressure
+        run: |
+          set -o pipefail
+          mkdir -p target/exec-terminal-proof
+          set +e
+          cargo nextest run --profile ci --locked -p omp-envd --lib --no-tests fail --success-output immediate -E 'test(exec::tests::terminal_event_yields_on_a_full_queue_and_preserves_order) | test(exec::tests::fast_output_is_host_bounded_and_complete_in_the_spill_artifact)' 2>&1 | tee target/exec-terminal-proof/nextest.log
+          test_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-envd 2>&1 | tee target/exec-terminal-proof/doctests.log
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > target/exec-terminal-proof/nextest.exit
+          printf '%s\n' "$doc_status" > target/exec-terminal-proof/doctests.exit
+          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+      - name: Publish terminal backpressure evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: exec-terminal-backpressure
+          path: target/exec-terminal-proof/
+          if-no-files-found: error
+
       - name: Prove Linux environment host contracts
         env:
           CARGO_TERM_COLOR: never
