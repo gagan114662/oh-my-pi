@@ -658,10 +658,9 @@ fn load_rule(
 			.into_iter()
 			.flat_map(|value| {
 				value
-					.split(',')
-					.map(str::trim)
+					.split(",")
+					.map(|part| part.trim())
 					.filter(|part| !part.is_empty())
-					.map(Str::new)
 					.collect::<Vec<_>>()
 			})
 			.collect::<Vec<_>>();
