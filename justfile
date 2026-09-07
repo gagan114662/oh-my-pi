@@ -237,7 +237,7 @@ e2e-baseline:
 # Run every P1-P10 proof plus the tool-sources check, in CI order.
 [group('e2e')]
 e2e: e2e-build e2e-core e2e-p7 e2e-p9 e2e-p10
-    cargo nextest run -p omp-e2e --test tool_sources --locked
+    cargo nextest run -p omp-e2e --test tool_sources --test output_completeness --locked
     cargo nextest run -p omp-e2e --test p8_baselines --locked
 
 # ---------------------------------------------------------------------------

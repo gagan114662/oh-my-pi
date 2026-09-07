@@ -399,7 +399,8 @@ jobs:
             --test p9_isolation \
             --test p9_extension_control \
             --test p10_lift_idempotence \
-            --test tool_sources
+            --test tool_sources \
+            --test output_completeness
 
       - name: Run terminal proof P7
         env:
@@ -421,6 +422,15 @@ jobs:
         with:
           name: omp-e2e-baseline-macos-arm64
           path: target/e2e-artifacts/p8-baselines.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload 2MiB output completeness evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: output-completeness-macos-arm64
+          path: target/e2e-artifacts/output-completeness.json
           if-no-files-found: warn
           retention-days: 14
 
