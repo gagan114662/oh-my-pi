@@ -1,7 +1,8 @@
 # Extension examples
 
-One hundred nineteen extensions onto the omp Python extension
-layer (`crates/py/python/omp`). Each directory is one extension: an `omp.toml`
+This historical index contains 113 extension rows. The corresponding extension
+directories are not shipped in this checkout, so the entries below are a porting
+record, not runnable examples. The recorded layout for each extension is an `omp.toml`
 manifest, the Python module(s), and a README stating what the pi original did,
 how the omp shape differs, and — load-bearing — a **Gaps** section listing every
 `omp.*` symbol the port needs that the frozen layer does not export yet.
@@ -427,17 +428,18 @@ Seven conformance probes landed under `examples/` (`limits-probe/`,
 to its boundary and asserts the documented refusal) plus one re-runnable gate,
 `scripts/check-docs-surface.py`. Highest-yield round of the eight.
 
-**Closed (2026-08-20 remediation).** Everything below is the audit record, not
-live state: all 15 code defects are fixed, the 257 drift entries are closed
-(`check-docs-surface.py` now reports 0), the 8 docs self-contradictions and
+**Historical closure claim (2026-08-20; not revalidated).** Everything below is
+an audit record, not live state. The record claimed all 15 code defects and 257
+drift entries were closed. `scripts/check-docs-surface.py` is not currently a
+recipe or CI gate and scans only docs 00–14; it does not prove the complete API
+surface or the absent example directories. The record also claimed the 8 docs self-contradictions and
 underspecified contracts are ruled and recorded in the owning docs'
-Open-questions sections, and the six enum divergences are resolved. Each
-probe's README carries the re-observed matrix and per-finding closure records;
-the one known remaining gap is agent-side (`crates/agent/src/context.rs`
+Open-questions sections, and the six enum divergences are resolved. The absent probes were reported to carry re-observed matrices and closure records;
+the historical record identified an agent-side gap (`crates/agent/src/context.rs`
 `apply_patches` still short-circuits per-sequence instead of the ruled per-op
 drop), recorded in `patch-conflict/README.md`.
 
-### Live code defects (not drift)
+### Historical code defects (not revalidated)
 
 | # | Defect | Found by | Where |
 |---|---|---|---|

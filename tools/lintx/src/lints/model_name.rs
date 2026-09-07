@@ -1,5 +1,5 @@
 //! `model-gate` / `model-table`: model-name hardcoding inside
-//! `crates/inference`. One family, one module: the model-id matcher, the
+//! `crates/ai`. One family, one module: the model-id matcher, the
 //! finding, and both position rules live here.
 //!
 //! Inference must branch on catalog data (capabilities, route policy, tier
@@ -10,10 +10,10 @@
 //! - `model-gate`: a string predicate (`starts_with`, `contains`,
 //!   `match_indices`, `eq_ignore_ascii_case`, `strip_prefix`, …) or an
 //!   `==`/`!=` comparison whose literal argument looks like a model id.
-//! - `model-table`: an array/slice literal enumerating three or more
-//!   model-like ids — an ad-hoc model table that belongs in catalog data.
+//! - `model-table`: an array/slice literal enumerating three or more model-like
+//!   ids — an ad-hoc model table that belongs in catalog data.
 //!
-//! Scope: `crates/inference/src` only, excluding `#[cfg(test)]` modules and
+//! Scope: `crates/ai/src` only, excluding `#[cfg(test)]` modules and
 //! `#[test]` functions — tests and fixtures legitimately name real models.
 //! Literals that cannot be wire model ids (whitespace, uppercase, URLs,
 //! hosts) never match, so codec registry keys, header names, and user-agent
@@ -38,7 +38,7 @@ pub struct ModelTable;
 
 /// Directories the family polices. Extend deliberately; the point is model
 /// *behavior* crates, not UI or data crates.
-const SCOPED_DIRS: &[&str] = &["crates/inference/src"];
+const SCOPED_DIRS: &[&str] = &["crates/ai/src"];
 
 /// String methods that turn a model-name literal into a behavior gate.
 const PREDICATE_METHODS: &[&str] = &[
@@ -56,9 +56,29 @@ const PREDICATE_METHODS: &[&str] = &[
 /// Model-family tokens. A literal is model-like when any `-`/`.`/`:`-separated
 /// token equals one of these, or is one followed by digits (`qwen3`, `glm4`).
 const FAMILIES: &[&str] = &[
-	"gpt", "chatgpt", "claude", "gemini", "gemma", "glm", "grok", "qwen", "qwq", "deepseek",
-	"kimi", "minimax", "llama", "mistral", "mixtral", "codestral", "sonnet", "opus", "haiku",
-	"whisper", "o1", "o3", "o4",
+	"gpt",
+	"chatgpt",
+	"claude",
+	"gemini",
+	"gemma",
+	"glm",
+	"grok",
+	"qwen",
+	"qwq",
+	"deepseek",
+	"kimi",
+	"minimax",
+	"llama",
+	"mistral",
+	"mixtral",
+	"codestral",
+	"sonnet",
+	"opus",
+	"haiku",
+	"whisper",
+	"o1",
+	"o3",
+	"o4",
 ];
 
 /// Model-variant words that gate behavior only as the *entire* literal
@@ -107,19 +127,21 @@ impl Lint for ModelGate {
 		}
 		for node in ctx.tree.syntax().descendants() {
 			if let Some(call) = ast::MethodCallExpr::cast(node.clone()) {
-				let Some(name) = call.name_ref() else { continue };
+				let Some(name) = call.name_ref() else {
+					continue;
+				};
 				if !PREDICATE_METHODS.contains(&&*name.text()) {
 					continue;
 				}
-				let Some(args) = call.arg_list() else { continue };
+				let Some(args) = call.arg_list() else {
+					continue;
+				};
 				for arg in args.args() {
 					self.flag(&arg, "argument to a string predicate", sink);
 				}
 			} else if let Some(bin) = ast::BinExpr::cast(node) {
-				let comparison = matches!(
-					bin.op_kind(),
-					Some(ast::BinaryOp::CmpOp(ast::CmpOp::Eq { .. }))
-				);
+				let comparison =
+					matches!(bin.op_kind(), Some(ast::BinaryOp::CmpOp(ast::CmpOp::Eq { .. })));
 				if !comparison {
 					continue;
 				}
@@ -177,8 +199,8 @@ impl Lint for ModelTable {
 			sink.push(Finding {
 				span:    range.start().into()..range.end().into(),
 				message: format!(
-					"array enumerates {model_like} model-like ids; hardcoded model tables belong \
-					 in crates/catalog data"
+					"array enumerates {model_like} model-like ids; hardcoded model tables belong in \
+					 crates/catalog data"
 				),
 			});
 		}
@@ -217,10 +239,9 @@ fn is_model_name(value: &str) -> bool {
 	}
 	// Wire model ids are lowercase tokens: prose, enum fragments
 	// (`MODEL_PROVIDER_GEMINI`), user agents, and headers all wash out here.
-	if value
-		.chars()
-		.any(|c| c.is_whitespace() || c.is_uppercase() || matches!(c, ',' | '(' | ')' | '=' | '{' | '}'))
-	{
+	if value.chars().any(|c| {
+		c.is_whitespace() || c.is_uppercase() || matches!(c, ',' | '(' | ')' | '=' | '{' | '}')
+	}) {
 		return false;
 	}
 	// URLs and hosts (`https://…`, `chatgpt.com`) are endpoints, not models.
@@ -269,4 +290,40 @@ fn has_test_attr(mut attrs: impl Iterator<Item = ast::Attr>) -> bool {
 		let text = attr.syntax().text().to_string();
 		text.ends_with("test]") || text.contains("cfg(test") || text.contains("cfg(all(test")
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use std::path::Path;
+
+	use super::{ModelGate, ModelTable};
+	use crate::lint::{AnyLint, FileContext};
+
+	#[test]
+	fn model_behavior_in_ai_is_reported_but_catalog_data_and_tests_are_allowed() {
+		let source = r#"fn route(model: &str) -> bool { model.starts_with("gpt-") }"#;
+		let mut findings = Vec::new();
+		let ai = FileContext::new(Path::new("crates/ai/src/route.rs"), source);
+		ModelGate.detect_erased(&ai, &mut |finding| findings.push(finding));
+		assert_eq!(findings.len(), 1);
+		assert_eq!(&source[findings[0].span.clone()], "\"gpt-\"");
+		findings.clear();
+		let catalog = FileContext::new(Path::new("crates/catalog/src/data.rs"), source);
+		ModelGate.detect_erased(&catalog, &mut |finding| findings.push(finding));
+		let test_source = format!("#[cfg(test)] mod tests {{ {source} }}");
+		let tests = FileContext::new(Path::new("crates/ai/src/route.rs"), &test_source);
+		ModelGate.detect_erased(&tests, &mut |finding| findings.push(finding));
+		assert!(findings.is_empty());
+	}
+
+	#[test]
+	fn ai_model_tables_are_reported_without_flagging_endpoint_lists() {
+		let source = r#"const MODELS: &[&str] = &["gpt-4", "claude-3", "gemini-2"];
+                         const URLS: &[&str] = &["https://gpt.test", "claude.ai", "gemini.com"];"#;
+		let ctx = FileContext::new(Path::new("crates/ai/src/route.rs"), source);
+		let mut findings = Vec::new();
+		ModelTable.detect_erased(&ctx, &mut |finding| findings.push(finding));
+		assert_eq!(findings.len(), 1);
+		assert!(source[findings[0].span.clone()].contains("gpt-4"));
+	}
 }

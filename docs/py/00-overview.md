@@ -1,5 +1,9 @@
 # The extension host
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 omp's Python extension surface, from the process outward.
 
 | Doc | Owns |
@@ -1064,7 +1068,7 @@ What changed, concretely:
 - **One event, one chain.** `tool_call` fires exactly once per logical dispatch, carrying a tagged `target` — core tool, device, or MCP endpoint ([05-hooks.md](05-hooks.md)). A device invocation through `dyn shell_exec [args…]` fires one `tool_call` with the RESOLVED `target=DeviceCall(...)` and **decoded** args — the `dyn` builtin is transport, never the policy subject, so a guard on the resolved device cannot be bypassed by the shell command. The catalog and docs reads fire `tool_call` with `target=CoreTool("shell")`. A policy author cannot accidentally guard `bash` while waving through the device that does the same thing, and cannot double-prompt the user for one action.
 - **Unrecognized targets `Defer`.** The `case _` arm is not boilerplate; it is the difference between a policy that fails safe on a target kind added after it shipped and one that silently allows.
 - **Ordering is a phase, not a number.** PRECHECK is consulted before APPROVAL because the phases themselves are ordered — PRECHECK → TRANSFORM → REVIEW → APPROVAL → OBSERVE ([05-hooks.md](05-hooks.md)) — and a `Deny` in an earlier phase short-circuits the rest. Rev 1 spelled this `priority=900` versus `priority=500` and implied that arbitrary integers sequenced handlers even inside one concurrent band; that pretense is retracted. Core runs the per-invocation phase walk and the environment enforces the composed answer (the D6 scope reading, *Lifecycle*).
-- **The bash AST comes from core.** `@shinynito/pi-menshen` bundles tree-sitter WASM to do this itself — 1.3 MB and 50–200 ms of init per session, with its own idea of what counts as evasion. omp already ships a real bash parser (`crates/shell-engine/src/parser/ast.rs`) and attaches a normalized IR with an explicit `has_dynamic_eval` flag, so `eval "$CMD"` forces review instead of quietly satisfying an allowlist ([06-policy.md](06-policy.md)).
+- **The bash AST comes from core.** `@shinynito/pi-menshen` bundles tree-sitter WASM to do this itself — 1.3 MB and 50–200 ms of init per session, with its own idea of what counts as evasion. omp already ships a real bash parser (`crates/shell/src/parser/ast.rs`) and attaches a normalized IR with an explicit `has_dynamic_eval` flag, so `eval "$CMD"` forces review instead of quietly satisfying an allowlist ([06-policy.md](06-policy.md)).
 - **Approval is a ticket, not a suspended coroutine.** `RequireApproval(ApprovalSpec(...))` returns immediately; Core persists one durable approval ticket per invocation carrying every unresolved reason, renders exactly one unspoofable dialog, and survives this extension restarting while the human thinks ([06-policy.md](06-policy.md)). Rev 1 held the hook open across `await omp.ui.confirm(...)` under a shield — which occupied the interpreter for human-scale latency, died with the child, and could stack one dialog per hook. Retracted. Headless sessions are a ticket property: the ticket resolves per its declared headless policy instead of hanging, and — unlike pi — nothing keeps running past the decision.
 - **Not installed costs one bit test.** The `tool_call` bit is clear and core never leaves Rust.
 
@@ -1235,11 +1239,11 @@ The evolution rules are binding: additive fields only, field numbers never reuse
 
 `SCHEMA_REV` is checked exactly. A version-skewed workspace host fails its handshake instead of degrading onto a partially understood CONTROL vocabulary; [14-deploy.md](14-deploy.md) owns that deployment requirement.
 
-### `crates/agent`, `crates/env`, `crates/telemetry`
+### `crates/agent`, `crates/env`, `crates/observability`
 
 - **`crates/agent`** — hook dispatch points in the loop, and nothing more than dispatch: each point is a bit test against the union mask, then, only if set, a handoff to the supervisor's per-invocation decision procedure. The union lives in the loop's own state, not behind an `Arc<Mutex<…>>`; it is replaced wholesale at REGISTER with a single atomic store. The mailbox loop holds one flume oneshot per invocation and never schedules admission across the batch (D6); composition happens in `relay.rs`, off the loop, one composed answer per oneshot.
 - **`crates/env`** — extension scopes are a scope kind on the existing `env/v1` handshake; there is no new plane. Named-worker clients are a narrower variant of the same scope ([04-placement.md](04-placement.md), [11-env.md](11-env.md)). `RunGuard` provides drop-cancellation with CAS disarm and explicit `relinquish` for detached work.
-- **`crates/telemetry`** — extension identity (`extension`, `version`, `layer`, `tier`, `pool`, `generation`) as span attributes, plus counters for stage-2 and stage-3 escalations, mask hit rate, and effect-mailbox drops. Stage-3 rate is the health metric for this entire subsystem.
+- **`crates/observability`** — extension identity (`extension`, `version`, `layer`, `tier`, `pool`, `generation`) as span attributes, plus counters for stage-2 and stage-3 escalations, mask hit rate, and effect-mailbox drops. Stage-3 rate is the health metric for this entire subsystem.
 
 ### Feature-map reconciliation
 

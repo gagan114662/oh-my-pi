@@ -49,7 +49,15 @@ the parent receives a diff.
 
 ## Status in omp
 
-**Implemented.** Primary implementation: `crates/driver/src/subagent/settings.rs`. Subagent isolation and patch/branch merge policy are centralized in driver composition.
+**Partial.** Primary implementations: `crates/driver/src/subagent/settings.rs` and
+`crates/driver/src/subagent/spawn.rs`. Isolation and patch/branch merge policy are
+centralized in driver composition. Gap: backend selection is not implemented:
+the Python hook view reduces `sv_task_isolation_mode` to `mode != None` and
+uses `"isolation": "clean"`, but actual child execution always calls
+`create_isolation`, including for `None`. That path calls `EnvClient.create_worktree`
+without a backend selector. The environment clones workspace files using its
+platform `clone_file_cow` helper. Named backend settings do not control that
+selection; the `None` setting does not disable actual child isolation.
 
 ## References
 
@@ -57,5 +65,5 @@ the parent receives a diff.
 - `pi-iso` (prior art: CoW workspace views for pi subagents)
 - 0006 (host/sandbox rule), 0010 (subagents as jobs), 0001 (multiplexed-workspace row)
 - `crates/driver/src/subagent/settings.rs`, `crates/envd/src/workspace/operations.rs`,
-  `crates/envd/src/lib.rs` (`isolated`), `crates/agent/src/subagent.rs`,
+  `crates/envd/src/lib.rs` (`isolated`), `crates/driver/src/subagent/spawn.rs`,
   `crates/e2e/tests/p9_isolation.rs`

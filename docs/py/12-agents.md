@@ -1,5 +1,9 @@
 # `omp.agents` — subagents, one-shot completions, autonomous loops, schedules, messaging, time travel
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 ## Purpose
 
 `omp.agents` is the namespace an extension uses to make *more inference happen*:

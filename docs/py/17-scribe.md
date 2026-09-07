@@ -1,5 +1,9 @@
 # Prompt templating
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 `omp.scribe` is the template engine omp itself renders every prompt with — the system head sections, markdown prompt assets, recovery and steering fills, subagent composition, and user command templates (`crates/scribe`, `omp-scribe`) — exposed to extension Python. Use it wherever an extension composes prompt text: a `@omp.prompt_slot` body ([08-context.md](08-context.md)), a device docs body ([01-devices.md](01-devices.md)), a `CustomSummary` ([08-context.md](08-context.md)), or a subagent prompt ([12-agents.md](12-agents.md)).
 
 Rendering is **pure**: output depends only on the template source and the props. No clock, no environment, no randomness, no I/O — a render performs no CONTROL or DATA operation, is legal in every `omp.InvocationPhase`, and renders identical bytes for identical props on every host. That is not a style preference: a prompt-slot body must survive the harness's double-render volatility check (`omp.prompts.VolatilePrompt`), and text built with `omp.scribe` passes it by construction.

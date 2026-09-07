@@ -44,15 +44,14 @@ rewrite of `pi`: port observable behavior, not TS shape.
   client protocol APIs go to `omp-env`.
   `crates/edit|ast|walker`: multi-paradigm edit engine, syntax, fs discovery.
   `crates/shell|shell-builtins`: in-process Bash parser/runtime, built-ins.
-- `crates/tui`+`tui-macros`: retained declarative UI; `crates/chat`: terminal
+- `crates/tui`+`macros`: retained declarative UI; `crates/chat`: terminal
   and native chat actor/projections; `crates/gui`: native window host.
   None owns agent/provider policy.
-- `crates/e2e/tests`: authoritative joined-system proofs P1-P8.
-- `PLAN.md`: authoritative plan — locked decisions D1-D8, defect ledger, 8
-  parts + checklists.
-- `fixtures`, `.plan/quirks`: conformance data, recorded incompatibilities.
-  Other `.plan` scratch (research, port, feature-map) NEVER outranks production
-  code/tests.
+- `crates/e2e/tests`: authoritative joined-system proofs P1-P10.
+- `docs/adr`: tracked architecture decisions and implementation status.
+- `fixtures`: tracked conformance data. `PLAN.md` and `.plan/` are private,
+  gitignored planning artifacts, unavailable in a clean clone; they NEVER
+  replace tracked decisions or production code/tests.
 - `.omp/tools`, `scripts`, `crates/*/scripts`: agent tooling, release gen,
   subsystem setup.
 
@@ -73,11 +72,11 @@ all recipes.
 - One-time before anything linking `omp-py`: `just setup-python`.
 - Iterate targeted (`just check-pkg <pkg>`, `just test-pkg <pkg>`); broaden
   (`check`, `test`, `lint`) after the changed contract passes.
-- E2E separate + expensive: `just e2e` (or `e2e-build|e2e-core|e2e-p7|e2e-p8|e2e-baseline`).
+- E2E separate + expensive: `just e2e` (or `e2e-build|e2e-core|e2e-p7|e2e-p8|e2e-p9|e2e-p10|e2e-baseline`).
 - `just ci` ≈ CI format+rust jobs locally.
 
 CI (`.github/workflows/ci.yml`): authoritative Cargo-only gate. Format on
-Linux; lint/tests/P1-P8/baseline on `macos-15` arm64 (CPython bundle
+Linux; lint/tests/P1-P10/baseline on `macos-15` arm64 (CPython bundle
 `aarch64-apple-darwin`-only).
 
 ## Conventions
@@ -419,7 +418,8 @@ heap-grooming. Non-negotiable:
   component; hardcoded colors + hand-emitted glyphs banned. Icons from
   `icons.tsv` (generic name + optional specific alias, per-charset, degrading
   inline). Border defaults themed + dim, not `#fff`.
-- `dom!`/`layout!` = canonical construction (typed props, loops, `if`/`match`,
+- `dom!` = canonical implemented construction (`layout!` remains planned;
+  see ADR 0031) (typed props, loops, `if`/`match`,
   `IntoComponent` for `&str`/`String`/`Str`/`()`/Vec).
   `write!`/`format!`→`String`→reparse = discouraged path.
 - Effects are props, not one-offs: shimmer, hover gradient + eased lift,
@@ -457,8 +457,8 @@ heap-grooming. Non-negotiable:
 
 ### Locked Deviations from pi (owner decisions — NEVER port back)
 "pi does X" is NEVER an argument for any item below. Each was decided
-explicitly; regressing to pi shape = defect, not parity. Full audit ledger:
-`.plan/parity-regression-audit.md`.
+explicitly; regressing to pi shape = defect, not parity. The decisions below are tracked here; the historical private audit ledger
+(`.plan/parity-regression-audit.md`) is not shipped in clones.
 - Extensions/eval: embedded free-threaded CPython only — no JS/TS plugin
   runtime, no multi-language eval; stdlib frozen in-binary.
 - Shell: in-process bash parser/interpreter + builtin coreutils; NEVER shell
@@ -493,7 +493,7 @@ explicitly; regressing to pi shape = defect, not parity. Full audit ledger:
 - Runtime: tokio + rayon only (custom executor crates prohibited); local
   audio/ML via candle, never C/C++ binding graphs (whisper-rs, llama-cpp).
 - Feature graphs earn their weight: a crate enabling a feature whose code it
-  never imports (e.g. app → `omp-inference/realtime` → WebRTC/DTLS/
+  never imports (e.g. app → `omp-ai/realtime` → WebRTC/DTLS/
   Opus) is a defect; cold `cargo run --bin omp` build time is a gate. No
   dual-committed catalog formats, no leftover port fixtures, no lockfiles
   nothing reads.
@@ -626,7 +626,8 @@ master stream to a VT emulator (e.g. `pyte`) for screen assertions.
   `crates/driver` for headless/session composition; `crates/app` for CLI,
   presentation, and protocol adapters. Prefer these seams over mocks of
   production authority.
-- `crates/e2e/tests/p1_doc_race.rs`…`p8_baselines.rs`: authoritative for
+- `crates/e2e/tests/p1_doc_race.rs`…`p10_lift_idempotence.rs`, including
+  `p9_extension_control.rs`, `p9_isolation.rs`, and `tool_sources.rs`: authoritative for
   concurrency, cancellation, detached jobs, schema isolation, prefix
   stability, crash/replay, real-PTY lifecycle, recorded perf. Bounded waits +
   RAII-owned processes; preserve both.

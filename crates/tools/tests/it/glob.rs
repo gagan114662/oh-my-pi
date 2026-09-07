@@ -430,3 +430,35 @@ fn oversized_projection_remains_complete_for_central_dispatch() {
 	);
 	assert!(zero.is_empty());
 }
+
+#[test]
+fn capped_glob_continuation_never_suggests_an_unusable_limit() {
+	for (raw, expected) in [
+		(r#"{"limit":150}"#, "limit=200"),
+		(r#"{}"#, "Narrow `path` to a more specific directory or pattern"),
+	] {
+		let mut result = walk(vec![matched("one.rs", 1)]);
+		result.truncated = true;
+		let invocation = invoke(fake(result), raw);
+		assert!(invocation.result.is_ok());
+		assert_eq!(invocation.diags.len(), 1);
+		assert_eq!(invocation.diags[0].native_kind(), Some(DiagKind::LimitReached));
+		assert_eq!(invocation.diags[0].continuation.as_deref(), Some(expected));
+	}
+}
+
+#[test]
+fn oversized_glob_limit_reports_the_effective_cap() {
+	let workspace = fake(walk(vec![matched("one.rs", 1)]));
+	let seen = Arc::clone(&workspace.seen);
+	let invocation = invoke(workspace, r#"{"limit":400}"#);
+	assert!(invocation.result.is_ok());
+	assert_eq!(seen.lock()[0].limit, glob::MAX_LIMIT);
+	assert_eq!(invocation.diags.len(), 1);
+	assert_eq!(invocation.diags[0].native_kind(), Some(DiagKind::Advisory));
+	assert_eq!(invocation.diags[0].severity, Severity::Warn);
+	assert_eq!(
+		invocation.diags[0].text,
+		"Requested limit exceeds the maximum of 200; using limit=200"
+	);
+}

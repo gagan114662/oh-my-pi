@@ -8,8 +8,8 @@
 //! - `import-alias`: CamelCase `use … as Alias` bindings.
 //! - `arc-struct`: structs where most fields are `Arc`-wrapped.
 //! - `mutex-arc`: locks around swappable `Arc` handles.
-//! - `model-gate`: model-name literals gating behavior in `crates/inference`.
-//! - `model-table`: hardcoded model-id arrays in `crates/inference`.
+//! - `model-gate`: model-name literals gating behavior in `crates/ai`.
+//! - `model-table`: hardcoded model-id arrays in `crates/ai`.
 //!
 //! `--fix` rewrites paths according to explicit bare/qualified-name policy and
 //! inserts a `use` into the nearest enclosing module scope, iterating each file
@@ -126,6 +126,9 @@ fn main() {
 	eprintln!("\n== {summary}");
 	if opts.fix {
 		eprintln!("== applied {fixes_applied} fixes across {fixed_files} files");
+	}
+	if !opts.fix && totals.values().any(|count| *count != 0) {
+		std::process::exit(1);
 	}
 }
 

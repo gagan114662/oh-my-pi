@@ -1,5 +1,9 @@
 # 08 — Context, prompt assembly, compaction, memory
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 ## Purpose
 
 `omp.context`, `@omp.prompt_slot`, and the `thread_projection` / `compaction` hook payloads are the
@@ -171,7 +175,7 @@ structural problems that cannot recur here:
    OpenAI `prompt_cache_key`, stripping `prompt_cache_retention` on models that 400 on it,
    and reordering Anthropic's mixed cache-control TTLs. This one is real work and it does
    not belong to an extension either — it is provider-dialect normalization, and it belongs
-   in `crates/inference` beside every other quirk (`docs/py/13-inference.md`).
+   in `crates/ai` beside every other quirk (`docs/py/13-inference.md`).
 
 So the useful reading of that package is not "a competing context extension." It is a bug
 report with four items, filed against the harness, three of which are answered by making
@@ -1949,7 +1953,7 @@ the Python function's determinism is checked at *pull* time by calling it twice 
 and after that the agent renders from immutable bytes. A slot that is nondeterministic is
 caught in Python, where the traceback names the extension.
 
-**Cache breakpoint emission.** `crates/inference` needs a per-provider breakpoint budget
+**Cache breakpoint emission.** `crates/ai` needs a per-provider breakpoint budget
 and a placement pass consuming `[BandHash; 4]` plus the trailing message window — this pass
 *is* the semantic-groups-into-marker-budget packing `docs/py/13-inference.md` owns. Anthropic
 gets four `cache_control` markers, three at band transitions and one trailing; providers with

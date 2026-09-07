@@ -242,13 +242,11 @@ impl DeclareCommand {
 		let (name, assigned_index, initial_value, name_is_array) =
 			Self::declaration_to_name_and_value(declaration)?;
 
-		// Special-case: `local -`
+		// Option-stack restoration is not implemented. Reject the request so
+		// callers cannot assume subsequent option changes are function-local.
 		if name == "-" && matches!(verb, DeclareVerb::Local) {
-			// TODO(local): `local -` allows shadowing the current `set` options (i.e., $-),
-			// with subsequent updates getting discarded when the current local scope is
-			// popped.
-			tracing::warn!("not yet implemented: local -");
-			return Ok(true);
+			writeln!(context.stderr(), "local: -: option localization is not supported")?;
+			return Ok(false);
 		}
 
 		// Make sure it's a valid name.
@@ -628,5 +626,43 @@ impl DeclareCommand {
 		}
 
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#[tokio::test(flavor = "current_thread")]
+	async fn local_dash_fails_with_an_actionable_diagnostic() {
+		let mut shell: crate::Shell<crate::extensions::DefaultShellExtensions> =
+			crate::Shell::default();
+		for (name, registration) in crate::builtins::default_builtins() {
+			shell.register_builtin(name, registration);
+		}
+		let directory = tempfile::tempdir().expect("temporary directory");
+		let stderr = directory.path().join("stderr");
+		let params = shell.default_exec_params();
+		let result = shell
+			.run_string(
+				format!("f() {{ local -; }}; f 2> '{}'", stderr.display()),
+				&crate::SourceInfo::from("(local dash test)"),
+				&params,
+			)
+			.await
+			.expect("shell execution");
+		assert!(!result.is_success());
+		assert!(
+			std::fs::read_to_string(stderr)
+				.expect("stderr")
+				.contains("option localization is not supported")
+		);
+		let result = shell
+			.run_string(
+				"f() { local value=ok; }; f",
+				&crate::SourceInfo::from("(local variable test)"),
+				&params,
+			)
+			.await
+			.expect("ordinary local execution");
+		assert!(result.is_success());
 	}
 }

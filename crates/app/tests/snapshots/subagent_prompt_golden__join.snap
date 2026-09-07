@@ -1,5 +1,0 @@
----
-source: crates/app/tests/subagent_prompt_golden.rs
-expression: rendered
----
-one,two words,three

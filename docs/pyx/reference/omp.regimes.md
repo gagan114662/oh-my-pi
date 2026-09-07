@@ -1,5 +1,10 @@
 # `omp.regimes`
 
+> **Planned API — not implemented.** The frozen Python package does not export
+> `omp.regimes` or `omp.regime`. Examples below specify the intended contract and
+> are not runnable against the current package. Python Directors are available
+> through `omp.extensions.director`; they do not implement this regimes API.
+
 `omp.regimes` declares durable middleware for fixed agent-loop points and manages its activations. Reach for it when behavior must retain typed state or scoped settings across callbacks.
 
 ```python

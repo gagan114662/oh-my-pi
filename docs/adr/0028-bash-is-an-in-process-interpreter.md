@@ -61,10 +61,12 @@ variables, exit codes, and `$!` do not survive between calls.
 
 ## Status in omp
 
-**Partial.** Primary implementation: `crates/shell-engine/src/lib.rs`. The Bash parser/runtime and coreutils are in process with persistent shell state. Gap: distinct network-request approval and the grep routing proof remain incomplete.
+**Partial.** Primary implementation: `crates/shell/src/lib.rs`. The Bash parser/runtime and coreutils are in process with persistent shell state. Distinct network-request approval is implemented and covered by
+`jit_approval_names_only_the_detected_capability_and_exact_command` in
+`crates/envd/src/exec.rs`. Gap: the grep routing proof remains incomplete.
 
 ## References
 
 - The Harness Playbook, "The tool surface" — "Deep builtins: Bash"
 - 0006 (host policy / sandbox stub), 0010 (jobs), 0012 (convar policy), 0025 (`dyn` builtin)
-- `crates/shell-engine`, `crates/shell-builtins`, `crates/tools/src/shell.rs`
+- `crates/shell`, `crates/shell-builtins`, `crates/tools/src/shell.rs`

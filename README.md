@@ -101,14 +101,17 @@ names are `omp-` prefixed; directory names are not.
 
 | Path                  | What it is                                            |
 | --------------------- | ----------------------------------------------------- |
-| `PLAN.md`             | P0–P7 verification gate ledger                        |
-| `.plan/quirks/`       | Catalog and inference notes                           |
-| `.plan/qa/`           | Joined-system QA findings and stable regressions      |
+| `docs/adr/`           | Tracked architecture decisions and implementation gaps |
+| `crates/e2e/tests/`    | Joined-system acceptance and regression proofs        |
 | `fixtures/llm-oracle` | Recorded inference fixtures                           |
 | `npm/pi-coding-agent` | npm package shim (`scripts/gen-npm-packages.py`)      |
 | `vendor/python`       | Gitignored embedded-Python build inputs (see below)   |
 
 ## Building
+
+On Apple Silicon, `.cargo/config.toml` currently requires Homebrew LLD at
+`/opt/homebrew/bin/ld64.lld` (`brew install lld`). Run `just setup-python`
+before builds that link embedded Python.
 
 Pinned nightly toolchain via `rust-toolchain.toml`; edition 2024, hard-tab
 formatting (`cargo fmt`), workspace lint policy in the root `Cargo.toml`.
@@ -127,7 +130,7 @@ Profiles beyond the defaults:
 
 | Profile | Use |
 | --- | --- |
-| `dev` | Default. Line tables for workspace crates, no debuginfo for deps. |
+| `dev` | Default. Debug information disabled (`debug = false`). |
 | `release` | Shipping build: `opt-level = 2`, thin LTO, 1 codegen unit, stripped. |
 | `release-dev` | Same codegen as `release` across 16 units, so a one-crate edit does not re-optimize everything. |
 | `release-profiling` | `release` with symbols kept, for `perf`/`samply`/Instruments. |
@@ -201,11 +204,10 @@ OS Host
       │
       └─► (Standalone Daemons / Services)
            ├─► omp serve (Inference/Auth/Blob gRPC daemon)
-           ├─► omp-sh (Standalone POSIX shell)
-           └─► omp-memory-embedding-worker (FastEmbed vector worker)
+           └─► omp-sh (Standalone POSIX shell)
 ```
 
-* **`omp envd` Daemon**: Detached via `process_group(0)`. Shuts down after an idle timeout (`--idle-timeout`, default 60s) when no active client connections or persistent jobs remain. Binary upgrades trigger immediate retirement.
+* **`omp envd` Daemon**: Detached via `process_group(0)`. Shuts down after an idle timeout (`--idle-timeout`, default 900s) when no active client connections or persistent jobs remain. Binary upgrades trigger immediate retirement.
 * **Process Watchdogs & FD Shielding**: `__omp-eval-child` shields protocol FDs away from standard I/O and runs a background thread sampling `getppid()` every 100ms; if the parent dies, it executes `kill(-pgid, SIGKILL)` to eliminate orphan processes.
 * **Signal Escalation**: Two-stage termination (`SIGTERM` → grace duration → `SIGKILL` to `-pgid`).
 

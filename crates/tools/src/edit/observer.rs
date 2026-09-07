@@ -308,19 +308,32 @@ impl EditObserver {
 	}
 
 	/// Appends a pending record after the enclosing document transaction
-	/// commits.
-	pub async fn record_committed(&self, pending: PendingBlackbox) {
+	/// commits. A failure does not undo the already committed edit.
+	pub async fn record_committed(&self, pending: PendingBlackbox) -> Result<(), EditBlackboxError> {
 		let Some(path) = self.blackbox.path.as_ref() else {
-			return;
+			return Ok(());
 		};
-		let Ok(mut bytes) = serde_json::to_vec(&pending.record) else {
-			return;
-		};
+		let mut bytes = serde_json::to_vec(&pending.record)?;
 		bytes.push(b'\n');
 		let path = path.clone();
 		let lock = Arc::clone(&self.append_lock);
-		let _ = tokio::task::spawn_blocking(move || append(&path, &bytes, &lock)).await;
+		tokio::task::spawn_blocking(move || append(&path, &bytes, &lock)).await??;
+		Ok(())
 	}
+}
+
+/// Failure to record a committed edit's syntax regression.
+#[derive(Debug, thiserror::Error)]
+pub enum EditBlackboxError {
+	/// The record could not be serialized.
+	#[error("could not serialize edit audit record: {0}")]
+	Serialize(#[from] serde_json::Error),
+	/// The audit file could not be written.
+	#[error("could not append edit audit record: {0}")]
+	Io(#[from] std::io::Error),
+	/// The background append task did not finish.
+	#[error("edit audit task failed: {0}")]
+	Join(#[from] tokio::task::JoinError),
 }
 
 fn append(path: &PathBuf, bytes: &[u8], lock: &parking_lot::Mutex<()>) -> std::io::Result<()> {
@@ -692,7 +705,8 @@ mod tests {
 			assert!(inspected.diag.is_some());
 			observer
 				.record_committed(inspected.pending.expect("record"))
-				.await;
+				.await
+				.expect("append audit record");
 		}
 		let log = tokio::fs::read_to_string(log).await.expect("log");
 		let records = log
@@ -711,6 +725,26 @@ mod tests {
 		assert_eq!(record.mode, "replace");
 		assert!(record.before.truncated);
 		assert_eq!(record.args["truncated"], true);
+	}
+
+	#[tokio::test]
+	async fn committed_record_reports_unwritable_audit_destination() {
+		let dir = tempfile::tempdir().expect("temporary directory");
+		let observer = EditObserver::new(
+			EditBlackboxConfig {
+				path: Some(dir.path().to_path_buf()),
+				..EditBlackboxConfig::default()
+			},
+			None,
+		);
+		let inspected = observer
+			.inspect(snapshot(INVALID), "replace", &serde_json::Value::Null)
+			.await;
+		let error = observer
+			.record_committed(inspected.pending.expect("record"))
+			.await
+			.expect_err("directory cannot be an audit file");
+		assert!(matches!(error, EditBlackboxError::Io(_)));
 	}
 
 	#[tokio::test]

@@ -844,6 +844,10 @@ impl<S: ReadSources, B: ReadBlobs, R: resolver::Resolve> ReadTool<S, B, R> {
 					}
 				},
 				Err(fault) if multiple => {
+					diags.push(Diag::warn(
+						DiagKind::FetchFailed,
+						sf!("Could not read {}: {}", target, fault.message()),
+					));
 					push_payload_part(&mut parts, PayloadPart::Text {
 						text: sf!("[Could not read {}: {}]", target, fault.message()),
 					});

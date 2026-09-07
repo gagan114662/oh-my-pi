@@ -1,5 +1,9 @@
 # Devices
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 Two decorators produce every extension capability in omp, and both land in one
 catalog. `@omp.tool` is the ergonomic default: "agent, build me a tool"
 produces one of these, and by default it ships as a **soft** device — a

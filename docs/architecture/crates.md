@@ -44,9 +44,9 @@ a convar declaration plus command stream, with archived values represented by cf
 | `omp-tools` | Built-in resource-owning tool implementations. |
 | `omp-env` / `omp-envd` | Typed environment client / trusted environment host and worker supervision. |
 | `omp-catalog` | Compiled provider/model compatibility, routes, capabilities, and pricing. |
-| `omp-inference` | Typed requests, provider codecs, routing, recovery, and canonical `ChatEvent` streams. |
+| `omp-ai` | Typed requests, provider codecs, routing, recovery, and canonical `ChatEvent` streams. |
 | `omp-ext` / `omp-py` | Extension manifests/trust / embedded free-threaded Python runtime and frozen modules. |
-| `omp-shell-engine` / `omp-shell-builtins` | In-process Bash parser/runtime and built-ins. |
+| `omp-shell` / `omp-shell-builtins` | In-process Bash parser/runtime and built-ins. |
 
 ## Presentation and transports
 
@@ -58,13 +58,13 @@ a convar declaration plus command stream, with archived values represented by cf
 | `omp-app` | CLI commands for chat, print, render, RPC, RPC-UI, ACP, daemon, and gallery. |
 | `omp-rpc` / `omp-serve` | Transport framing and service projections; neither owns canonical session semantics. |
 | `omp-sdk` | Stable native embedding facade over the production composition. |
-| `omp-e2e` | Joined-system P1–P8 acceptance proofs. |
+| `omp-e2e` | Joined-system P1–P10 acceptance proofs. |
 
 ## Supporting engines
 
 `omp-core` supplies allocation-aware primitives; `omp-proto` owns generated wire contracts;
-`omp-observability` and `omp-telemetry` own diagnostics and telemetry. The document authority now lives
-inside `omp-envd`. Resource and editing engines include `omp-ast`, `omp-walker`, `omp-grep`, `omp-ar`,
+`omp-observability` owns diagnostics and telemetry. The document authority now lives
+inside `omp-envd`. Resource and editing engines include `omp-ast`, `omp-walker`, `omp-ar`,
 and `omp-edit`, while tolerant JSON parsing is provided by `omp_core::slopjson`. These are libraries
 below the production spine and never assemble a competing agent/session stack.
 
@@ -74,6 +74,6 @@ below the production spine and never assemble a competing agent/session stack.
 2. Session appends first and folds the exact returned journal entry; replay uses the same fold.
 3. Actors consume snapshots and events and send commands back; they never hold session authority.
 4. Envd owns host resources and policy enforcement; `omp-env` is only its typed client.
-5. Catalog owns compatibility facts; inference owns translation and correction.
+5. Catalog owns compatibility facts; `omp-ai` owns translation and correction.
 6. Tool contracts are versioned and presentation consumes their typed payloads.
 7. Transport crates project canonical state; they do not invent a second dialect or store.

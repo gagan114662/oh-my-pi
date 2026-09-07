@@ -1,5 +1,9 @@
 # Placement
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 Where an extension's code runs, how it gets there, and what is allowed to cross.
 
 ## Purpose
@@ -2160,7 +2164,7 @@ left `live_hash()` byte-identical would be an invisible authority change. This s
 within the crate's remit — `omp-tool` "contains contracts and deterministic lowering
 only" (`crates/tool/README.md`) and placement resolution is lowering.
 
-**`crates/telemetry`** — event kinds `placement.spawn`, `placement.ship`,
+**`crates/observability`** — event kinds `placement.spawn`, `placement.ship`,
 `placement.oversize_result`, `placement.worker_state`. Attribution uses the existing
 carrier rather than a parallel one: `TOOL_REV_PROP` (`crates/tool/src/lib.rs:46`,
 the `"omp/tool-rev"` thread-item property) is already stamped by

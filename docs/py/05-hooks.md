@@ -1,5 +1,9 @@
 # Hooks — the event and decision spine
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 > Owner doc for `@omp.hook`, the event catalog, `omp.HookDecision` and its arms `omp.Allow` /
 > `omp.Deny` / `omp.Modify` / `omp.Defer` / `omp.RequireApproval`, `omp.CallTarget` and its
 > variants, `omp.HookPhase`, `omp.Composition`, `omp.OnFailure`, `omp.When`, the per-invocation
@@ -135,7 +139,7 @@ sentence, and the catalog row lives in §3.11 family H.
 `omp.events.spec(event).returns` reports the return type, so this is discoverable rather than
 folklore. A domain return is not an escape hatch for new event families: adding one requires that
 the decision space already exists as a typed enumeration owned by a sibling document — `omp.Failover`
-mirrors `crates/inference/src/error.rs`, `ContextPatch`'s op set is closed and validated by
+mirrors `crates/ai/src/error.rs`, `ContextPatch`'s op set is closed and validated by
 [`08-context.md`](08-context.md) — not merely that five arms feel awkward.
 
 ### 2.3 Where hooks attach — and who decides
@@ -2228,7 +2232,7 @@ def ask_the_human(event: omp.ToolCallEvent, ctx: omp.Context) -> omp.HookDecisio
 ```
 
 What disappears: the AST walker (`event.bash` is produced once, in Rust, by
-`crates/shell-engine/src/parser/ast.rs`); the terminal-authorizer construct (the event's
+`crates/shell/src/parser/ast.rs`); the terminal-authorizer construct (the event's
 `default_decision` *is* the terminal authorizer, and it is data); the filesystem ask envelope
 (subagent approval requests ride the durable ticket, so a child cannot widen its own permissions
 by evaluating a local config); the fragile ordering (two prechecks that cannot conflict, one
@@ -2518,12 +2522,12 @@ identities. `ToolComplete.kind` carries the four `OutcomeKind` branches at tag 1
 `SpillDiverter` implements `VerdictSpill`.
 
 The emission ledger is
-[`.plan/ext-gaps/emit-coverage.md`](../../.plan/ext-gaps/emit-coverage.md). Every non-tombstoned
+private historical `.plan/ext-gaps/emit-coverage.md` (not shipped). Every non-tombstoned
 ordinal is wired except `provider_login`, `provider_refresh`, `provider_sign`, `models_discover`,
 `capability_budget`, and `worker_state`; those six await the owning provider-callback or worker
 lifecycle authority rather than a fabricated emit. Partial payload facts at otherwise real emit
 sites are recorded in
-[`.plan/ext-gaps/emit-remainder.md`](../../.plan/ext-gaps/emit-remainder.md).
+private historical `.plan/ext-gaps/emit-remainder.md` (not shipped).
 
 **Defect 1 — `omp_remote.py` framing.** Two distinct exposures, and the first is the serious one.
 (a) *Authentication is opt-in and defaults to off.* `serve(sock, authkey=None)`
@@ -2689,7 +2693,7 @@ Attach sites, all at existing seams:
 
 Session-family hooks attach in the session manager around `Agent::rewind` (`loop.rs:235`),
 `rewind_targets` (`loop.rs:251`) and the switch/branch paths; provider-family hooks attach in
-`crates/inference` at request assembly and error classification; `compaction` attaches wherever
+`crates/ai` at request assembly and error classification; `compaction` attaches wherever
 `Kind::Compact` is written. The decision procedure for `tool_call` runs in `HookGate`, off the
 mailbox loop — the loop never awaits it, which is what keeps the batch invariant intact. A previous
 revision called this component "a small, self-contained courier task"; per §2.3 that framing is
@@ -2741,7 +2745,7 @@ pub struct HookOutcome {
 
 with `Kind::HookOutcome(HookOutcome)`.
 
-**`crates/telemetry`** gains a per-`(extension, event, subscription)` latency histogram and a denial
+**`crates/observability`** gains a per-`(extension, event, subscription)` latency histogram and a denial
 counter, plus the breaker state that trips `extension_unload(QUARANTINE)`. **`crates/tui`** needs
 nothing beyond the dialog surface [`07-ui.md`](07-ui.md) already requires.
 

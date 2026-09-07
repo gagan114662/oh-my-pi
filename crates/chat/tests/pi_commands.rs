@@ -671,3 +671,32 @@ fn wt_creates_a_worktree_through_services_and_moves_there() {
 		other => panic!("expected a move: {other:?}"),
 	}
 }
+
+#[test]
+fn mutating_commands_report_closed_controller_before_success() {
+	for command in
+		["queue hello", "force read inspect the file", "rename new title", "plan write a plan"]
+	{
+		let mut h = harness(Vec::new());
+		drop(h.commands);
+		h.host.console(command).expect("console");
+		assert_eq!(
+			h.host.notice(),
+			Some("Command was not sent: the session controller is unavailable."),
+			"{command}"
+		);
+	}
+}
+
+#[test]
+fn pin_reports_provider_lookup_failure_without_sending_a_session_mutation() {
+	let mut h = harness(Vec::new());
+	h.host.console("pin anthropic").expect("console");
+	assert!(
+		h.host
+			.notice()
+			.expect("failure notice")
+			.starts_with("Cannot resolve pin target:")
+	);
+	assert!(h.commands.try_recv().is_err());
+}

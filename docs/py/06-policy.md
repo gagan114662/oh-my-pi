@@ -1,5 +1,9 @@
 # Policy, permissions, and sandboxing
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 ## Purpose
 
 `omp.policy` is the namespace an extension uses to decide whether an operation may happen,
@@ -23,7 +27,7 @@ Four incompatible parsers, four evasion surfaces, four sets of bugs, and none of
 what the shell will actually execute — because in pi the shell was `/bin/bash` and the
 extension was guessing.
 
-omp owns the parser and the coreutils. `crates/shell-engine` is a complete bash tokenizer,
+omp owns the parser and the coreutils. `crates/shell` is a complete bash tokenizer,
 PEG parser, expander and interpreter with 48 in-process builtins; when the agent runs
 `grep -rn foo src | head`, no `/bin/bash` resolves and no `grep` binary is found on `$PATH`.
 Because the thing that executes the script is the same thing that parsed it, a policy does not
@@ -253,12 +257,12 @@ silently stops consulting a gate.
 
 ### Parse, not regex
 
-`crates/shell-engine/src/parser/ast.rs` is the real thing: `Pipeline` with `bang` and `timed`
+`crates/shell/src/parser/ast.rs` is the real thing: `Pipeline` with `bang` and `timed`
 (`:275-290`), `AndOrList` with `first` and `additional` (`:94-103`), ten `CompoundCommand`
 variants (`:385-412`), `SimpleCommand` as `prefix`/`word_or_name`/`suffix` (`:1006-1019`),
 `CommandPrefixOrSuffixItem` carrying words, assignments, redirects and process substitutions
 (`:1155-1167`), seven `IoFileRedirectKind`s (`:1386-1404`), four `IoFileRedirectTarget`s
-(`:1420-1435`). Below the word level, `crates/shell-engine/src/parser/word.rs:31-57` gives
+(`:1420-1435`). Below the word level, `crates/shell/src/parser/word.rs:31-57` gives
 eleven `WordPiece` variants, which is exactly the information `pi-menshen` reconstructs by
 hand: `Text` and `SingleQuotedText` are static, `ParameterExpansion`, `CommandSubstitution`,
 `BackquotedCommandSubstitution`, `ArithmeticExpression` and `TildeExpansion` are not.
@@ -567,7 +571,7 @@ type BashNode = BashCommandIR | BashCompound | BashFunctionDef | BashTestExpr
 ```
 
 `omp.AndOrOp` is a `StrEnum` with `AND` (`&&`) and `OR` (`||`), mirroring `ast::AndOr`
-(`crates/shell-engine/src/parser/ast.rs:204-215`). `omp.Separator` is a `StrEnum` with
+(`crates/shell/src/parser/ast.rs:204-215`). `omp.Separator` is a `StrEnum` with
 `SEQUENCE` (`;` or newline) and `ASYNC` (`&`), mirroring `ast::SeparatorOperator` (`:76-83`).
 `ASYNC` matters: a policy that permits a long command should know it was backgrounded.
 
@@ -607,7 +611,7 @@ Field notes that carry weight:
   because it is the shape every ported rule already expects (`pi-menshen`'s
   `dynamicArgs: boolean[]`) and because a bitmask comparison is cheaper than a generator.
 - `env` covers `CommandPrefixOrSuffixItem::AssignmentWord`
-  (`crates/shell-engine/src/parser/ast.rs:1164`). This is the field that closes pi's
+  (`crates/shell/src/parser/ast.rs:1164`). This is the field that closes pi's
   `git -c alias.x='!…'` bypass class: the assignment is structured, not a mystery argv element.
 - `cwd` is the fold `@gotgenes/pi-permission-system` calls `EffectiveBase`. `cd /abs` sets it
   absolutely; `cd rel` joins onto the previous value; `cd "$DIR"`, `cd $(…)`, `cd -` and `cd ~`
@@ -641,7 +645,7 @@ class BashArg:
 ```
 
 `omp.Dynamism` is an `IntFlag`, one bit per non-literal `WordPiece`
-(`crates/shell-engine/src/parser/word.rs:34-57`):
+(`crates/shell/src/parser/word.rs:34-57`):
 
 | Member | Value | `WordPiece` |
 |---|---|---|
@@ -679,7 +683,7 @@ class BashAssignment:
 ```
 
 Mirrors `ast::Assignment` / `AssignmentName` / `AssignmentValue`
-(`crates/shell-engine/src/parser/ast.rs:1196-1259`), including the `append` flag and the
+(`crates/shell/src/parser/ast.rs:1196-1259`), including the `append` flag and the
 array-element form. `exported` distinguishes `FOO=1 cmd` (visible to `cmd` only) from a plain
 `FOO=1` statement. Assignments are the vector `pi-sandbox` exploits deliberately — it injects
 `ALL_PROXY`, `HTTP_PROXY`, `HTTPS_PROXY` — and therefore also the vector a policy must watch:
@@ -704,7 +708,7 @@ class BashRedirect:
 ```
 
 `omp.RedirectOp` is a `StrEnum` covering `ast::IoRedirect` and `IoFileRedirectKind`
-(`crates/shell-engine/src/parser/ast.rs:1325-1404`):
+(`crates/shell/src/parser/ast.rs:1325-1404`):
 
 | Member | Token | Implies |
 |---|---|---|
@@ -778,7 +782,7 @@ class BashTestExpr:
 ```
 
 `omp.CompoundKind` is a `StrEnum` with exactly the ten `ast::CompoundCommand` variants
-(`crates/shell-engine/src/parser/ast.rs:385-412`): `ARITHMETIC`, `ARITHMETIC_FOR`,
+(`crates/shell/src/parser/ast.rs:385-412`): `ARITHMETIC`, `ARITHMETIC_FOR`,
 `BRACE_GROUP`, `SUBSHELL`, `FOR`, `CASE`, `IF`, `WHILE`, `UNTIL`, `COPROCESS`.
 
 `COPROCESS` deserves a rule of its own in most policies: a coprocess is an asynchronous
@@ -879,7 +883,7 @@ class Span:
 ```
 
 Mirrors `parser::SourceSpan` / `SourcePosition`
-(`crates/shell-engine/src/parser/source.rs:3-62`), flattened from `Arc<SourcePosition>` to
+(`crates/shell/src/parser/source.rs:3-62`), flattened from `Arc<SourcePosition>` to
 plain integers because the IR crosses a socket.
 
 #### IR constants
@@ -2098,9 +2102,9 @@ What is missing, specifically:
    device get denied" unanswerable. Widening it is `docs/py/02-verdicts.md`'s call; this
    document only records that policy attribution depends on it.
 
-### `crates/shell-engine` — the IR, and the analyzer that produces it
+### `crates/shell` — the IR, and the analyzer that produces it
 
-New module `crates/shell-engine/src/analysis.rs`, plus `analysis/` submodules for cwd folding,
+New module `crates/shell/src/analysis.rs`, plus `analysis/` submodules for cwd folding,
 path inference and command classification. It is a pure function over what the parser already
 produces:
 
@@ -2136,7 +2140,7 @@ tuple is materialised from it — a bitmask test is the hot operation every port
 Four pieces of real work:
 
 1. **Word dynamism.** `parser::word` already produces `WordPiece`
-   (`crates/shell-engine/src/parser/word.rs:34-57`), but `ast::Word` stores only raw text
+   (`crates/shell/src/parser/word.rs:34-57`), but `ast::Word` stores only raw text
    (`ast.rs:1766-1774`) and the expander evaluates straight to strings. The analyzer must call
    the word parser per word and fold the pieces into a `Dynamism` bitmask. Cost: one extra word
    parse per argument, on a path that already parses the whole script. Cheaper alternative:
@@ -2158,7 +2162,7 @@ Four pieces of real work:
    interpreters, and marking non-literal operands opaque.
 
 `SourceSpan` is only `serde`-derivable under `cfg(test)` today
-(`crates/shell-engine/src/parser/ast.rs:35`, `source.rs:55-56`). The IR's own types must derive
+(`crates/shell/src/parser/ast.rs:35`, `source.rs:55-56`). The IR's own types must derive
 `Serialize`/`Deserialize` unconditionally; the AST's test-only derives stay as they are, since
 the IR is a separate flattened type and not a serialization of the AST.
 
@@ -2201,7 +2205,7 @@ message SandboxEnforcement { … }   // the runtime enforcement receipt
 ```
 
 `Span` is four `uint32`s rather than a nested position pair, because the parser's
-`Arc<SourcePosition>` (`crates/shell-engine/src/parser/source.rs:57-62`) is a parse-time
+`Arc<SourcePosition>` (`crates/shell/src/parser/source.rs:57-62`) is a parse-time
 sharing optimization with no meaning on a wire.
 
 #### `env/v1` — enforcement and admission
@@ -2341,7 +2345,7 @@ pub trait Confinement: Send + Sync + 'static {
 ```
 
 `compile` runs once at `OpenSessionRequest`; `apply` runs in the pre-exec hook of every spawn
-under `crates/shell-engine/src/commands.rs`'s spawn path. Compilation being per-session and
+under `crates/shell/src/commands.rs`'s spawn path. Compilation being per-session and
 application being a no-allocation syscall sequence is what keeps confinement off the per-command
 cost curve — a Landlock ruleset fd is created once and `landlock_restrict_self` is three
 syscalls in the child.
@@ -2356,7 +2360,7 @@ SNI. Futures are unboxed RPITIT; no `BoxFuture` anywhere.
 `HostInner` (`:135-145`), `SessionHandle`, `RunControl` and `SpawnBook` tracking process groups
 (`:171-189`), `terminate()` walking those groups (`:591`), and
 `ProcessGroupPolicy::NewProcessGroup` already forcing each external command into its own group
-(`crates/shell-engine/src/interp.rs:305-313`). Work:
+(`crates/shell/src/interp.rs:305-313`). Work:
 
 - `SessionInner` gains a `Compiled` and the pre-exec hook that applies it.
 - `SpawnObserver` (`interp.rs:80-84`) gains a violation sink, so an audit event can be
@@ -2490,10 +2494,10 @@ to specify; recorded here because the discovery gate's cost claim depends on it.
 policy ships rather than after: journaled records written without it cannot be retrofitted
 with the rule that produced them.
 
-### `crates/telemetry`, `crates/storage`
+### `crates/observability`, `crates/storage`
 
 Telemetry: policy decision spans and violation counters, with the enum↔string vocabularies
-derived through strum or the `vocab!` macro in `crates/telemetry/src/semconv.rs` — hand-written
+derived through strum or the `vocab!` macro in `crates/observability/src/semconv.rs` — hand-written
 match tables are prohibited (`AGENTS.md`, Toolchain & Style).
 
 Storage: new journal entry kinds for `PolicyDecision`, `ApprovalTicketFiled`,
@@ -2590,7 +2594,7 @@ mechanism (**D5**).
    later and explicitly deferred; neither (a), (b), nor recommended (c) proceeds — kernel
    confinement returns only with that deferred work. **The in-process shell is not confined by the
    kernel.** Landlock and Seatbelt confine
-   *processes*. `crates/shell-engine`'s 48 builtins and its coreutils run inside the
+   *processes*. `crates/shell`'s 48 builtins and its coreutils run inside the
    environment daemon, so a `SandboxProfile` cannot restrain them by kernel means — a
    `deny_write` on `.git` stops `/usr/bin/rm` and does not stop the in-process `rm`. Options:
    (a) fork a confined child per exec, which costs the persistent session's cwd, environment
@@ -2639,7 +2643,7 @@ mechanism (**D5**).
    raised to attribute; attribution returns with the deferred isolation work.** **Attributing a
    violation to a command index.** `Violation.command_index` requires
    correlating a kernel audit event to the `BashIR` command that was executing. `SpawnObserver`
-   gives `pid`/`pgid` (`crates/shell-engine/src/interp.rs:80-84`), which is sufficient for
+   gives `pid`/`pgid` (`crates/shell/src/interp.rs:80-84`), which is sufficient for
    external commands and insufficient for a violation raised by an in-process builtin. Under
    recommendation (c) in question 1 the engine raises those itself and can attribute them
    exactly, so the two questions resolve together — but if (a) or (b) is chosen,

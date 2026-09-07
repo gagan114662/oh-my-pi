@@ -202,6 +202,8 @@ pub struct SnapshotRecord {
 /// Structured resource result returned to the executor.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SearchResult {
+	/// The authored regex was repaired or interpreted literally.
+	pub pattern_rewritten:  bool,
 	/// Matches in deterministic traversal order.
 	pub matches:            Vec<SearchMatch>,
 	/// Revision-pinned editable files awaiting final visibility accounting.
@@ -797,6 +799,13 @@ fn make_payload(
 	let file_limit_reached = result.multi_scope && end < groups.len();
 	let files = groups.drain(start..end).collect();
 	let mut diags = SmallVec::new();
+	if result.pattern_rewritten {
+		diags.push(Diag::warn(
+			DiagKind::ContentNormalized,
+			"The regex pattern was repaired or interpreted literally; results use the modified \
+			 pattern.",
+		));
+	}
 	if !result.missing_paths.is_empty() {
 		diags.push(Diag::warn(DiagKind::MissingPaths, Str::new(join_strs(&result.missing_paths))));
 	}

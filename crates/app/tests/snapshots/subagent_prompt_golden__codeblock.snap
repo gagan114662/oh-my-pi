@@ -1,7 +1,0 @@
----
-source: crates/app/tests/subagent_prompt_golden.rs
-expression: rendered
----
-```rust
-fn main() {}
-```

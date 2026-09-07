@@ -1,5 +1,9 @@
 # Regimes and modes
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 > Owner document for `@omp.regime`, fixed agent-loop events, transactional `ctx` / `next_`
 > handlers, durable regime state, resource ownership, and modes.
 > `omp.policy` remains the security and sandboxing namespace described in
@@ -8,7 +12,7 @@
 > [`08-context.md`](08-context.md) for context projection, and
 > [`12-agents.md`](12-agents.md) for agent lifecycle.
 
-![Regimes and modes](../../assets/regimes-and-modes.svg)
+Historical illustration: `assets/regimes-and-modes.svg` (not shipped in this checkout).
 
 ## Purpose
 

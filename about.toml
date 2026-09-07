@@ -29,8 +29,8 @@ accepted = ["MPL-2.0"]
 [sized-chunks]
 accepted = ["MPL-2.0"]
 
-[terminfo]
-accepted = ["WTFPL"]
+[uluru]
+accepted = ["MPL-2.0"]
 
 [tree-sitter-graphql.clarify]
 license = "MIT"

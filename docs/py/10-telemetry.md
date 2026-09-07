@@ -1,5 +1,9 @@
 # 10 — Telemetry
 
+> **Design document, not a runtime API guarantee.** This corpus includes proposed
+> interfaces and historical implementation observations. See
+> [implementation status](implementation-status.md) for current owners and known gaps.
+
 `omp.telemetry` is the observability namespace: a droppable, post-hoc event firehose, extension-owned
 metrics and spans, declarative export targets, a query surface over accumulated sessions, and the
 AutoQA loop through which the model files bugs against the tools it uses.
@@ -159,7 +163,7 @@ journal-side storage aspects in `docs/py/09-journal.md`.
 
 ### Semconv is a compatibility contract
 
-`crates/telemetry/src/attrs.rs` opens by stating that its literal attribute strings are a contract:
+`crates/observability/src/attrs.rs` opens by stating that its literal attribute strings are a contract:
 "changing even one breaks downstream dashboards, collectors, and alerts." That authority is *not*
 duplicated into Python. `omp.telemetry.semconv` maps event field paths onto those exact keys, and
 extension-defined instruments are forced under the `omp.ext.` prefix so no extension can shadow
@@ -1103,7 +1107,7 @@ Creates or returns an extension-owned monotonic counter.
 `name` is forced under `METRIC_PREFIX` (`"omp.ext."`) and namespaced by extension id, so
 `counter("cache.regressions", …)` becomes `omp.ext.supi-cache.cache.regressions`. A `name` that
 already starts with `omp.`, `gen_ai.`, or `openai.` raises `SubscriptionError`: those namespaces are
-a wire contract owned by `crates/telemetry/src/attrs.rs`, and an extension may not shadow them.
+a wire contract owned by `crates/observability/src/attrs.rs`, and an extension may not shadow them.
 
 **Channel** CONTROL at creation only; `add` is a host-side accumulation flushed with the exporter.
 **Latency class** creation once per activation; `add` is lock-free and allocation-free.
@@ -1503,7 +1507,7 @@ producing its own attributes produces byte-identical series to the Rust exporter
 `semconv["tokens.cache_read"] == "gen_ai.usage.cache_read.input_tokens"`,
 `semconv["compaction.reason"] == "omp.compaction.reason"`.
 
-The keys themselves are **not** redefined here. `crates/telemetry/src/attrs.rs` is the single
+The keys themselves are **not** redefined here. `crates/observability/src/attrs.rs` is the single
 authority and its own doc comment explains why: these literals are a compatibility contract, and
 changing one breaks live dashboards. Look up, never hardcode.
 
@@ -1984,12 +1988,12 @@ sorts the pile. Nobody maintains a spreadsheet.
 ## What this requires us to build
 
 The firehose does not exist. Nothing in `crates/agent` references `omp_telemetry` today — a grep for
-`telemetry|span|metric` across `crates/agent/src` returns zero matches — so `crates/telemetry` is a
+`telemetry|span|metric` across `crates/agent/src` returns zero matches — so `crates/observability` is a
 complete, wire-compatible instrumentation library with **no callers**. That is the actual state, and
 it is good news: the emit sites are greenfield, so they can be designed around the firehose from the
 start instead of retrofitted around an existing span-only API.
 
-### `crates/telemetry` — a new `firehose` module
+### `crates/observability` — a new `firehose` module
 
 The existing modules stay exactly as they are and remain the vocabulary authority. `firehose` is
 additive.
@@ -2364,7 +2368,7 @@ The issue store is a table in the same database. `FEATURES.md:643` describes `re
 late if AutoQA is meant to drive device revisions, because the loop is worth most while devices are
 still churning. Pulling it forward is a sequencing recommendation, not a design one.
 
-### `crates/tools`, `crates/tool`, `crates/inference`, `crates/env`
+### `crates/tools`, `crates/tool`, `crates/ai`, `crates/env`
 
 - `crates/tools/src/render/truncate.rs` already computes every `ArtifactSpill` field for
   `layer="render"`: `DEFAULT_MAX_BYTES` (51 200), `DEFAULT_MAX_LINES` (3 000), `DEFAULT_MAX_COLUMN`
@@ -2376,7 +2380,7 @@ still churning. Pulling it forward is a sequencing recommendation, not a design 
   claim in this document that the loop needed a `rev()` accessor added. It already stamps
   `TOOL_REV_PROP`. What `layer="verdict"` needs is an environment implementation of the existing
   `VerdictSpill` trait, plus the defect below.
-- `crates/inference` emits `ModelRequest` where it already holds `Outcome`. Field mapping is
+- `crates/ai` emits `ModelRequest` where it already holds `Outcome`. Field mapping is
   direct: `Outcome.usage`→`Tokens`, `Outcome.cost`→`Cost`, `Outcome.unsupported`→`Degradation`
   (`Unsupported.Action` maps 1:1 onto `DegradeAction`), `Outcome.diagnostics`→`Diagnostic`,
   `Outcome.duration_ms`/`ttft_ms`, `Outcome.provider`/`model`/`upstream_provider`. `Accepted.replay`
@@ -2464,7 +2468,7 @@ needs anyway.
 
 ### Redaction
 
-`crates/telemetry/src/redact.rs:27-28` says credential redaction is "deliberately off until the host
+`crates/observability/src/redact.rs:27-28` says credential redaction is "deliberately off until the host
 opts in", and `TelemetryConfig::redact_sensitive_credentials` mirrors a process-global switch. That
 default is defensible for a Rust-internal exporter under the operator's control. It is **not**
 defensible for `ToolCall.args_raw` and `Usage.detail` delivered into third-party extension code,
@@ -2520,7 +2524,7 @@ Satisfied by this design:
 
 - `observability.md:90-106` / `FEATURES.md:1827-1833` — OTLP export over `http/protobuf`, OTEL env
   configuration, the nine agent metric instruments, run-coverage attributes, run-summary and warning
-  events, and periodic/turn-boundary/shutdown flush. `crates/telemetry` already implements all of it;
+  events, and periodic/turn-boundary/shutdown flush. `crates/observability` already implements all of it;
   the firehose supplies the callers it lacks, and `OtlpTarget` exposes it to extensions.
 - `observability.md:107-115` / `FEATURES.md:1834-1837` — session statistics, context breakdown, and
   compaction-aware anchoring. `ContextSnapshot` (with `history_rewrite_tokens_removed`) plus

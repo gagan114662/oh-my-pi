@@ -81,10 +81,30 @@ lint-locked-maps:
 
 # Scan for banned inline qualified paths (`std::sync::atomic::AtomicU32`, `crate::`/`super::`),
 # mostly-Arc-wrapped structs, and `Mutex<Arc<…>>`-style locks, plus model-name
-# hardcoding in crates/inference (see tools/lintx).
+# hardcoding in crates/ai (see tools/lintx).
 [group('format & lint')]
 lintx *paths='crates':
     cargo run --quiet --release --locked --manifest-path tools/lintx/Cargo.toml -- {{ paths }}
+
+# Exercise the custom lint rules and scope boundaries.
+[group('format & lint')]
+lintx-test:
+    cargo nextest run --locked --manifest-path tools/lintx/Cargo.toml
+
+# Validate current implementation/reference paths (historical ADR context is excluded).
+[group('format & lint')]
+adr-paths:
+    python3 scripts/check-adr-paths.py
+
+# Enforce provider-as-data rules against the live inference crate.
+[group('format & lint')]
+lint-models:
+    just lintx --only model-gate --only model-table crates/ai/src
+
+# Validate runtime symbols and world-boundary ownership.
+[group('format & lint')]
+spec-check:
+    cargo -Zscript scripts/check-spec.rs -- target/runtime-symbol-spec.json
 
 # Autofix banned inline paths in place (conservative: ambiguous cases stay diagnostics). Run `just fmt` afterwards.
 [group('format & lint')]
@@ -93,7 +113,7 @@ lintx-fix *paths='crates':
 
 # Run every formatter-check and linter this repo defines.
 [group('format & lint')]
-lint: fmt-check clippy proto-lint lint-locked-maps
+lint: fmt-check clippy proto-lint lint-locked-maps lintx
 
 # ---------------------------------------------------------------------------
 # Build & check
@@ -204,14 +224,15 @@ e2e: e2e-build e2e-core e2e-p7 e2e-p9 e2e-p10
     cargo nextest run -p omp-e2e --test p8_baselines --locked
 
 # ---------------------------------------------------------------------------
-# LLM catalog & compat cascade (crates/llm-catalog)
+# LLM catalog & compat cascade (crates/catalog)
 # ---------------------------------------------------------------------------
 
 # Run the taxonomy and compat-cascade test suites.
 [group('catalog')]
 catalog-test:
-    cargo nextest run -p omp-llm-catalog --lib taxonomy
-    cargo nextest run -p omp-llm-catalog --test compat_cascade
+    cargo nextest run -p omp-catalog --lib taxonomy --locked
+    cargo nextest run -p omp-catalog --test compat_cascade --locked
+    cargo test --doc -p omp-catalog --locked
 
 # ---------------------------------------------------------------------------
 # Run & explore
@@ -222,7 +243,7 @@ catalog-test:
 run *args:
     cargo run -p omp-app --bin omp --locked -- {{ args }}
 
-# Run the standalone `omp-sh` shell (shell-engine composed with builtins).
+# Run the standalone `omp-sh` shell (omp-shell composed with builtins).
 [group('run')]
 run-shell *args:
     cargo run -p omp-shell-builtins --bin omp-sh --locked -- {{ args }}
@@ -252,7 +273,7 @@ ar-roundtrip:
 
 [group('examples')]
 inference-smoke:
-    cargo run -p omp-llm-inference --example applefm_smoke
+    cargo run -p omp-ai --example applefm_smoke --features local-applefm --locked
 
 # ---------------------------------------------------------------------------
 # Licensing & release packaging
@@ -262,6 +283,21 @@ inference-smoke:
 [group('release')]
 license-check:
     cargo deny --locked check licenses sources
+    just license-notices-check
+
+# Resolve the complete license inventory after cargo-deny has fetched locked sources.
+[group('release')]
+license-notices-data:
+    mkdir -p target
+    cargo about generate --workspace --all-features --locked --offline --format json --fail -o target/rust-license-data.json
+
+[group('release')]
+license-notices-check: license-notices-data
+    python3 scripts/gen-rust-notices.py target/rust-license-data.json THIRD-PARTY-NOTICES.txt --check
+
+[group('release')]
+license-notices-update: license-notices-data
+    python3 scripts/gen-rust-notices.py target/rust-license-data.json THIRD-PARTY-NOTICES.txt
 
 # Assemble npm publish packages from built release binaries.
 [group('release')]

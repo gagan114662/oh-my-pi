@@ -24,16 +24,12 @@ use omp_tool::{
 use serde_json::{Value as JsonValue, json};
 use toml::Value as TomlValue;
 
-const AGENT_ALLOWED_WORLD_EDGES: &[&str] = &["omp-env", "omp-storage"];
-const AGENT_DENIED_DIRECT_EDGES: &[&str] = &["omp-docserver", "omp-shell", "omp-walker"];
+const AGENT_ALLOWED_WORLD_EDGES: &[&str] = &["omp-env"];
+const AGENT_DENIED_DIRECT_EDGES: &[&str] = &["omp-envd", "omp-shell", "omp-walker"];
 // Pre-existing Python operations awaiting Part 1 rows. This fixed debt baseline
 // may shrink; newly frozen CONTROL operations cannot be added without a row.
-const PYTHON_SPEC_BASELINE: &[&str] = &[
-	"omp.state.cas_get",
-	"omp.state.cas_put",
-	"omp.state_dir",
-	"omp.urls.read",
-];
+const PYTHON_SPEC_BASELINE: &[&str] =
+	&["omp.state.cas_get", "omp.state.cas_put", "omp.state_dir", "omp.urls.read"];
 
 fn main() {
 	let root = workspace_root();
@@ -52,13 +48,11 @@ fn main() {
 	if let Some(output) = env::args_os().nth(1) {
 		let output = root.join(output);
 		if let Some(parent) = output.parent() {
-			fs::create_dir_all(parent).unwrap_or_else(|error| {
-				panic!("cannot create {}: {error}", parent.display())
-			});
+			fs::create_dir_all(parent)
+				.unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
 		}
-		fs::write(&output, generated_spec_json()).unwrap_or_else(|error| {
-			panic!("cannot write {}: {error}", output.display())
-		});
+		fs::write(&output, generated_spec_json())
+			.unwrap_or_else(|error| panic!("cannot write {}: {error}", output.display()));
 	}
 }
 
@@ -100,32 +94,27 @@ fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 			}
 		}
 		if symbol.owner.trim().is_empty() || !root.join(symbol.owner).is_file() {
-			failures.push(format!(
-				"{} has missing owner {}",
-				symbol.public_name, symbol.owner
-			));
+			failures.push(format!("{} has missing owner {}", symbol.public_name, symbol.owner));
 		}
 		if symbol.signature.trim().is_empty() {
 			failures.push(format!("{} has no signature", symbol.public_name));
 		}
 		if symbol.examples.is_empty()
-			|| symbol.examples.iter().any(|example| example.trim().is_empty() || example.contains("TODO"))
+			|| symbol
+				.examples
+				.iter()
+				.any(|example| example.trim().is_empty() || example.contains("TODO"))
 		{
 			failures.push(format!("{} has no concrete example", symbol.public_name));
 		}
 		if symbol.callback_abi == CallbackAbi::PayloadContext
 			&& !symbol.signature.trim_start().starts_with("(payload, ctx)")
 		{
-			failures.push(format!(
-				"{} violates the (payload, ctx) callback ABI",
-				symbol.public_name
-			));
+			failures.push(format!("{} violates the (payload, ctx) callback ABI", symbol.public_name));
 		}
 		if symbol.operation.minimum_phase == InvocationPhase::Settled {
-			failures.push(format!(
-				"{} first becomes legal in terminal phase SETTLED",
-				symbol.public_name
-			));
+			failures
+				.push(format!("{} first becomes legal in terminal phase SETTLED", symbol.public_name));
 		}
 		if symbol.public_name.starts_with("omp.env.") {
 			if symbol.operation.minimum_phase != InvocationPhase::EffectsAuthorized {
@@ -140,15 +129,18 @@ fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 		}
 	}
 
-	let server = fs::read_to_string(root.join("crates/app/src/envd/server.rs"))
+	let server = fs::read_to_string(root.join("crates/envd/src/server.rs"))
 		.expect("environment dispatch source is unreadable");
 	for operation in server.split('"').filter(|token| {
 		token.starts_with("omp.env.")
 			&& !token.ends_with('.')
-			&& token.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
+			&& token
+				.bytes()
+				.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
 	}) {
 		if operation_spec(operation).is_none() {
-			failures.push(format!("DATA dispatch operation {operation} is missing from the runtime spec"));
+			failures
+				.push(format!("DATA dispatch operation {operation} is missing from the runtime spec"));
 		}
 	}
 
@@ -164,26 +156,33 @@ fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 		.iter()
 		.find(|symbol| symbol.public_name == interrupt_metadata.public_name);
 	if interrupt_row.is_none_or(|symbol| symbol.timeout.is_some()) {
-		failures.push("omp.params.interrupt_grace must be a live setting, not a fixed timeout".into());
+		failures
+			.push("omp.params.interrupt_grace must be a live setting, not a fixed timeout".into());
 	}
 	if interrupt_metadata.default_value != Duration::new(150, DurationUnit::Milliseconds) {
-		failures.push("runtime.interrupt_grace default must be the typed duration 150ms".into());
+		failures.push("sv_interrupt_grace default must be the typed duration 150ms".into());
 	}
-	if interrupt_metadata.configuration_key != "runtime.interrupt_grace"
+	if interrupt_metadata.configuration_key != "sv_interrupt_grace"
 		|| interrupt_metadata.telemetry_ns != "omp.runtime.interrupt_grace.ns"
 		|| interrupt_metadata.telemetry_unit != "omp.runtime.interrupt_grace.unit"
 	{
 		failures.push("interrupt-grace configuration or telemetry metadata drifted".into());
 	}
-	let settings = fs::read_to_string(root.join("crates/app/src/settings.rs"))
+	let settings = fs::read_to_string(root.join("crates/envd/src/host_settings.rs"))
 		.expect("runtime settings source is unreadable");
-	if !settings.contains("omp_tool::DEFAULT_INTERRUPT_GRACE")
-		|| !settings.contains("pub runtime:")
-		|| !settings.contains("pub interrupt_grace: Duration")
-	{
-		failures.push("runtime.interrupt_grace setting default, key, or type drifted".into());
+	let declaration = settings
+		.split_once("pub static SV_INTERRUPT_GRACE =")
+		.and_then(|(_, rest)| rest.split_once("};"))
+		.map(|(declaration, _)| declaration.split_whitespace().collect::<String>());
+	if !settings.contains("use omp_tool::DEFAULT_INTERRUPT_GRACE;")
+		|| declaration.as_deref().is_none_or(|declaration| {
+			!declaration.starts_with("sv_interrupt_grace:Duration{")
+				|| !declaration.contains("default:DEFAULT_INTERRUPT_GRACE,")
+				|| !declaration.contains("flags:archive,")
+		}) {
+		failures.push("sv_interrupt_grace setting default, key, type, or persistence drifted".into());
 	}
-	let telemetry = fs::read_to_string(root.join("crates/telemetry/src/attrs.rs"))
+	let telemetry = fs::read_to_string(root.join("crates/observability/src/attrs.rs"))
 		.expect("telemetry attribute vocabulary is unreadable");
 	if !telemetry.contains(interrupt_metadata.telemetry_ns)
 		|| !telemetry.contains(interrupt_metadata.telemetry_unit)
@@ -196,9 +195,8 @@ fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 			if spec.minimum_phase == InvocationPhase::EffectsAuthorized
 				&& spec.durability == Durability::Durable
 				&& spec.authority == Authority::Core => {},
-		_ => failures.push(
-			"omp.journal.append must be a durable Core Request from EFFECTS_AUTHORIZED".into(),
-		),
+		_ => failures
+			.push("omp.journal.append must be a durable Core Request from EFFECTS_AUTHORIZED".into()),
 	}
 
 	let matrix: Vec<_> = phase_legality_matrix().collect();
@@ -209,8 +207,8 @@ fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 		if row.public_name != symbol.public_name {
 			failures.push(format!("phase matrix row order drifted at {}", symbol.public_name));
 		}
-		let expected = InvocationPhase::ALL
-			.map(|phase| phase.allows_operation(symbol.operation.minimum_phase));
+		let expected =
+			InvocationPhase::ALL.map(|phase| phase.allows_operation(symbol.operation.minimum_phase));
 		if row.legal != expected || row.legal[InvocationPhase::Settled.ordinal() as usize] {
 			failures.push(format!("{} has an illegal phase matrix row", symbol.public_name));
 		}
@@ -218,7 +216,10 @@ fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 
 	let generated: JsonValue = serde_json::from_str(&generated_spec_json())
 		.expect("generated runtime symbol spec must be valid JSON");
-	for symbol in generated["symbols"].as_array().expect("symbols must be an array") {
+	for symbol in generated["symbols"]
+		.as_array()
+		.expect("symbols must be an array")
+	{
 		if let Some(timeout) = symbol.get("timeout").filter(|value| !value.is_null())
 			&& !timeout["value"].is_u64()
 		{
@@ -290,7 +291,6 @@ fn check_python_surface_specs(root: &Path, failures: &mut Vec<String>) {
 	}
 }
 
-
 fn check_agent_dependencies(root: &Path, failures: &mut Vec<String>) {
 	let workspace = parse_toml(&root.join("Cargo.toml"));
 	let agent = parse_toml(&root.join("crates/agent/Cargo.toml"));
@@ -341,16 +341,16 @@ fn collect_dependency_packages<'a>(manifest: &'a TomlValue, packages: &mut BTree
 	}
 }
 
-fn check_policy_list(
-	policy: &TomlValue,
-	key: &str,
-	expected: &[&str],
-	failures: &mut Vec<String>,
-) {
+fn check_policy_list(policy: &TomlValue, key: &str, expected: &[&str], failures: &mut Vec<String>) {
 	let actual = policy
 		.get(key)
 		.and_then(TomlValue::as_array)
-		.map(|values| values.iter().filter_map(TomlValue::as_str).collect::<BTreeSet<_>>())
+		.map(|values| {
+			values
+				.iter()
+				.filter_map(TomlValue::as_str)
+				.collect::<BTreeSet<_>>()
+		})
 		.unwrap_or_default();
 	let expected = expected.iter().copied().collect::<BTreeSet<_>>();
 	if actual != expected {
@@ -361,7 +361,8 @@ fn check_policy_list(
 fn parse_toml(path: &Path) -> TomlValue {
 	let text = fs::read_to_string(path)
 		.unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-	text.parse()
+	text
+		.parse()
 		.unwrap_or_else(|error| panic!("cannot parse {}: {error}", path.display()))
 }
 
@@ -370,49 +371,56 @@ fn generated_spec_json() -> String {
 		let name: &'static str = phase.into();
 		name
 	});
-	let symbols = runtime_symbols().iter().map(|symbol| {
-		let minimum_phase: &'static str = symbol.operation.minimum_phase.into();
-		let durability: &'static str = symbol.operation.durability.into();
-		let cost: &'static str = symbol.operation.cost.into();
-		let authority: &'static str = symbol.operation.authority.into();
-		let callback_abi: &'static str = symbol.callback_abi.into();
-		let timeout = symbol.timeout.map(|duration| {
-			json!({"value": duration.value(), "unit": duration.unit().to_string()})
-		});
-		json!({
-			"owner": symbol.owner,
-			"public_name": symbol.public_name,
-			"dispatch_key": symbol.dispatch_key,
-			"signature": symbol.signature,
-			"callback_abi": callback_abi,
-			"operation_spec": {
-				"minimum_phase": minimum_phase,
-				"durability": durability,
-				"cost": cost,
-				"authority": authority,
-			},
-			"timeout": timeout,
-			"examples": symbol.examples,
+	let symbols = runtime_symbols()
+		.iter()
+		.map(|symbol| {
+			let minimum_phase: &'static str = symbol.operation.minimum_phase.into();
+			let durability: &'static str = symbol.operation.durability.into();
+			let cost: &'static str = symbol.operation.cost.into();
+			let authority: &'static str = symbol.operation.authority.into();
+			let callback_abi: &'static str = symbol.callback_abi.into();
+			let timeout = symbol.timeout.map(
+				|duration| json!({"value": duration.value(), "unit": duration.unit().to_string()}),
+			);
+			json!({
+				"owner": symbol.owner,
+				"public_name": symbol.public_name,
+				"dispatch_key": symbol.dispatch_key,
+				"signature": symbol.signature,
+				"callback_abi": callback_abi,
+				"operation_spec": {
+					"minimum_phase": minimum_phase,
+					"durability": durability,
+					"cost": cost,
+					"authority": authority,
+				},
+				"timeout": timeout,
+				"examples": symbol.examples,
+			})
 		})
-	}).collect::<Vec<_>>();
-	let durations = runtime_duration_metadata().iter().map(|metadata| {
-		let value = metadata.default_value;
-		json!({
-			"public_name": metadata.public_name,
-			"configuration_key": metadata.configuration_key,
-			"default": {"value": value.value(), "unit": value.unit().to_string()},
-			"telemetry_ns": metadata.telemetry_ns,
-			"telemetry_unit": metadata.telemetry_unit,
+		.collect::<Vec<_>>();
+	let durations = runtime_duration_metadata()
+		.iter()
+		.map(|metadata| {
+			let value = metadata.default_value;
+			json!({
+				"public_name": metadata.public_name,
+				"configuration_key": metadata.configuration_key,
+				"default": {"value": value.value(), "unit": value.unit().to_string()},
+				"telemetry_ns": metadata.telemetry_ns,
+				"telemetry_unit": metadata.telemetry_unit,
+			})
 		})
-	}).collect::<Vec<_>>();
-	let legality = phase_legality_matrix().map(|row| {
-		json!({"public_name": row.public_name, "legal": row.legal})
-	}).collect::<Vec<_>>();
+		.collect::<Vec<_>>();
+	let legality = phase_legality_matrix()
+		.map(|row| json!({"public_name": row.public_name, "legal": row.legal}))
+		.collect::<Vec<_>>();
 	serde_json::to_string_pretty(&json!({
 		"schema_version": 1,
 		"invocation_phases": phases,
 		"symbols": symbols,
 		"runtime_durations": durations,
 		"phase_legality": legality,
-	})).expect("runtime symbol spec is serializable")
+	}))
+	.expect("runtime symbol spec is serializable")
 }

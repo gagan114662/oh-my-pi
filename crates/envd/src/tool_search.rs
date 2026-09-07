@@ -756,6 +756,7 @@ fn search_blocking(
 	let mut seen_matches = HashSet::new();
 	let mut limit_reached = false;
 	let mut skipped_oversized = 0_u32;
+	let mut pattern_rewritten = false;
 	let mut oversized_files = Vec::new();
 	let mut pending_snapshots: HashMap<Str, PendingSnapshot> = HashMap::new();
 
@@ -806,6 +807,7 @@ fn search_blocking(
 			)
 			.map_err(map_native_grep_fault)?,
 		};
+		pattern_rewritten |= native.pattern_rewritten;
 		skipped_oversized = skipped_oversized.saturating_add(native.skipped_oversized);
 		limit_reached |= native.limit_reached;
 
@@ -880,6 +882,7 @@ fn search_blocking(
 	oversized_files.sort_unstable();
 	oversized_files.dedup();
 	Ok(SearchResult {
+		pattern_rewritten,
 		matches,
 		snapshots,
 		multi_scope,
@@ -1588,6 +1591,20 @@ mod tests {
 		);
 		assert!(targets.iter().all(|target| target.root_index == 3));
 		assert!(targets.windows(2).all(|pair| pair[0].path < pair[1].path));
+	}
+
+	#[tokio::test]
+	async fn grep_adapter_preserves_repaired_pattern_provenance() {
+		let directory = tempfile::tempdir().expect("temp directory");
+		fs::write(directory.path().join("sample.txt"), "[\n").expect("fixture");
+		let adapter = connected_search_adapter(directory.path()).await;
+		for path in ["sample.txt", "."] {
+			let mut request = search_request(path, SearchRootKind::Filesystem, 5_000);
+			request.pattern = sf!("[");
+			let result = adapter.search(request).await.expect("charitable search");
+			assert!(result.pattern_rewritten);
+			assert_eq!(result.matches.len(), 1);
+		}
 	}
 
 	#[tokio::test]
