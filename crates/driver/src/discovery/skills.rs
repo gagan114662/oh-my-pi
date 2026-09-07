@@ -2,9 +2,10 @@
 //! prompt (`<skills>`) and serves as `skill://<name>`.
 //!
 //! Sources: native `.omp/skills` (project walk-up) and
-//! `<config root>/agent/skills`, then `.claude/skills`,
+//! `<config root>/agent/skills`, then `.claude/skills` and registry-selected
+//! Claude marketplace skills,
 //! `.agent[s]/skills`, opted-in user/project `.codex/skills`, project OpenCode
-//! skills, then
+//! and user skills, GitHub project skills, then
 //! `sv_skills_custom_directories`, then the isolated managed-skills root dead
 //! last. Within a name, the first source in that order wins; a custom
 //! directory beats a default-path provider. Every knob is a convar
@@ -392,6 +393,17 @@ pub fn sources(
 			push("claude", dir.join(".claude/skills"), SkillLevel::Project);
 		}
 	}
+	for source in super::claude_plugins::sources(project_root, home, policy) {
+		push(
+			if source.provider == "agent-plugins" {
+				"agent-plugins"
+			} else {
+				"claude-plugins"
+			},
+			source.root,
+			source.level,
+		);
+	}
 	for root in agent_plugin_skill_roots(&[
 		(project_root.join(".omp/extensions"), SkillLevel::Project),
 		(project_root.join(".agent/plugins"), SkillLevel::Project),
@@ -417,7 +429,12 @@ pub fn sources(
 		push("codex", home.join(".codex/skills"), SkillLevel::User);
 	}
 	push("codex", project_root.join(".codex/skills"), SkillLevel::Project);
+	push("opencode", home.join(".config/opencode/skills"), SkillLevel::User);
 	push("opencode", project_root.join(".opencode/skills"), SkillLevel::Project);
+	let github = project_root.join(".github/skills");
+	if super::github::contained(project_root, &github) {
+		push("github", github, SkillLevel::Project);
+	}
 	for dir in &policy.custom_directories {
 		push("custom", dir.clone(), SkillLevel::User);
 	}
@@ -519,7 +536,11 @@ pub fn discover(sources: &[SkillSource], policy: &SkillPolicy) -> ActiveSkills {
 		if managed && !managed_root_safe(&source.root) {
 			continue;
 		}
-		for path in skill_files(&source.root, &mut out.warnings) {
+		let mut declarations = skill_files(&source.root, &mut out.warnings);
+		if source.provider == "claude-plugins" && source.root.join("SKILL.md").is_file() {
+			declarations.insert(0, source.root.join("SKILL.md"));
+		}
+		for path in declarations {
 			let Some(skill) = load_skill(source, &path, managed, &mut out.warnings) else {
 				continue;
 			};

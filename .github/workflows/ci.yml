@@ -541,6 +541,55 @@ jobs:
           path: target/proxy-header-proof/
           if-no-files-found: error
 
+      - name: Prove foreign configuration discovery
+        run: |
+          set -o pipefail
+          mkdir -p target/discovery-proof
+          status=0
+          for package in omp-driver omp-envd; do
+            if [ "$package" = omp-driver ]; then filter='test(discovery::)'; else filter='test(mcp::discovery::tests)'; fi
+            set +e
+            cargo nextest run --profile ci --locked -p "$package" --lib -E "$filter" --no-tests fail --success-output immediate 2>&1 | tee "target/discovery-proof/$package-nextest.log"
+            test_status=${PIPESTATUS[0]}
+            cargo test --doc --locked -p "$package" 2>&1 | tee "target/discovery-proof/$package-doctests.log"
+            doc_status=${PIPESTATUS[0]}
+            printf '%s\n' "$test_status" > "target/discovery-proof/$package-nextest.exit"
+            printf '%s\n' "$doc_status" > "target/discovery-proof/$package-doctests.exit"
+            if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then status=1; fi
+          done
+          exit "$status"
+
+      - name: Summarize all eight discovered providers
+        if: always()
+        run: |
+          python3 - <<'PY_PROVIDERS'
+          import os, pathlib, re
+          root = pathlib.Path('target/discovery-proof')
+          root.mkdir(parents=True, exist_ok=True)
+          expected = {'claude', 'cursor', 'windsurf', 'gemini', 'codex', 'cline', 'github', 'vscode'}
+          rows = {}
+          for path in root.glob('*-nextest.log'):
+              text = re.sub(r'\x1b\[[0-9;]*m', '', path.read_text(errors='replace'))
+              for line in text.splitlines():
+                  match = re.match(r'\s*\|\s*(\w+)\s*\|.*\| discovered \|', line)
+                  if match and match[1] in expected: rows[match[1]] = line.strip()
+          table = ['## Foreign configuration discovery', '', '| Provider | Capability | Evidence |', '| --- | --- | --- |']
+          table += [rows.get(name, f'| {name} | unknown | MISSING |') for name in sorted(expected)]
+          summary = '\n'.join(table)+'\n'
+          (root/'summary.md').write_text(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream: stream.write(summary)
+          exits = list(root.glob('*.exit'))
+          if rows.keys() != expected or len(exits) != 4 or any(path.read_text().strip() != '0' for path in exits): raise SystemExit(1)
+          PY_PROVIDERS
+
+      - name: Publish discovery evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: foreign-provider-discovery
+          path: target/discovery-proof/
+          if-no-files-found: error
+
       - name: Prove Linux environment host contracts
         env:
           CARGO_TERM_COLOR: never
