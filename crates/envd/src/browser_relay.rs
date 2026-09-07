@@ -855,10 +855,10 @@ async fn serve_websocket(
 				if !sent { break; }
 			},
 			incoming = stream.next() => match incoming {
-				Some(Ok(Message::Text(text))) => dispatch_socket_text(&bridge, role, id, text.as_str()),
+				Some(Ok(Message::Text(text))) => dispatch_socket_text(&bridge, role, id, text.as_str()).await,
 				Some(Ok(Message::Binary(bytes))) => {
 					let text = String::from_utf8_lossy(&bytes);
-					dispatch_socket_text(&bridge, role, id, &text);
+					dispatch_socket_text(&bridge, role, id, &text).await;
 				},
 				Some(Ok(Message::Ping(bytes))) => {
 					let sent = tokio::select! {
@@ -880,13 +880,20 @@ async fn serve_websocket(
 	let _ = time::timeout(SOCKET_CLOSE_TIMEOUT, sink.close()).await;
 }
 
-fn dispatch_socket_text(bridge: &Arc<RelayBridge>, role: SocketRole, id: u64, text: &str) {
+async fn dispatch_socket_text(bridge: &Arc<RelayBridge>, role: SocketRole, id: u64, text: &str) {
 	match role {
 		SocketRole::Extension => bridge.ext_message(id, text),
 		SocketRole::Cdp => {
 			let bridge = Arc::clone(bridge);
 			let text = text.to_owned();
-			tokio::spawn(async move { bridge.cdp_message(id, &text).await });
+			// Register state transitions in wire order before reading another command.
+			// Poll with this socket task's real context, then transfer the same owned
+			// future to a task if it waits on an RPC. Awaiting it to completion here
+			// would prevent Runtime.disable and local protocol fences from progressing.
+			let mut command = Box::pin(async move { bridge.cdp_message(id, &text).await });
+			if futures::poll!(command.as_mut()).is_pending() {
+				tokio::spawn(command);
+			}
 		},
 	}
 }
@@ -3683,6 +3690,94 @@ mod tests {
 				.await
 				.is_err()
 		);
+	}
+
+	#[tokio::test]
+	async fn socket_dispatch_registers_duplicate_enable_before_local_fence() {
+		let bridge = Arc::new(RelayBridge::new(false, false));
+		let (extension, extension_messages) = socket_pair(8);
+		let extension_id = bridge.ext_connected(extension);
+		bridge.ext_message(
+			extension_id,
+			&serde_json::to_string(&json!({
+				"t": "hello",
+				"userAgent": "test",
+				"browserVersion": "Chrome/151.0.0.0",
+				"tabs": [{
+					"tabId": 1, "url": "https://example.com/", "title": "Example",
+					"active": false, "windowId": 1, "pinned": false, "groupId": -1
+				}],
+				"attachedTabIds": []
+			}))
+			.unwrap(),
+		);
+		let (cdp, messages) = socket_pair(8);
+		let connection = bridge.cdp_connected(cdp);
+		let session = bridge
+			.mint_session(connection, SessionKind::Page, 1)
+			.expect("live connection");
+		for id in [1, 2] {
+			dispatch_socket_text(
+				&bridge,
+				SocketRole::Cdp,
+				connection,
+				&serde_json::to_string(&json!({
+					"id": id, "sessionId": session, "method": "Runtime.enable"
+				}))
+				.unwrap(),
+			)
+			.await;
+		}
+		// No scheduler yield or timing window: dispatch must have registered both
+		// commands even though their shared extension RPC has no response yet.
+		{
+			let state = bridge.state.lock();
+			let pending = &state.connections[&connection].sessions[&session];
+			let epoch = pending.runtime_enabling.expect("pending enable cycle");
+			assert_eq!(pending.runtime_waiters[&epoch].len(), 1);
+		}
+		dispatch_socket_text(
+			&bridge,
+			SocketRole::Cdp,
+			connection,
+			r#"{"id":3,"method":"Browser.getVersion"}"#,
+		)
+		.await;
+		let Message::Text(fence) = messages
+			.try_recv()
+			.expect("local fence is not blocked by RPC")
+		else {
+			panic!("expected fence response")
+		};
+		let fence: Value = serde_json::from_str(fence.as_str()).unwrap();
+		assert_eq!(fence["id"], 3);
+		assert!(fence.get("result").is_some());
+		let Message::Text(root) = extension_messages.try_recv().expect("root runtime RPC") else {
+			panic!("expected root runtime RPC")
+		};
+		let root: Value = serde_json::from_str(root.as_str()).unwrap();
+		bridge.ext_message(
+			extension_id,
+			&serde_json::to_string(&json!({
+				"t": "rpcResult", "id": root["id"], "ok": false, "error": "root enable failed"
+			}))
+			.unwrap(),
+		);
+		let mut ids = Vec::new();
+		for _ in 0..2 {
+			let response = time::timeout(Duration::from_secs(1), messages.recv_async())
+				.await
+				.expect("pending command resumes")
+				.expect("CDP channel");
+			let Message::Text(response) = response else {
+				panic!("expected error response")
+			};
+			let response: Value = serde_json::from_str(response.as_str()).unwrap();
+			assert!(response.get("error").is_some());
+			ids.push(response["id"].as_u64().unwrap());
+		}
+		ids.sort_unstable();
+		assert_eq!(ids, [1, 2]);
 	}
 
 	#[tokio::test]
