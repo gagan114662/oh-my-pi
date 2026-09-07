@@ -1485,34 +1485,137 @@ mod tests {
 		assert_tunnel_rejected(&[22, 3, 3, 0, 4, 1, 1, 0, 0]);
 	}
 
+	/// Exercise the actual authenticated proxy and observe its upstream
+	/// connection. The wake connection is made only after the proxy has
+	/// finished, so it cannot overtake a connection made by the request under
+	/// test.
+	fn assert_header_boundary(make_request: impl FnOnce(u16) -> String, allowed: bool) {
+		let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("upstream");
+		let address = listener.local_addr().expect("upstream address");
+		let upstream = listener.try_clone().expect("upstream listener clone");
+		let upstream_task = thread::spawn(move || {
+			let (mut stream, peer) = upstream.accept().expect("upstream or wake connection");
+			stream
+				.set_read_timeout(Some(Duration::from_secs(5)))
+				.expect("upstream read timeout");
+			stream
+				.set_write_timeout(Some(Duration::from_secs(5)))
+				.expect("upstream write timeout");
+			let mut reader = BufReader::new(stream.try_clone().expect("upstream reader"));
+			let mut request = Vec::new();
+			loop {
+				let start = request.len();
+				// Independent fixture cap: even a broken proxy cannot make this oracle
+				// read unbounded headers. Do not reuse the guard being tested here.
+				let remaining = (128 * 1024_usize)
+					.checked_sub(start)
+					.expect("oracle header bound");
+				let read = reader
+					.by_ref()
+					.take(remaining as u64)
+					.read_until(b'\n', &mut request)
+					.expect("upstream request line");
+				assert!(read > 0, "upstream request must end with a blank line");
+				if &request[start..] == b"\r\n" {
+					break;
+				}
+			}
+			stream
+				.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+				.expect("upstream response");
+			(peer, request)
+		});
+		let request = make_request(address.port());
+		let (mut client, proxy) = serve_once(policy(address.port()));
+		client
+			.set_read_timeout(Some(Duration::from_secs(5)))
+			.expect("client read timeout");
+		client
+			.set_write_timeout(Some(Duration::from_secs(5)))
+			.expect("client write timeout");
+		let sent = client.write_all(request.as_bytes());
+		let mut response = Vec::new();
+		let received = Read::by_ref(&mut client)
+			.take(4096)
+			.read_to_end(&mut response);
+		drop(client);
+		let proxy_result = proxy.join();
+		// Keep the listener alive until the worker is joined, including when a
+		// forwarded request already completed. Peer identity separates the wake
+		// connection from any production forwarding, without a timeout oracle.
+		let mut wake = TcpStream::connect(address).expect("wake upstream observer");
+		let wake_address = wake.local_addr().expect("wake peer address");
+		wake
+			.write_all(b"GET /observer-stop HTTP/1.1\r\n\r\n")
+			.expect("wake request");
+		let (peer, forwarded) = upstream_task.join().expect("upstream observer");
+		drop(wake);
+		drop(listener);
+		proxy_result.expect("proxy thread");
+		assert_eq!(peer != wake_address, allowed, "authenticated upstream forwarding: {response:?}");
+		if allowed {
+			sent.expect("allowed request written in full");
+			received.expect("allowed response");
+			assert!(response.starts_with(b"HTTP/1.1 204 No Content\r\n"));
+			assert!(forwarded.starts_with(b"GET /header-proof HTTP/1.1\r\n"));
+			assert!(
+				!forwarded
+					.windows(b"Proxy-Authorization".len())
+					.any(|window| window == b"Proxy-Authorization")
+			);
+		} else {
+			if let Err(error) = sent {
+				assert!(
+					matches!(error.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset),
+					"denied request write: {error}"
+				);
+			}
+			if let Err(error) = received {
+				// Rejecting before consuming the queued request may reset TCP. This
+				// is acceptable only alongside the independent no-forwarding proof.
+				assert_eq!(error.kind(), io::ErrorKind::ConnectionReset, "denied response: {error}");
+			}
+			let mut denial = Vec::new();
+			http_deny(&mut denial).expect("expected denial bytes");
+			assert!(denial.starts_with(&response), "unexpected denial response: {response:?}");
+		}
+	}
+
 	#[test]
 	fn headers_are_bounded_cumulatively_and_by_count() {
-		let (mut client, proxy) = serve_once(policy(80));
-		let path = "x".repeat(MAX_HEADER_BYTES - 48);
-		write!(
-			client,
-			"GET http://127.0.0.1:80/{path} HTTP/1.1\r\nX-Overflow: retained-never\r\n\r\n"
-		)
-		.expect("oversized aggregate request");
-		let mut response = Vec::new();
-		let _ = client.read_to_end(&mut response);
-		assert!(response.is_empty());
-		drop(client);
-		proxy.join().expect("aggregate proxy");
-
-		let (mut client, proxy) = serve_once(policy(80));
-		write!(client, "GET http://127.0.0.1:80/ HTTP/1.1\r\n").expect("request line");
-		for index in 0..=MAX_HEADER_COUNT {
-			write!(client, "X-{index}: value\r\n").expect("header");
+		for count in [MAX_HEADER_COUNT - 1, MAX_HEADER_COUNT, MAX_HEADER_COUNT + 1] {
+			assert_header_boundary(
+				|port| {
+					let mut request = format!(
+						"GET http://127.0.0.1:{port}/header-proof HTTP/1.1\r\nProxy-Authorization: \
+						 Basic b21wOnRlc3QtdG9rZW4=\r\n"
+					);
+					// Authorization itself counts toward the header limit.
+					for index in 1..count {
+						request.push_str(&format!("X-{index}: value\r\n"));
+					}
+					request.push_str("\r\n");
+					assert!(request.len() < MAX_HEADER_BYTES);
+					request
+				},
+				count <= MAX_HEADER_COUNT,
+			);
 		}
-		client.write_all(b"\r\n").expect("header terminator");
-		let mut response = String::new();
-		client
-			.read_to_string(&mut response)
-			.expect("header count response");
-		assert!(response.starts_with("HTTP/1.1 403"));
-		drop(client);
-		proxy.join().expect("header count proxy");
+		for bytes in [MAX_HEADER_BYTES - 1, MAX_HEADER_BYTES, MAX_HEADER_BYTES + 1] {
+			assert_header_boundary(
+				|port| {
+					let mut request = format!(
+						"GET http://127.0.0.1:{port}/header-proof HTTP/1.1\r\nProxy-Authorization: \
+						 Basic b21wOnRlc3QtdG9rZW4=\r\nX-Pad: "
+					);
+					request.push_str(&"x".repeat(bytes - request.len() - 4));
+					request.push_str("\r\n\r\n");
+					assert_eq!(request.len(), bytes);
+					request
+				},
+				bytes <= MAX_HEADER_BYTES,
+			);
+		}
 	}
 
 	#[test]
