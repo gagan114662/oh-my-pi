@@ -1441,12 +1441,24 @@ mod tests {
 
 	#[test]
 	fn packaged_docs_are_sorted_and_lazily_readable() {
-		let docs = DocsArchive::default();
+		let scratch = tempfile::tempdir().unwrap();
+		let docs = DocsArchive {
+			dev_root: scratch.path().join("no-development-fallback"),
+			..DocsArchive::default()
+		};
 		let names = docs.names().collect::<Vec<_>>();
 		assert!(!names.is_empty());
 		assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
-		let bytes = docs.read(names[0]).unwrap().unwrap();
-		assert!(!bytes.is_empty());
+		for name in names {
+			let bytes = docs
+				.read(name)
+				.unwrap()
+				.expect("every packaged key is searchable");
+			let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+				.join("../../docs")
+				.join(name);
+			assert_eq!(bytes.as_ref(), std::fs::read(source).unwrap(), "packaged body for {name}");
+		}
 		assert!(docs.read("../Cargo.toml").is_err());
 	}
 }
