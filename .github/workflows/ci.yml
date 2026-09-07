@@ -127,6 +127,7 @@ jobs:
       - name: Test model-check runner failure paths
         run: python3 scripts/check-tla-test.py
       - name: Check every TLA+ and PlusCal variant
+        if: ${{ !cancelled() }}
         timeout-minutes: 32
         run: >-
           python3 scripts/check-tla.py --download --output target/tlc
