@@ -3247,6 +3247,24 @@ mod tests {
 		});
 		started.await.expect("persistence worker starts");
 
+		// Queue a second mutation while the first worker is blocked. The
+		// state request is a mailbox barrier: shutdown cannot overtake it.
+		let (queued_reply, mut queued_permission) = oneshot::channel();
+		actor
+			.send(Command::SetPermissions {
+				expected:    revision,
+				permissions: PortablePermissions { read_only: Some(false), executable: None },
+				follow:      FollowSymlinks::Yes,
+				reply:       queued_reply,
+			})
+			.await
+			.expect("enqueue second permission request");
+		actor.state().await.expect("queued request processed");
+		assert!(
+			matches!(queued_permission.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+			"second mutation waits behind the in-flight worker",
+		);
+
 		let shutdown_actor = actor.clone();
 		let mut shutdown = tokio::spawn(async move { shutdown_actor.shutdown().await });
 		assert!(
@@ -3264,6 +3282,19 @@ mod tests {
 			.await
 			.expect("shutdown task joins")
 			.expect("shutdown acknowledges");
+		let error = time::timeout(Duration::from_secs(2), queued_permission)
+			.await
+			.expect("queued permission settles at shutdown")
+			.expect("queued permission receives an explicit result")
+			.expect_err("shutdown does not apply the queued mutation");
+		assert!(matches!(error, Error::ExternalInvalidation { .. }));
+		assert!(
+			fs::metadata(root.path().join("shutdown-persist.txt"))
+				.expect("file remains")
+				.permissions()
+				.readonly(),
+			"only the in-flight permission change is applied",
+		);
 		assert!(actor.state().await.is_err(), "acknowledged actor has exited");
 	}
 
