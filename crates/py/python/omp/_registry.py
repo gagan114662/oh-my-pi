@@ -821,6 +821,7 @@ class DeclarationRegistry:
         )
         self.register_tool(name, family, rev, handler)
         self._legacy_worker_tools[key] = projected
+        self._device_states[key] = (True, None)
         return projected
 
     def _control_tool_key(self, key: _ToolKey) -> _ToolKey:
