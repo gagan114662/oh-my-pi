@@ -1908,6 +1908,14 @@ mod tests {
 		fs::create_dir(fixture.path().join("two")).expect("second root");
 		fs::write(fixture.path().join("one/a.rs"), "").expect("first match");
 		fs::write(fixture.path().join("two/b.rs"), "").expect("second match");
+		// Search ranks by modification time before path. Explicit timestamps
+		// keep the expected order independent of fixture creation speed.
+		for (path, seconds) in [("one/a.rs", 1_700_000_020), ("two/b.rs", 1_700_000_010)] {
+			fs::File::open(fixture.path().join(path))
+				.expect("fixture file")
+				.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(seconds)))
+				.expect("set fixture modification time");
+		}
 		let host = WorkspaceHost::open(fixture.path()).expect("workspace host");
 
 		let result = glob_blocking(
