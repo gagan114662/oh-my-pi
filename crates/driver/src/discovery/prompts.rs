@@ -3,7 +3,8 @@
 //! Sources, in order: the user directory `<config root>/agent/prompts`, the
 //! project directory `<project>/.omp/prompts` (both scanned recursively; a
 //! nested `review/rust.md` is still `/rust`, its source reads
-//! `(project:review)`), then every `--prompt-template <file|dir>` path
+//! `(project:review)`), then direct `.github/prompts/*.prompt.md`, then every
+//! `--prompt-template <file|dir>` path
 //! (`(custom)`). The first template to claim a name wins.
 //! `--no-prompt-templates` drops the discovered directories; explicit paths
 //! always load.
@@ -64,6 +65,15 @@ impl PromptTemplates {
 		if discover {
 			out.load_dir(&config_root.join("agent/prompts"), Level::User, "", true);
 			out.load_dir(&project_root.join(".omp/prompts"), Level::Project, "", true);
+			for path in super::github::files(
+				project_root,
+				".github/prompts",
+				".prompt.md",
+				false,
+				&mut out.warnings,
+			) {
+				out.load_file_format(&path, Str::new_static("(project:github)"), true);
+			}
 		}
 		for path in explicit {
 			let path = if path.is_absolute() {
@@ -173,6 +183,10 @@ impl PromptTemplates {
 	}
 
 	fn load_file(&mut self, path: &Path, source: Str) {
+		self.load_file_format(path, source, false);
+	}
+
+	fn load_file_format(&mut self, path: &Path, source: Str, github: bool) {
 		let canonical = match fs::canonicalize(path) {
 			Ok(canonical) => canonical,
 			Err(error) => {
@@ -193,19 +207,6 @@ impl PromptTemplates {
 				return;
 			},
 		};
-		let Some(name) = path
-			.file_stem()
-			.map(|stem| Str::new(stem.to_string_lossy()))
-		else {
-			return;
-		};
-		if self.get(&name).is_some() {
-			self.warnings.push(Warning {
-				path:    canonical,
-				message: Str::new(format!("prompt template name collision: \"{name}\" already loaded")),
-			});
-			return;
-		}
 		let (header, body) = split_frontmatter(&text);
 		let header = match header.map(serde_yaml::from_str::<TemplateHeader>) {
 			None => TemplateHeader::default(),
@@ -218,6 +219,34 @@ impl PromptTemplates {
 				return;
 			},
 		};
+		let name = if github {
+			header
+				.name
+				.as_deref()
+				.filter(|name| !name.is_empty())
+				.map(Str::new)
+				.or_else(|| {
+					path
+						.file_name()?
+						.to_str()?
+						.strip_suffix(".prompt.md")
+						.map(Str::new)
+				})
+		} else {
+			path
+				.file_stem()
+				.map(|stem| Str::new(stem.to_string_lossy()))
+		};
+		let Some(name) = name else {
+			return;
+		};
+		if self.get(&name).is_some() {
+			self.warnings.push(Warning {
+				path:    canonical,
+				message: Str::new(format!("prompt template name collision: \"{name}\" already loaded")),
+			});
+			return;
+		}
 		let mut description = header
 			.description
 			.map(|value| value.trim().to_owned())
@@ -252,6 +281,7 @@ impl PromptTemplates {
 
 #[derive(Default, Deserialize)]
 struct TemplateHeader {
+	name:        Option<String>,
 	description: Option<String>,
 }
 
