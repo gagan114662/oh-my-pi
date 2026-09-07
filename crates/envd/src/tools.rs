@@ -4046,7 +4046,7 @@ fn environment_declarations(
 		push(
 			omp_tools::read::spec(inputs.read_policy),
 			essential_presentation(policy),
-			core_claims(),
+			essential_claims(policy),
 		);
 	}
 	if tool_settings.enabled("edit") {
@@ -4061,7 +4061,7 @@ fn environment_declarations(
 		];
 		edits.sort_by_key(|spec| spec.rev == inputs.selected_edit);
 		for spec in edits {
-			push(spec, essential_presentation(policy), core_claims());
+			push(spec, essential_presentation(policy), essential_claims(policy));
 		}
 	}
 	if tool_settings.enabled("write") {
@@ -4074,10 +4074,10 @@ fn environment_declarations(
 		push(omp_tools::debug::spec(), long_tail_presentation(policy), long_tail_claims(policy));
 	}
 	if tool_settings.enabled("grep") {
-		push(omp_tools::grep::spec(), essential_presentation(policy), core_claims());
+		push(omp_tools::grep::spec(), essential_presentation(policy), essential_claims(policy));
 	}
 	if tool_settings.enabled("glob") {
-		push(omp_tools::glob::spec(), essential_presentation(policy), core_claims());
+		push(omp_tools::glob::spec(), essential_presentation(policy), essential_claims(policy));
 	}
 	if tool_settings.enabled("ast_grep") {
 		push(omp_tools::ast_grep::spec(), long_tail_presentation(policy), long_tail_claims(policy));
@@ -4490,7 +4490,12 @@ pub(crate) fn production_registry<
 		},
 	);
 	if tool_settings.enabled("read") {
-		environment_registry(&mut registry, read, essential_presentation(policy), core_claims())?;
+		environment_registry(
+			&mut registry,
+			read,
+			essential_presentation(policy),
+			essential_claims(policy),
+		)?;
 	}
 	let edit_repair = tool_settings.edit_auto_repair.then(|| {
 		edit_repair
@@ -4624,43 +4629,43 @@ pub(crate) fn production_registry<
 					&mut registry,
 					legacy_replace_edit.take().expect("once"),
 					essential_presentation(policy),
-					core_claims(),
+					essential_claims(policy),
 				)?,
 				1 => environment_registry(
 					&mut registry,
 					legacy_patch_edit.take().expect("once"),
 					essential_presentation(policy),
-					core_claims(),
+					essential_claims(policy),
 				)?,
 				2 => environment_registry(
 					&mut registry,
 					hashline_edit.take().expect("once"),
 					essential_presentation(policy),
-					core_claims(),
+					essential_claims(policy),
 				)?,
 				3 => environment_registry(
 					&mut registry,
 					replace_edit.take().expect("once"),
 					essential_presentation(policy),
-					core_claims(),
+					essential_claims(policy),
 				)?,
 				4 => environment_registry(
 					&mut registry,
 					patch_edit.take().expect("once"),
 					essential_presentation(policy),
-					core_claims(),
+					essential_claims(policy),
 				)?,
 				5 => environment_registry(
 					&mut registry,
 					apply_patch_edit.take().expect("once"),
 					essential_presentation(policy),
-					core_claims(),
+					essential_claims(policy),
 				)?,
 				6 => environment_registry(
 					&mut registry,
 					sloppy_edit.take().expect("once"),
 					essential_presentation(policy),
-					core_claims(),
+					essential_claims(policy),
 				)?,
 				_ => unreachable!(),
 			}
@@ -4716,11 +4721,21 @@ pub(crate) fn production_registry<
 		u32::from(tool_settings.grep_context_after),
 	);
 	if tool_settings.enabled("grep") {
-		environment_registry(&mut registry, grep, essential_presentation(policy), core_claims())?;
+		environment_registry(
+			&mut registry,
+			grep,
+			essential_presentation(policy),
+			essential_claims(policy),
+		)?;
 	}
 	let glob = omp_tools::glob::tool(search);
 	if tool_settings.enabled("glob") {
-		environment_registry(&mut registry, glob, essential_presentation(policy), core_claims())?;
+		environment_registry(
+			&mut registry,
+			glob,
+			essential_presentation(policy),
+			essential_claims(policy),
+		)?;
 	}
 	if tool_settings.enabled("ast_grep") {
 		let ast_search = AstSearchAuthority::new(
@@ -5544,6 +5559,17 @@ const fn essential_presentation(policy: ToolsPolicy) -> Presentation {
 	}
 }
 
+/// Essential tools retain the core claimant, but device presentation cannot
+/// use slot-only core precedence. Protected core names remain protected by
+/// `prepare_registry` regardless of their presentation.
+const fn essential_claims(policy: ToolsPolicy) -> Claims {
+	if matches!(policy, ToolsPolicy::DeviceOnly) {
+		builtin_device_claims()
+	} else {
+		core_claims()
+	}
+}
+
 const fn bash_presentation(_policy: ToolsPolicy) -> Presentation {
 	Presentation::Slot
 }
@@ -6203,6 +6229,7 @@ mod tests {
 		println!("| --- | --- | --- |");
 		for policy in [ToolsPolicy::Auto, ToolsPolicy::ToolOnly, ToolsPolicy::DeviceOnly] {
 			let mut registry = Registry::new();
+			prepare_registry(&mut registry).expect("protect core identities");
 			declare_remote_environment(&mut registry, &settings, &browser, &inputs, false, policy)
 				.expect("production declarations");
 			let slots = registry
@@ -6242,6 +6269,22 @@ mod tests {
 			for name in ["lsp", "browser"] {
 				assert!(registry.live_identity(name).is_some(), "enabled {name} absent");
 			}
+			assert!(
+				matches!(
+					registry.declare_remote(
+						omp_tools::write::spec(),
+						Presentation::Device,
+						Claims {
+							precedence: Precedence::ENHANCEMENT,
+							claimant:   sf!("external/extension"),
+							replaces:   None,
+						},
+						ExecutionMode::Parallel,
+					),
+					Err(omp_tool::RegistryError::CoreNameClaim { .. })
+				),
+				"core names stay protected under {policy:?}"
+			);
 			let disabled_browser = BrowserSettings { enabled: false, ..browser.clone() };
 			let mut disabled = settings.clone();
 			for name in &identities {
