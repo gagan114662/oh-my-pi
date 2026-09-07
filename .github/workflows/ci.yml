@@ -600,7 +600,7 @@ jobs:
           set -o pipefail
           mkdir -p target/exec-terminal-proof
           set +e
-          cargo nextest run --profile ci --locked -p omp-envd --lib --no-tests fail --success-output immediate -E 'test(exec::tests::terminal_event_yields_on_a_full_queue_and_preserves_order) | test(exec::tests::fast_output_is_host_bounded_and_complete_in_the_spill_artifact)' 2>&1 | tee target/exec-terminal-proof/nextest.log
+          cargo nextest run --profile ci --locked -p omp-envd --lib --no-tests fail --success-output immediate -E 'test(exec::tests::terminal_event_yields_on_a_full_queue_and_preserves_order) | test(exec::tests::fast_output_is_host_bounded_and_complete_in_the_spill_artifact) | test(exec::tests::saturated_output_queue_counts_only_delivered_bytes_and_retains_all_source)' 2>&1 | tee target/exec-terminal-proof/nextest.log
           test_status=${PIPESTATUS[0]}
           cargo test --doc --locked -p omp-envd 2>&1 | tee target/exec-terminal-proof/doctests.log
           doc_status=${PIPESTATUS[0]}
