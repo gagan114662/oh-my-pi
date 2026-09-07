@@ -1,0 +1,1 @@
+Generated fixture content deliberately excluded by the nested pattern.
