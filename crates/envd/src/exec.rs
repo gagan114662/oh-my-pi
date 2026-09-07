@@ -2267,7 +2267,8 @@ async fn session_loop(mut shell: Shell, commands: Receiver<SessionCommand>) {
 						RunTerminal::Cancelled,
 						Duration::ZERO,
 						shell.working_dir(),
-					);
+					)
+					.await;
 					cancellation_deadline = Some(Instant::now() + CANCEL_GRACE);
 					continue;
 				},
@@ -2289,7 +2290,8 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool
 				RunTerminal::Cancelled,
 				started_at.elapsed(),
 				shell.working_dir(),
-			);
+			)
+			.await;
 			return true;
 		},
 		Err(flume::TryRecvError::Empty) => {},
@@ -2311,7 +2313,8 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool
 			RunTerminal::Failed,
 			started_at.elapsed(),
 			shell.working_dir(),
-		);
+		)
+		.await;
 		return false;
 	};
 	if let Some(sandbox) = command.sandbox.as_ref()
@@ -2353,13 +2356,15 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool
 				RunTerminal::Failed,
 				started_at.elapsed(),
 				shell.working_dir(),
-			);
+			)
+			.await;
 			return false;
 		}
 	}
 	let _ = command
 		.events
-		.send(ExecEvent::Started { exec_id: command.exec.clone() });
+		.send_async(ExecEvent::Started { exec_id: command.exec.clone() })
+		.await;
 	params.process_group_policy = omp_shell::ProcessGroupPolicy::NewProcessGroup;
 	params.set_spawn_observer(command.control.spawns.clone());
 	params.set_process_scope(command.control.spawns.clone());
@@ -2453,7 +2458,7 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool
 						RunTerminal::Cancelled,
 						started_at.elapsed(),
 						shell.working_dir(),
-					);
+					).await;
 					return true;
 				},
 			};
@@ -2481,14 +2486,15 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool
 			RunTerminal::Denied { exit_code: denial.exit_code, fact: denial.fact },
 			started_at.elapsed(),
 			shell.working_dir(),
-		);
+		)
+		.await;
 		return cancelled;
 	}
-	finish_session_command(&command, result, started_at.elapsed(), shell.working_dir());
+	finish_session_command(&command, result, started_at.elapsed(), shell.working_dir()).await;
 	cancelled
 }
 
-fn finish_session_command(
+async fn finish_session_command(
 	command: &SessionCommand,
 	mut result: RunTerminal,
 	elapsed: Duration,
@@ -2545,7 +2551,9 @@ fn finish_session_command(
 		final_cwd_revision,
 		props: Default::default(),
 	});
-	let _ = command.events.send(event);
+	// Yield under terminal backpressure so the consumer can drain this
+	// same runtime. Never discard the terminal event when the queue is full.
+	let _ = command.events.send_async(event).await;
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -4450,6 +4458,76 @@ mod tests {
 				.as_ref(),
 			expected.as_slice(),
 		);
+	}
+
+	#[tokio::test]
+	async fn terminal_event_yields_on_a_full_queue_and_preserves_order() {
+		let (events, receiver) = flume::bounded(OUTPUT_EVENT_CAPACITY);
+		let receiver = Arc::new(receiver);
+		let (cancel_tx, cancel_rx) = flume::bounded(1);
+		let command = SessionCommand {
+			host: Weak::new(),
+			exec: Bytes::from_static(b"saturated-run"),
+			source: Str::from(""),
+			environment: None,
+			timeout: None,
+			pty: None,
+			control: Arc::new(RunControl {
+				cancel_tx,
+				input: Mutex::new(None),
+				spawns: Arc::new(SpawnBook {
+					groups:  Mutex::new(Vec::new()),
+					pids:    Mutex::new(Vec::new()),
+					session: None,
+				}),
+				finished: AtomicBool::new(false),
+				retained: Mutex::new(None),
+				events: Arc::downgrade(&receiver),
+			}),
+			cancel_rx,
+			events,
+			output: Arc::new(Mutex::new(
+				OutputCapture::new_with_request(None, omp_tool::OutputRequest::Bounded)
+					.expect("output capture"),
+			)),
+			github_targets: Vec::new(),
+			sandbox: None,
+			sandbox_announced: Arc::new(AtomicBool::new(false)),
+			diags: Arc::new(Mutex::new(Vec::new())),
+			sequence: Arc::new(AtomicU64::new(1)),
+			rerun: false,
+			sandbox_environment_update: false,
+		};
+		// Fill the real production queue before polling finalization. No timing
+		// or OS-dependent pipe chunk size is needed to reach backpressure.
+		for index in 0..OUTPUT_EVENT_CAPACITY {
+			command
+				.events
+				.try_send(ExecEvent::Started { exec_id: Bytes::from(index.to_string()) })
+				.expect("queue has exactly the production capacity");
+		}
+		let mut finish = std::pin::pin!(finish_session_command(
+			&command,
+			RunTerminal::Exited(0),
+			Duration::ZERO,
+			Path::new("/"),
+		));
+		assert!(futures::poll!(finish.as_mut()).is_pending(), "full queue must yield");
+		for index in 0..OUTPUT_EVENT_CAPACITY {
+			let ExecEvent::Started { exec_id } = receiver.try_recv().expect("queued event") else {
+				panic!("terminal event overtook queued output");
+			};
+			assert_eq!(exec_id, Bytes::from(index.to_string()));
+		}
+		finish.await;
+		let ExecEvent::Exit(event) = receiver.try_recv().expect("terminal event retained") else {
+			panic!("expected terminal event");
+		};
+		assert_eq!(event.exec, command.exec);
+		let status = event.status.expect("terminal status retained");
+		assert_eq!(status.exit_code, Some(0));
+		assert_eq!(status.outcome, ExecOutcome::Exited as i32);
+		assert!(receiver.try_recv().is_err(), "terminal event delivered once");
 	}
 
 	#[tokio::test]
