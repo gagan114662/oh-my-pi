@@ -11,6 +11,7 @@ use miette::{IntoDiagnostic as _, WrapErr as _, miette};
 use crate::cli::BenchCommand;
 
 const ADAPTER: &str = include_str!("../../../scripts/metaharness/adapter.ts");
+const RULER_ADAPTER: &str = include_str!("../../../scripts/metaharness/ruler.ts");
 const ENTRY_POINT: &str = "\nif (import.meta.main) await main(Bun.argv.slice(2));\n";
 
 fn invocation(command: BenchCommand) -> (PathBuf, Vec<OsString>) {
@@ -44,6 +45,9 @@ pub async fn run(command: BenchCommand) -> miette::Result<()> {
 	let directory = tempfile::Builder::new()
 		.prefix("omp-benchmark-")
 		.tempdir()
+		.into_diagnostic()?;
+	tokio::fs::write(directory.path().join("ruler.ts"), RULER_ADAPTER)
+		.await
 		.into_diagnostic()?;
 	let script = directory.path().join("adapter.ts");
 	tokio::fs::write(&script, format!("{ADAPTER}{ENTRY_POINT}"))

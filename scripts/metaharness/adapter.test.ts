@@ -1,9 +1,11 @@
+import { RULER_REVISION } from "./ruler";
 import { afterEach, expect, test } from "bun:test";
 import {
 	chmod,
 	mkdir,
 	mkdtemp,
 	readFile,
+	realpath,
 	rm,
 	writeFile,
 	utimes,
@@ -346,3 +348,98 @@ test("CLI comparison switches validate actual prepared build identities and git 
 		validateComparison({ ...manifest, candidate: other }, ["--same-commit"]),
 	).rejects.toThrow("identical");
 });
+
+test.skipIf(!process.env.OMP_RULER_SOURCE)(
+	"optional RULER verifier uses settled production-shaped answer and keeps all-attempt scores (fixture process only)",
+	async () => {
+		const root = await temp(),
+			arm = await fixtureArm(root),
+			input = join(root, "input"),
+			expected = join(root, "expected");
+		await mkdir(input);
+		await mkdir(expected);
+		await writeFile(join(expected, "answer.txt"), "done");
+		const answerTrace = [
+			{
+				...message,
+				message: {
+					...message.message,
+					stopReason: "stop",
+					content: [
+						{ type: "thinking", thinking: "Beta" },
+						{ type: "text", text: "ALPHA" },
+					],
+				},
+			},
+			{ type: "agent_end", isTerminal: true },
+		]
+			.map((e) => JSON.stringify(e))
+			.join("\n");
+		await writeFile(
+			arm.binary,
+			`#!/bin/sh\nprintf done > answer.txt\ncat <<'TRACE'\n${answerTrace}\nTRACE\n`,
+		);
+		const proof = JSON.parse(await readFile(arm.provenance, "utf8"));
+		proof.binarySha256 = digest(await readFile(arm.binary));
+		await writeFile(arm.provenance, JSON.stringify(proof));
+		const dataset = join(root, "dataset.jsonl");
+		await writeFile(
+			dataset,
+			JSON.stringify({
+				index: 7,
+				input: "contract input",
+				outputs: ["Alpha", "Beta"],
+			}) + "\n",
+		);
+		const python = await realpath(
+			process.env.OMP_RULER_PYTHON ?? "/usr/bin/python3",
+		);
+		const manifest: Manifest = {
+			version: 1,
+			model: "test/snapshot-2026-01-01",
+			baseline: arm,
+			candidate: arm,
+			tasks: [
+				{
+					id: "one",
+					name: "One",
+					datasetIndex: 7,
+					input,
+					expected,
+					prompt: "contract input",
+				},
+			],
+			repetitions: 1,
+			timeoutMs: 5000,
+			output: join(root, "results"),
+			verifier: { id: "bytes", mode: "exact" },
+			answerVerifier: {
+				kind: "ruler",
+				source: process.env.OMP_RULER_SOURCE!,
+				revision: RULER_REVISION,
+				python,
+				pythonSha256: digest(await readFile(python)),
+				family: "niah",
+				dataset: {
+					path: dataset,
+					sha256: digest(await readFile(dataset)),
+					origin: "LOCAL CONTRACT TEST ONLY",
+					generationCommand: [],
+				},
+			},
+		};
+		const report = await runExperiment(manifest);
+		expect(report.answerEvaluation!.arms.map((arm) => arm.score)).toEqual([
+			50, 50, 50, 50,
+		]);
+		expect(report.summaries.baseline!.allRuns.successes).toBe(0);
+		expect(report.answerEvaluation!.selectedIndices).toEqual([7]);
+		await expect(
+			runExperiment({
+				...manifest,
+				output: join(root, "invalid"),
+				tasks: [{ ...manifest.tasks[0]!, prompt: "changed input" }],
+			}),
+		).rejects.toThrow("exactly match");
+	},
+);

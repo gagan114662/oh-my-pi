@@ -1,3 +1,10 @@
+import {
+	finalAnswer,
+	rulerDataset,
+	rulerProvenance,
+	scoreRuler,
+	type RulerSpec,
+} from "./ruler";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -24,6 +31,7 @@ export interface Arm {
 	args: string[];
 }
 export interface Task {
+	datasetIndex?: number;
 	id: string;
 	name: string;
 	input: string;
@@ -31,6 +39,7 @@ export interface Task {
 	prompt: string;
 }
 export interface Manifest {
+	answerVerifier?: RulerSpec;
 	version: 1;
 	model: string;
 	tasks: Task[];
@@ -63,6 +72,8 @@ export interface Telemetry {
 	errors: string[];
 }
 export interface Run extends Telemetry {
+	answer?: string;
+	answerScore?: number;
 	taskId: string;
 	name: string;
 	runIndex: number;
@@ -643,6 +654,8 @@ export async function runExperiment(manifest: Manifest) {
 		throw new Error("Unknown verifier mode");
 	const evaluatorPath = new URL(import.meta.url),
 		evaluatorSha256 = digest(await readFile(evaluatorPath));
+	const rulerEvaluatorPath = new URL("./ruler.ts", import.meta.url),
+		rulerEvaluatorSha256 = digest(await readFile(rulerEvaluatorPath));
 	const output = resolve(manifest.output);
 	for (const arm of [manifest.baseline, manifest.candidate])
 		if (!outside(output, resolve(arm.source)))
@@ -665,6 +678,25 @@ export async function runExperiment(manifest: Manifest) {
 			expected: await treeHash(t.expected),
 		})),
 	);
+	const answerRecords = manifest.answerVerifier
+		? await rulerDataset(manifest.answerVerifier)
+		: [];
+	const answerProvenance = manifest.answerVerifier
+		? await rulerProvenance(manifest.answerVerifier)
+		: undefined;
+	if (manifest.answerVerifier) {
+		const selected = new Set<number>();
+		for (const task of manifest.tasks) {
+			const record = answerRecords.find((r) => r.index === task.datasetIndex);
+			if (!record || record.input !== task.prompt)
+				throw new Error(
+					"Task prompt must exactly match its pinned RULER dataset input",
+				);
+			if (selected.has(record.index))
+				throw new Error("Repeated RULER dataset index");
+			selected.add(record.index);
+		}
+	}
 	const runs: Run[] = [];
 	for (const [ordinal, item] of schedule(
 		manifest.tasks,
@@ -713,6 +745,7 @@ export async function runExperiment(manifest: Manifest) {
 		}
 		if (observed.models.some((m) => m !== manifest.model))
 			error = `Observed model mismatch: ${observed.models.join(", ")}`;
+		let answer: string | undefined, answerScore: number | undefined;
 		let verification: string[] = [];
 		try {
 			verification = await verifyFiles(
@@ -723,12 +756,32 @@ export async function runExperiment(manifest: Manifest) {
 		} catch (e) {
 			verification = [String(e)];
 		}
+		if (manifest.answerVerifier) {
+			try {
+				answer = finalAnswer(stdout);
+				const record = answerRecords.find(
+					(r) => r.index === item.task.datasetIndex,
+				)!;
+				answerScore = await scoreRuler(
+					manifest.answerVerifier,
+					[answer],
+					[record.outputs],
+					execute,
+				);
+				if (answerScore !== 100)
+					verification.push(`Official RULER score ${answerScore}/100`);
+			} catch (e) {
+				verification.push(String(e));
+			}
+		}
 		if (!observed.terminal) error ??= "Missing terminal agent_end";
 		if (timedOut) error = "Timeout";
 		else if (exitCode !== 0) error ??= `Process exit ${exitCode}`;
 		if (observed.errors.length) error ??= observed.errors.join("; ");
 		const row: Run = {
 			...observed,
+			answer,
+			answerScore,
 			taskId: item.task.id,
 			name: item.task.name,
 			runIndex: item.runIndex,
@@ -767,7 +820,10 @@ export async function runExperiment(manifest: Manifest) {
 			)
 				throw new Error("Fixture integrity changed; experiment invalid");
 		await verifyArm(item.arm);
-		if (digest(await readFile(evaluatorPath)) !== evaluatorSha256)
+		if (
+			digest(await readFile(evaluatorPath)) !== evaluatorSha256 ||
+			digest(await readFile(rulerEvaluatorPath)) !== rulerEvaluatorSha256
+		)
 			throw new Error("Adapter evaluator changed during experiment");
 	}
 	const ids = manifest.tasks.map((t) => t.id),
@@ -787,9 +843,44 @@ export async function runExperiment(manifest: Manifest) {
 		summaries.candidate!,
 		ids.length,
 	);
+	const answerEvaluation = manifest.answerVerifier
+		? {
+				provenance: answerProvenance,
+				selectedIndices: manifest.tasks.map((t) => t.datasetIndex),
+				protocol:
+					"OMP agent harness on pinned RULER records; not the unmodified upstream inference harness or full-suite claim",
+				arms: await Promise.all(
+					["aa-a", "aa-b", "baseline", "candidate"].map(async (arm) => {
+						const rows = runs.filter((r) => r.arm === arm);
+						const references = rows.map(
+							(r) =>
+								answerRecords.find(
+									(record) =>
+										record.index ===
+										manifest.tasks.find((t) => t.id === r.taskId)!.datasetIndex,
+								)!.outputs,
+						);
+						return {
+							arm,
+							attempts: rows.length,
+							score: await scoreRuler(
+								manifest.answerVerifier!,
+								rows.map((r) =>
+									r.error || r.telemetryError ? "" : (r.answer ?? ""),
+								),
+								references,
+								execute,
+							),
+						};
+					}),
+				),
+			}
+		: undefined;
 	const report = {
 		version: VERSION,
+		answerEvaluation,
 		evaluatorSha256,
+		rulerEvaluatorSha256,
 		manifest,
 		identities,
 		fixtureHashes,
@@ -843,6 +934,23 @@ export async function runExperiment(manifest: Manifest) {
 		"",
 		"No automatic promotion. See report.json for all-run outcomes, verifier identity, provenance and limitations.",
 	);
+	if (answerEvaluation) {
+		table.push(
+			"",
+			"## Official RULER answer scores",
+			"",
+			answerEvaluation.protocol,
+			"",
+			"| Arm | All attempts | Official score / 100 |",
+			"| --- | ---: | ---: |",
+		);
+		for (const arm of answerEvaluation.arms)
+			table.push(`| ${arm.arm} | ${arm.attempts} | ${arm.score} |`);
+		table.push(
+			"",
+			"Dataset and scorer digests, selected indices, and declared generation provenance are in report.json. These scores do not establish an improvement or a full-suite result.",
+		);
+	}
 	await writeFile(join(output, "summary.md"), table.join("\n") + "\n");
 	return report;
 }

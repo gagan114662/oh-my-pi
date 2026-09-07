@@ -89,3 +89,43 @@ Compatibility reference: `origin/main` was inspected at commit `72b2d32e5f83f65d
 Production qualification must include deliberate stale-build, corrupted-oracle, wrong-model and failed-task runs, actual OMP traces, and uploaded CI artifacts. Fixture-command unit tests alone do not satisfy those requirements.
 
 Malformed telemetry preserves already observed usage, marks the row incomplete, and forces every comparison unresolved. Usage totals are lower bounds when any row is incomplete; unknown usage is never reported as proven zero cost.
+
+## Optional official RULER answer scoring
+
+`answerVerifier` adds answer scoring to the same process runner. Filesystem verification remains active: for read-only answer tasks, use matching empty input/expected fixture directories. This integration supports the official RULER synthetic metric families; it is **not a claim of completing RULER, reproducing its inference protocol, or supporting OOLONG**.
+
+Obtain the two official source files `scripts/eval/evaluate.py` and `scripts/eval/synthetic/constants.py` from NVIDIA/RULER revision `c3f5e3b4f87f97e048793bb510a3a6b19a46bf3a`, retaining their paths under `source`. The adapter checks their hardcoded SHA-256 digests and executes the upstream metric function and preprocessing function unchanged. It extracts the preprocessing function from the upstream AST to avoid importing the heavyweight upstream CLI, which imports NeMo/pandas and may download NLTK data. Only the Python standard library is needed; nothing is downloaded by this adapter. Python executable bytes are pinned, but its standard-library installation is not independently attested.
+
+Add this optional object to the manifest:
+
+```json
+{
+  "answerVerifier": {
+    "kind": "ruler",
+    "source": "/benchmarks/RULER",
+    "revision": "c3f5e3b4f87f97e048793bb510a3a6b19a46bf3a",
+    "python": "/absolute/path/to/python3",
+    "pythonSha256": "SHA256_OF_PYTHON_EXECUTABLE",
+    "family": "niah",
+    "dataset": {
+      "path": "/benchmarks/generated/niah_single_1/validation.jsonl",
+      "sha256": "SHA256_OF_DATASET_BYTES",
+      "origin": "IMMUTABLE_DATASET_OR_GENERATOR_SOURCE_URL",
+      "generationCommand": ["EXACT", "GENERATION", "COMMAND"]
+    }
+  }
+}
+```
+
+Each task additionally specifies `datasetIndex`, matching an integer `index` in the pinned JSONL dataset. Its `prompt` must exactly equal that record's `input`. Records require nonempty string `outputs` references. References are never appended to the prompt or copied into the task workspace. Dataset source and generation command are recorded operator declarations; hashes prove which bytes were scored, not that those declarations are authentic. Preserve official generation parameters (including tokenizer, length, seed and task configuration) in the command/provenance, and identify any task subset in published results.
+
+Scoring extracts only text blocks from the last settled assistant `message_end` before terminal `agent_end`; thinking, tool output, earlier replies and duplicated terminal messages are excluded. Truncated, aborted, erroneous and unfinished tool-call replies are rejected. Each run retains `answer` and `answerScore`; 100 is required for binary complete-success. `report.json.answerEvaluation` separately reports the **official batch score across all attempts**, including empty predictions for failed runs, rather than selecting each task's best retry. A score of 50 remains 50; it is not rounded into a pass. These scores describe an OMP agent-harness protocol using RULER records, not automatically a leaderboard-comparable RULER run.
+
+The deterministic tests use clearly labeled local contract records, not standardized evaluation data:
+
+```sh
+OMP_RULER_SOURCE=/benchmarks/RULER OMP_RULER_PYTHON=/absolute/path/to/python3 \
+  bun test scripts/metaharness/adapter.test.ts scripts/metaharness/ruler.test.ts
+```
+
+Without `OMP_RULER_SOURCE`, the two official-source execution tests are explicitly skipped; final-answer extraction and the existing adapter tests still run. A real standardized result requires the immutable official/generated dataset, reviewed generation provenance, actual production OMP binaries, provider access, and published run artifacts. Evaluator isolation and descendant cost accounting remain separate limitations.
