@@ -68,6 +68,7 @@ pub mod say_cmd {
 		Err(miette::miette!("local speech synthesis is not built; rerun with `--features local-tts`"))
 	}
 }
+pub mod session_cmd;
 pub mod session_import;
 pub mod setup_cmd;
 pub mod shell_cmd;

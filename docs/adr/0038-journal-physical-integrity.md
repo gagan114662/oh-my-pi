@@ -87,10 +87,16 @@ entrypoints were skipped by the outer runner and exercised by passing parent
 tests. Both crate doctest commands succeeded with zero doctests. These local
 results do not substitute for browser-visible production evidence.
 
-Gap: Hosted proof remains pending. The user-facing
-`omp session verify` operation, explicit legacy migration, browser-readable
-production session corruption demo, and operation-specific compaction/lift/
-import proofs are not delivered by this slice. No complete #49 acceptance
+The application now exposes read-only `omp session verify PATH [--json]
+[--expected-tip HEX]`. Its text and JSON reports include status and the first
+divergent frame id/offset when available. Invalid, legacy, torn and empty files
+return failure. The new actual-executable regression covers verification while
+a writer is held, byte corruption, legacy/empty/torn status and expected-tip
+mismatch; its runtime validation is pending separately from the core run above.
+
+Gap: CLI runtime validation and hosted proof remain pending. Explicit legacy
+migration, browser-readable production session corruption evidence, and
+operation-specific compaction/lift/import proofs are not delivered by this slice. No complete #49 acceptance
 claim follows from the implementation or from unit test existence.
 
 ## References

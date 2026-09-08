@@ -19,7 +19,7 @@ use clap_complete::Shell;
 use futures::StreamExt as _;
 use miette::{IntoDiagnostic as _, miette};
 use omp_catalog::settings::TierSetting;
-use omp_core::{SecretString, Str, encoding::hex};
+use omp_core::{Hash32, SecretString, Str, encoding::hex};
 use omp_driver::{cleanse::CleanseArgs, compress::CompressArgs};
 use omp_envd::{site::TrustedModule, worker::ExtHostSpec};
 use omp_ext::config::ContributedCliValue;
@@ -426,6 +426,34 @@ fn omp_command(hide_launch_controls: bool) -> clap::Command {
 		.mut_arg("trusted_extension", |arg| arg.hide(true))
 		.mut_arg("no_ext", |arg| arg.hide(true))
 		.mut_arg("no_workspace_ext", |arg| arg.hide(true))
+}
+
+/// Read-only operations on explicitly selected session journals.
+#[derive(Clone, Debug, Args)]
+pub struct SessionArgs {
+	/// Session operation.
+	#[command(subcommand)]
+	pub command: SessionCommand,
+}
+
+/// Session journal inspection commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum SessionCommand {
+	/// Verify physical frame seals without opening a writer or repairing bytes.
+	Verify(SessionVerifyArgs),
+}
+
+/// Inputs to read-only journal verification.
+#[derive(Clone, Debug, Args)]
+pub struct SessionVerifyArgs {
+	/// Explicit path to the .oms journal to inspect.
+	pub path:         PathBuf,
+	/// Independently retained SHA-256 tip (64 hexadecimal characters).
+	#[arg(long)]
+	pub expected_tip: Option<Hash32>,
+	/// Emit a structured result, including non-success statuses, as JSON.
+	#[arg(long)]
+	pub json:         bool,
 }
 
 /// Production application commands.
@@ -998,6 +1026,8 @@ pub enum Command {
 	Worktree(WorktreeArgs),
 	/// Inspect or apply lock-safe session and blob maintenance.
 	Gc(GcArgs),
+	/// Inspect integrity of an explicit session journal.
+	Session(SessionArgs),
 	/// Render native tool lifecycle cards to text or PNG fixtures.
 	Gallery(GalleryArgs),
 	/// Open the fullscreen Git workbench.
@@ -1380,6 +1410,7 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
 	CommandSpec { name: "worktree", aliases: &["wt"] },
 	CommandSpec { name: "stats", aliases: &[] },
 	CommandSpec { name: "gc", aliases: &[] },
+	CommandSpec { name: "session", aliases: &[] },
 	CommandSpec { name: "gallery", aliases: &[] },
 	CommandSpec { name: "git", aliases: &[] },
 	CommandSpec { name: "usage", aliases: &[] },
@@ -2422,6 +2453,7 @@ enum DispatchTarget {
 	AuthGateway,
 	Worktree,
 	Gc,
+	Session,
 	Gallery,
 	Git,
 	Usage,
@@ -2473,6 +2505,7 @@ const fn dispatch_target(command: Option<&Command>) -> DispatchTarget {
 		Some(Command::Models(_)) => DispatchTarget::Models,
 		Some(Command::Worktree(_)) => DispatchTarget::Worktree,
 		Some(Command::Gc(_)) => DispatchTarget::Gc,
+		Some(Command::Session(_)) => DispatchTarget::Session,
 		Some(Command::Gallery(_)) => DispatchTarget::Gallery,
 		Some(Command::Git(_)) => DispatchTarget::Git,
 		Some(Command::Usage(_)) => DispatchTarget::Usage,
@@ -3002,6 +3035,7 @@ async fn dispatch_with_input(cli: OmpCli, piped_input: Option<Str>) -> miette::R
 			worktree_cmd::run(&omp_core::dirs::data_dir(None).into_diagnostic()?, &args)
 		},
 		Command::Gc(args) => gc_cmd::run(args).await,
+		Command::Session(args) => crate::session_cmd::run(args),
 		Command::Gallery(args) => gallery_cmd::run(args),
 		Command::Git(args) => git_cmd::run(args).await,
 		Command::Usage(args) => usage_cmd::run(args).await,
