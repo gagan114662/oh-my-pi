@@ -11,7 +11,7 @@ on:
       - Cargo.lock
       - crates/**/Cargo.toml
       - scripts/check-feature-isolation.py
-      - scripts/build-doctor.py
+      - scripts/build-doctor*
       - scripts/pristine-host/**
       - rust-toolchain.toml
       - justfile
@@ -70,7 +70,7 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          cargo check --locked --workspace --lib --bins --tests 2>&1 | tee target/feature-isolation/workspace-check.log
+          just --command cargo check --locked --workspace --lib --bins --tests 2>&1 | tee target/feature-isolation/workspace-check.log
           codes=("${PIPESTATUS[@]}")
           printf 'workspace-check=%s log_write=%s\n' "${codes[0]}" "${codes[1]}" > target/feature-isolation/workspace-exit.txt || exit 1
           [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
@@ -83,11 +83,11 @@ jobs:
           set -uo pipefail
           suite_status=0
           for package in omp-core omp-dom omp-journal omp-session omp-con omp-secrets omp-catalog; do
-            cargo check --locked -p "$package" --lib 2>&1 | tee "target/feature-isolation/$package-check.log"
+            just --command cargo check --locked -p "$package" --lib 2>&1 | tee "target/feature-isolation/$package-check.log"
             check_status=("${PIPESTATUS[@]}")
-            cargo nextest run --locked --profile ci --no-fail-fast -p "$package" 2>&1 | tee "target/feature-isolation/$package-tests.log"
+            just --command cargo nextest run --all-targets --locked --profile ci --no-fail-fast -p "$package" 2>&1 | tee "target/feature-isolation/$package-tests.log"
             test_status=("${PIPESTATUS[@]}")
-            cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/feature-isolation/$package-doctests.log"
+            just --command cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/feature-isolation/$package-doctests.log"
             doc_status=("${PIPESTATUS[@]}")
             printf '%s check=%s tests=%s doctests=%s log_writes=%s,%s,%s\n' "$package" "${check_status[0]}" "${test_status[0]}" "${doc_status[0]}" "${check_status[1]}" "${test_status[1]}" "${doc_status[1]}" >> target/feature-isolation/exits.txt || suite_status=1
             for code in "${check_status[@]}" "${test_status[@]}" "${doc_status[@]}"; do
@@ -202,6 +202,13 @@ jobs:
               assert f'missing actionable real {tool} diagnostic' in result['violations']
           Path('pristine-evidence/negative/control-result.json').write_text(json.dumps({'status': 'passed', 'meaning': 'Unchanged checker rejected a successfully executed disabled doctor; raw checker failure retained.'}) + '\n')
           PY
+      - name: Observe bootstrap with only Rust installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum proof-tools/scripts/pristine-host/Dockerfile.rust-only proof-tools/scripts/pristine-host/check-rust-only.py >> pristine-evidence/checker-files.sha256
+          docker build --no-cache --progress plain --file proof-tools/scripts/pristine-host/Dockerfile.rust-only --build-arg RUST_SOURCE_IMAGE=omp-pristine-doctor -t omp-rust-only pristine-image 2>&1 | tee pristine-evidence/rust-only-image-build.log
+          python3 proof-tools/scripts/pristine-host/check-rust-only.py --image omp-rust-only --source pristine-source --out pristine-evidence/rust-only
       - name: Publish minimal-container evidence and scope
         if: always()
         shell: bash

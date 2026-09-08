@@ -1,9 +1,10 @@
 # Build prerequisites
 
-Run `just doctor` before a build. It checks prerequisites offline without
+Run `sh scripts/build-doctor.sh` before a build (`just doctor` also works). It checks prerequisites offline without
 installing anything or compiling Rust. It exits nonzero and lists repairs for
-missing tools. With only Rust installed, bootstrap `just` and Python 3.11+ first;
-`python3 scripts/build-doctor.py` also works without just. The version probes
+missing tools. With only Rust installed, the shell entrypoint reports missing Python 3.11+
+and build tools without first requiring Python or just. Once Python is present,
+it delegates to the full doctor; `python3 scripts/build-doctor.py` also works. The version probes
 share a two-second deadline. A successful doctor means prerequisites were
 detected, not that a clean workspace build or test sweep passed.
 
@@ -78,3 +79,13 @@ installation (the diagnostic launcher needs just/Python), and not a full
 workspace test sweep. The Apple Silicon lld prerequisite still needs separate
 macOS evidence; configured macOS builds and simulated missing-linker unit
 tests must retain their separate labels.
+
+The additional Rust-only bootstrap observation starts from a separate fresh
+Debian base and copies only the pinned Rust installation. Its inventory rejects
+Python, just, C/C++ compilers, CMake, Ninja, uv, and nextest. The real shell
+entrypoint runs without network access and must provide actionable diagnostics
+in less than three seconds, including container startup. Python measures it
+from the CI host, outside the container. A second archived source copy disables
+only the shell doctor; the unchanged observer must reject that actual successful
+exit. Raw outputs and both observations remain in the artifact. This workflow
+is a proof specification; acceptance requires its recorded successful run.
