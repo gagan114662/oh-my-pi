@@ -253,7 +253,7 @@ impl Session {
 		path: impl AsRef<Path>,
 		components: ComponentRegistry,
 	) -> Result<Self, SessionError> {
-		let (journal, entries) = Journal::open(path)?;
+		let (journal, entries) = Journal::open_verified(path, None)?;
 		let blobs = Self::default_blob_store(journal.path())?;
 		Self::restore(journal, entries, components, blobs)
 	}
@@ -267,7 +267,7 @@ impl Session {
 		components: ComponentRegistry,
 		blobs: BlobStore,
 	) -> Result<Self, SessionError> {
-		let (journal, entries) = Journal::open(path)?;
+		let (journal, entries) = Journal::open_verified(path, None)?;
 		Self::restore(journal, entries, components, blobs)
 	}
 

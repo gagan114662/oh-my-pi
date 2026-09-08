@@ -225,10 +225,10 @@ async fn p10_edit_lift_is_idempotent_and_dispatches_at_the_live_revision() -> Re
 	);
 	let report = dispatcher
 		.dispatch(&mut dispatch_session, DispatchRequest {
-			identity:     live_identity,
+			identity:     live_identity.clone(),
 			call_id:      Str::new_static("p10-live"),
 			call:         dispatch_call,
-			args:         live_args,
+			args:         live_args.clone(),
 			options:      DispatchOptions { notrunc: false },
 			cancellation: ToolCancellation::Foreground(
 				CancelTree::new().begin_turn().foreground_mutation(),
@@ -236,6 +236,31 @@ async fn p10_edit_lift_is_idempotent_and_dispatches_at_the_live_revision() -> Re
 		})
 		.await?;
 	assert!(report.is_error, "empty lifted edit is rejected by the real tool, not the dispatcher");
+	// This verifies the actual dispatch of lifted arguments. The historical
+	// input above is a proto fixture, not a journal-backed revision migration.
+	let sealed = omp_journal::Journal::verify_path(&dispatch_path, None)?;
+	let entries = omp_journal::Journal::scan(&dispatch_path)?;
+	assert_eq!(sealed.sealed_entries, entries.len());
+	assert_eq!((sealed.legacy_entries, sealed.legacy_bytes, sealed.torn_tail_bytes), (0, 0, 0));
+	assert!(sealed.tip.is_some());
+	let call = entries
+		.iter()
+		.find(|entry| entry.id == dispatch_call)
+		.expect("durable call");
+	let recorded: omp_journal::data::ToolCall = serde_json::from_str(&call.data)?;
+	assert_eq!(recorded.rev, u32::from(live_identity.rev.n));
+	assert_eq!(recorded.args.as_ref().expect("lifted arguments").get(), live_args.get());
+	assert!(
+		entries
+			.iter()
+			.any(|entry| entry.kind.to_string() == "tool.result@1" && entry.by == Some(dispatch_call))
+	);
+	let snapshot = dispatch_session.dom().snapshot();
+	drop(dispatch_session);
+	let reopened =
+		omp_session::Session::open(&dispatch_path, omp_session::ComponentRegistry::standard())?;
+	assert_eq!(reopened.dom().snapshot(), snapshot);
+	assert_eq!(omp_journal::Journal::verify_path(&dispatch_path, sealed.tip)?, sealed);
 	let journal = std::fs::read_to_string(dispatch_path)?;
 	assert!(journal.contains("event: tool.result@1"));
 	assert!(journal.contains("by: "));
