@@ -15,6 +15,8 @@ on:
       - scripts/settings-roster/**
       - scripts/qa/cases/settings_roster_pty.py
       - scripts/qa/harness.py
+      - scripts/qa/pty_debug.py
+      - scripts/qa/test_pty_debug.py
       - .github/workflows/settings-roster.yml
   workflow_dispatch:
 
@@ -27,6 +29,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+      - name: Verify PTY pump and cleanup mechanics
+        run: python3 scripts/qa/test_pty_debug.py
       - name: Record source and install documented prerequisites
         shell: bash
         run: |
@@ -34,6 +38,7 @@ jobs:
           mkdir -p target/settings-roster
           git rev-parse HEAD > target/settings-roster/source-revision.txt
           git status --porcelain=v1 > target/settings-roster/source-status.txt
+          shasum -a 256 scripts/qa/pty_debug.py scripts/qa/test_pty_debug.py scripts/qa/cases/settings_roster_pty.py scripts/qa/harness.py > target/settings-roster/pty-checker.sha256
           brew install just cmake ninja lld@22 uv 2>&1 | tee target/settings-roster/install.log
           rustup show active-toolchain 2>&1 | tee target/settings-roster/toolchain.log
       - uses: taiki-e/install-action@nextest
