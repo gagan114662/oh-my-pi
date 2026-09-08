@@ -1353,9 +1353,10 @@ async fn stream_idle_watchdog_is_re_armed_by_every_frame() {
 		.expect("ordinary event stream")
 		.collect()
 		.await;
-	assert!(
-		events.iter().all(Result::is_ok),
-		"six frames 40 ms apart under a 150 ms idle interval must not time out: {events:?}"
+	let failures = events.iter().filter(|event| event.is_err()).count();
+	assert_eq!(
+		failures, 0,
+		"six frames 40 ms apart under a 150 ms idle interval must not time out ({failures} error events)"
 	);
 	assert_eq!(events.len(), 6);
 	server.abort();
