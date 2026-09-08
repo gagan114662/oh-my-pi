@@ -36,3 +36,27 @@ The environment daemon owns a separate process group, so killing the CLI group
 alone cannot prove daemon cleanup. The unchanged P6 run remains necessary to
 establish successful lifecycle behavior after fixing durability; the timer fix
 alone does not claim that every panic cleanup path is repaired.
+
+Run `34258775970` at source `2359f7ac023ed163eaaa10962cd05b36ebfb4ecc`
+passed both normal P6 tests and all affected package tests/doctests. Normal
+journal visibility took 385.870ms (7.77x margin); frame resume took 727.660ms
+(41.23x margin). Under disk pressure, replay and resumed-frame assertions also
+passed, but the resumed process did not exit within the original 30 seconds
+after `ctrl+c ctrl+c`. The test failed and reported leaked handles. The load
+completed 18,436 syncs without a reported load error. No contended timing file
+survived, so this run establishes neither contended timing margins nor clean
+shutdown. The historical artifact contains no resumed process stack or terminal
+tail; the cause of that exit timeout remains unknown.
+
+P6 now publishes each timing phase before teardown, retaining `completed: false`
+until the entire proof succeeds. Quit duration is a separate diagnostic field;
+the existing timing checker and its acceptance limits are unchanged. After a
+failed quit wait, the fixture captures the owned resumed PID's `ps` state
+(without command-line arguments), a debug-frame response, the last 64KiB of PTY
+output, and the synthetic journal in `normal.shutdown.json` or
+`contended.shutdown.json` beside the timing file. Process inspection has a
+separate two-second diagnostic timeout, and the debug socket retains its existing
+I/O limits. These observations happen after failure and cannot make the failed
+30-second wait pass. The original key sequence and clean-exit assertion remain.
+The extra diagnostics have been statically checked; a fresh production P6 run
+is still required to identify or verify a shutdown fix.

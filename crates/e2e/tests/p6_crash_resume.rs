@@ -11,7 +11,7 @@ use std::{
 	path::Path,
 	pin::Pin,
 	sync::{
-		Arc,
+		Arc, Mutex,
 		atomic::{AtomicBool, Ordering},
 	},
 	task::{Context, Poll},
@@ -78,23 +78,17 @@ impl P6Timings {
 		assert!(self.active.is_none(), "timing phases cannot overlap");
 		self.data[phase] = json!({"bound_ms": bound.as_secs_f64() * 1000.0, "completed": false});
 		self.active = Some((phase, Instant::now()));
+		self.publish();
 	}
 
 	fn end(&mut self, completed: bool) {
 		let (phase, started) = self.active.take().expect("active timing phase");
 		self.data[phase]["elapsed_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
 		self.data[phase]["completed"] = json!(completed);
+		self.publish();
 	}
-}
 
-impl Drop for P6Timings {
-	fn drop(&mut self) {
-		if thread::panicking() {
-			self.data["completed"] = json!(false);
-		}
-		if self.active.is_some() {
-			self.end(false);
-		}
+	fn publish(&self) {
 		println!("P6 timings: {}", self.data);
 		if let Some(path) = std::env::var_os("OMP_P6_LATENCY_PATH") {
 			let result = fs::write(path, serde_json::to_vec_pretty(&self.data).expect("timing JSON"));
@@ -106,6 +100,18 @@ impl Drop for P6Timings {
 				result.expect("publish P6 timings");
 			}
 		}
+	}
+}
+
+impl Drop for P6Timings {
+	fn drop(&mut self) {
+		if thread::panicking() {
+			self.data["completed"] = json!(false);
+		}
+		if self.active.is_some() {
+			self.end(false);
+		}
+		self.publish();
 	}
 }
 
@@ -243,7 +249,10 @@ impl CrashGateway {
 	}
 }
 
+const PTY_TAIL_LIMIT: usize = 64 * 1024;
+
 struct PtyDrain {
+	tail:   Arc<Mutex<Vec<u8>>>,
 	stop:   Arc<AtomicBool>,
 	reader: Option<thread::JoinHandle<Result<usize, Errno>>>,
 }
@@ -253,13 +262,21 @@ impl PtyDrain {
 		fcntl(&master, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).expect("nonblocking crash PTY");
 		let stop = Arc::new(AtomicBool::new(false));
 		let reader_stop = Arc::clone(&stop);
+		let tail = Arc::new(Mutex::new(Vec::new()));
+		let reader_tail = Arc::clone(&tail);
 		let reader = thread::spawn(move || {
 			let mut buffer = [0_u8; 16 * 1024];
 			let mut bytes = 0;
 			while !reader_stop.load(Ordering::Acquire) {
 				match nix::unistd::read(&master, &mut buffer) {
 					Ok(0) | Err(Errno::EAGAIN) => thread::sleep(Duration::from_millis(5)),
-					Ok(count) => bytes += count,
+					Ok(count) => {
+						bytes += count;
+						let mut tail = reader_tail.lock().expect("PTY tail lock");
+						tail.extend_from_slice(&buffer[..count]);
+						let overflow = tail.len().saturating_sub(PTY_TAIL_LIMIT);
+						tail.drain(..overflow);
+					},
 					Err(Errno::EINTR) => {},
 					Err(Errno::EIO) => break,
 					Err(error) => return Err(error),
@@ -267,7 +284,7 @@ impl PtyDrain {
 			}
 			Ok(bytes)
 		});
-		Self { stop, reader: Some(reader) }
+		Self { stop, tail, reader: Some(reader) }
 	}
 
 	fn finish(&mut self) -> usize {
@@ -434,6 +451,48 @@ fn wait_for_resumed_frame(path: &Path, process: &mut OwnedProcess) -> String {
 	}
 }
 
+// Capture before process teardown destroys the useful state. This is performed
+// only after the original wait failed; it does not extend or retry acceptance.
+async fn retain_shutdown_failure(resumed: &ChatProcess, debug: &Path, journal: &Path) {
+	let pid = resumed.process.id();
+	let mut observation = json!({"pid": pid, "process_group": resumed.process.process_group()});
+	if let Some(pid) = pid {
+		let mut command = Command::new("ps");
+		command.args(["-p", &pid.to_string(), "-o", "pid=,ppid=,pgid=,state=,wchan=,comm="]);
+		command.kill_on_drop(true);
+		observation["process_state"] = match time::timeout(IO_TIMEOUT, command.output()).await {
+			Ok(Ok(output)) => json!({
+				 "status": output.status.code(),
+				 "stdout": String::from_utf8_lossy(&output.stdout),
+				 "stderr": String::from_utf8_lossy(&output.stderr),
+			}),
+			Ok(Err(error)) => json!({"error": error.to_string()}),
+			Err(error) => json!({"error": error.to_string()}),
+		};
+	}
+	observation["frame_after_timeout"] = match debug_request(debug, &json!({"op": "frame"})) {
+		Ok(frame) => frame,
+		Err(error) => json!({"error": error.to_string()}),
+	};
+	let tail = resumed.drain.tail.lock().expect("PTY tail lock").clone();
+	observation["pty_tail"] = json!(String::from_utf8_lossy(&tail));
+	observation["pty_tail_limit"] = json!(PTY_TAIL_LIMIT);
+	// This fixture contains only synthetic input and provider output.
+	observation["journal"] = match fs::read_to_string(journal) {
+		Ok(journal) => json!(journal),
+		Err(error) => json!({"error": error.to_string()}),
+	};
+	eprintln!("P6 shutdown failure: {observation}");
+	if let Some(path) = std::env::var_os("OMP_P6_LATENCY_PATH") {
+		let path = std::path::PathBuf::from(path).with_extension("shutdown.json");
+		if let Err(error) =
+			fs::write(path, serde_json::to_vec_pretty(&observation).expect("diagnostic JSON"))
+		{
+			eprintln!("could not retain P6 shutdown failure: {error}");
+		}
+	}
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 	let mut timings = P6Timings::new();
@@ -520,11 +579,18 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 	assert!(!frame.contains(LOST_SUFFIX), "resumed host displayed an uncommitted suffix\n{frame}");
 	debug_request(&resume_debug, &json!({ "op": "keys", "keys": "ctrl+c ctrl+c" }))
 		.expect("quit resumed chat through its real input path");
-	let status = resumed
-		.process
-		.wait(READY_TIMEOUT)
-		.await
-		.expect("resumed OMP exits");
+	let quit_started = Instant::now();
+	let quit_result = resumed.process.wait(READY_TIMEOUT).await;
+	timings.data["quit"] = json!({
+		 "bound_ms": READY_TIMEOUT.as_secs_f64() * 1000.0,
+		 "elapsed_ms": quit_started.elapsed().as_secs_f64() * 1000.0,
+		 "completed": quit_result.as_ref().is_ok_and(|status| status.success()),
+	});
+	timings.publish();
+	if !quit_result.as_ref().is_ok_and(|status| status.success()) {
+		retain_shutdown_failure(&resumed, &resume_debug, &session).await;
+	}
+	let status = quit_result.expect("resumed OMP exits");
 	assert!(status.success(), "resumed OMP did not exit cleanly: {status}");
 	println!("resumed terminal drained {} bytes", resumed.drain.finish());
 	timings.data["completed"] = json!(true);
