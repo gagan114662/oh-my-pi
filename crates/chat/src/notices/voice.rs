@@ -282,6 +282,8 @@ enum InputPipeline {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(strum::FromRepr, strum::Display))]
+#[cfg_attr(test, strum(serialize_all = "kebab-case"))]
 #[repr(u32)]
 enum WorkerPhase {
 	Starting,
@@ -1203,20 +1205,9 @@ mod tests {
 
 	fn voice_snapshot(vocalizer: &Vocalizer) -> String {
 		let shared = &vocalizer.shared;
-		let phase = [
-			"starting",
-			"waiting-for-job",
-			"synthesizing",
-			"opening-device",
-			"writing-samples",
-			"draining",
-			"stopping-device",
-			"finishing-rewrite",
-			"closed",
-		]
-		.get(shared.phase.load(Ordering::Acquire) as usize)
-		.copied()
-		.unwrap_or("unknown");
+		let phase = WorkerPhase::from_repr(shared.phase.load(Ordering::Acquire))
+			.map(|phase| phase.to_string())
+			.unwrap_or_else(|| "unknown".to_owned());
 		// Never block diagnostics on a lock held by device startup/teardown.
 		let playback = match shared.playback.try_lock() {
 			None => "lock-busy".to_owned(),
@@ -1254,10 +1245,14 @@ mod tests {
 	#[tokio::test]
 	async fn diagnostic_snapshot_does_not_wait_for_playback_or_failure_locks() {
 		let vocalizer = Vocalizer::new(FakeSynth::new(), test_ctx());
-		let _playback = vocalizer.shared.playback.lock();
-		let _failure = vocalizer.shared.failure.lock();
-		let _rewrites = vocalizer.shared.rewrites.lock();
-		let snapshot = voice_snapshot(&vocalizer);
+		let snapshot = {
+			let _playback = vocalizer.shared.playback.lock();
+			let _failure = vocalizer.shared.failure.lock();
+			let _rewrites = vocalizer.shared.rewrites.lock();
+			voice_snapshot(&vocalizer)
+		};
+		// Release the diagnostic contention before assertions and Vocalizer's
+		// synchronous Drop -> clear path reacquires these locks.
 		assert!(snapshot.contains("playback=[lock-busy]"), "{snapshot}");
 		assert!(snapshot.contains("failure=lock-busy"), "{snapshot}");
 		assert!(snapshot.contains("rewrites=None"), "{snapshot}");
