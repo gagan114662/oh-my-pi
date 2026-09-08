@@ -5,7 +5,7 @@ use std::{
 		Arc,
 		atomic::{AtomicBool, Ordering},
 	},
-	time::Instant,
+	time::{Duration, Instant},
 };
 
 use futures::StreamExt as _;
@@ -388,25 +388,27 @@ impl Default for RuntimeFlags {
 
 /// Agent kernel composed from inference, tool, prompt, and Director registries.
 pub struct Kernel<C> {
-	client:                C,
-	pub(crate) dispatcher: Dispatcher,
-	pub(crate) cancel:     CancelTree,
-	turn_active:           Arc<AtomicBool>,
-	reply_obligations:     ReplyObligations,
-	director_registry:     DirectorRegistry,
-	live_components:       Vec<Box<dyn LiveComponent>>,
-	lifecycle_hooks:       Option<crate::LifecycleHooks>,
-	state_bridges:         Vec<Arc<dyn SessionStateBridge>>,
-	file_mentions:         Option<FileMentionService>,
-	pub(crate) events:     crate::events::KernelEvents,
-	prompt:                Arc<dyn PromptSource>,
-	route:                 RouteFacts,
-	con:                   Option<Arc<omp_con::Ctx>>,
-	runtime_flags:         RuntimeFlags,
-	pub(crate) mailbox_tx: flume::Sender<Up>,
-	mailbox_rx:            flume::Receiver<Up>,
+	client:                  C,
+	pub(crate) dispatcher:   Dispatcher,
+	pub(crate) cancel:       CancelTree,
+	turn_active:             Arc<AtomicBool>,
+	reply_obligations:       ReplyObligations,
+	director_registry:       DirectorRegistry,
+	live_components:         Vec<Box<dyn LiveComponent>>,
+	lifecycle_hooks:         Option<crate::LifecycleHooks>,
+	state_bridges:           Vec<Arc<dyn SessionStateBridge>>,
+	file_mentions:           Option<FileMentionService>,
+	pub(crate) events:       crate::events::KernelEvents,
+	prompt:                  Arc<dyn PromptSource>,
+	route:                   RouteFacts,
+	/// Wait ceiling for approval prompts routed through the mailbox (#121).
+	approval_prompt_ceiling: Option<Duration>,
+	con:                     Option<Arc<omp_con::Ctx>>,
+	runtime_flags:           RuntimeFlags,
+	pub(crate) mailbox_tx:   flume::Sender<Up>,
+	mailbox_rx:              flume::Receiver<Up>,
 	/// Reply channels of the approval prompts journaled from the mailbox.
-	approvals:             crate::ApprovalDesk,
+	approvals:               crate::ApprovalDesk,
 }
 
 impl<C> Kernel<C> {
@@ -447,6 +449,7 @@ impl<C> Kernel<C> {
 			events,
 			prompt: Arc::new(prompt),
 			route: RouteFacts::default(),
+			approval_prompt_ceiling: Some(crate::approvals::DEFAULT_PROMPT_CEILING),
 			con: None,
 			runtime_flags: RuntimeFlags::default(),
 			mailbox_tx,
@@ -639,13 +642,22 @@ impl<C> Kernel<C> {
 	/// fire through the installed hook gate.
 	#[must_use]
 	pub fn approval_route(&self) -> crate::ApprovalRoute {
-		crate::ApprovalRoute::to_kernel(
+		crate::ApprovalRoute::to_kernel_with_ceiling(
 			self.mailbox_tx.clone(),
 			self
 				.lifecycle_hooks
 				.as_ref()
 				.map(|hooks| Arc::clone(hooks.hook_gate())),
+			self.approval_prompt_ceiling,
 		)
+	}
+
+	/// Bounds how long a routed approval prompt may wait for a human;
+	/// `None` waits until answered. Applies to routes created afterwards.
+	#[must_use]
+	pub const fn with_approval_prompt_ceiling(mut self, ceiling: Option<Duration>) -> Self {
+		self.approval_prompt_ceiling = ceiling;
+		self
 	}
 
 	/// Prompt ids journaled by this kernel that still wait on a host answer.

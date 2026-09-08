@@ -460,10 +460,16 @@ pub struct ApprovalRoute {
 	inner: Arc<RouteInner>,
 }
 
+/// Longest any prompt waits for a human when no reason sets a shorter
+/// timeout: an unattended run must not hold a turn forever (#121).
+pub const DEFAULT_PROMPT_CEILING: Duration = Duration::from_secs(10 * 60);
+
 struct RouteInner {
 	next_id: AtomicU64,
 	tx:      RouteSink,
 	pending: Mutex<std::collections::BTreeMap<Str, PendingRequest>>,
+	/// Upper bound on every prompt's wait; `None` waits until answered.
+	ceiling: Option<Duration>,
 	/// `tool_approval_requested` / `tool_approval_resolved` observers around
 	/// every prompted approval.
 	hooks:   Option<crate::LifecycleHooks>,
@@ -784,6 +790,7 @@ impl ApprovalRoute {
 					tx:      RouteSink::Inbox(tx),
 					pending: Mutex::new(std::collections::BTreeMap::new()),
 					hooks:   hook_gate.map(crate::LifecycleHooks::new),
+					ceiling: Some(DEFAULT_PROMPT_CEILING),
 				}),
 			},
 			ApprovalInbox { rx },
@@ -798,12 +805,24 @@ impl ApprovalRoute {
 		mailbox: flume::Sender<crate::Up>,
 		hook_gate: Option<Arc<crate::HookGate>>,
 	) -> Self {
+		Self::to_kernel_with_ceiling(mailbox, hook_gate, Some(DEFAULT_PROMPT_CEILING))
+	}
+
+	/// [`Self::to_kernel`] with an explicit wait ceiling; `None` lets a
+	/// prompt whose reasons set no timeout wait until it is answered.
+	#[must_use]
+	pub fn to_kernel_with_ceiling(
+		mailbox: flume::Sender<crate::Up>,
+		hook_gate: Option<Arc<crate::HookGate>>,
+		ceiling: Option<Duration>,
+	) -> Self {
 		Self {
 			inner: Arc::new(RouteInner {
 				next_id: AtomicU64::new(1),
-				tx:      RouteSink::Kernel(mailbox),
+				tx: RouteSink::Kernel(mailbox),
 				pending: Mutex::new(std::collections::BTreeMap::new()),
-				hooks:   hook_gate.map(crate::LifecycleHooks::new),
+				hooks: hook_gate.map(crate::LifecycleHooks::new),
+				ceiling,
 			}),
 		}
 	}
@@ -851,12 +870,23 @@ impl ApprovalRoute {
 			});
 		let _guard =
 			PendingGuard { inner: Arc::clone(&self.inner), ticket_id: ticket_id.clone() };
+		// The shortest explicit reason timeout wins; the route ceiling bounds
+		// a prompt whose reasons set none, so `timeout_ms: 0` no longer means
+		// forever.
 		let timeout_ms = ticket
 			.reasons
 			.iter()
 			.map(|reason| reason.timeout_ms)
 			.filter(|value| *value != 0)
 			.min();
+		let ceiling_ms = self
+			.inner
+			.ceiling
+			.map(|ceiling| u64::try_from(ceiling.as_millis()).unwrap_or(u64::MAX));
+		let timeout_ms = match (timeout_ms, ceiling_ms) {
+			(Some(explicit), Some(ceiling)) => Some(explicit.min(ceiling)),
+			(explicit, ceiling) => explicit.or(ceiling),
+		};
 		let filed = std::time::Instant::now();
 		if self
 			.inner

@@ -2017,6 +2017,16 @@ pub async fn compose_kernel(
 		))
 		.with_route_facts(route_facts)
 		.with_runtime_flags(runtime_flags)
+		.with_approval_prompt_ceiling(
+			ctx.get("sv_approval_prompt_timeout_seconds")
+				.and_then(|value| match value {
+					omp_con::Value::Int(value) => u64::try_from(value).ok(),
+					_ => None,
+				})
+				.map_or(Some(omp_agent::approvals::DEFAULT_PROMPT_CEILING), |seconds| {
+					(seconds > 0).then(|| Duration::from_secs(seconds))
+				}),
+		)
 		.with_con_context(Arc::clone(&ctx))
 		.with_hook_gate(admission_gate)
 		.with_session_state_bridge(con_journal.clone());
