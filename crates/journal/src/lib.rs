@@ -9,20 +9,21 @@ mod chain;
 pub mod data;
 mod entry;
 pub mod gc;
+pub mod integrity;
 pub mod kind;
 pub mod sse;
 pub mod ulid;
 
 use std::{
 	fs::{self, File, OpenOptions},
-	io::{self, Write as _},
+	io::{self, Read as _, Write as _},
 	path::{Path, PathBuf},
 };
 
 pub use chain::{abandoned, live_chain};
 pub use entry::{Entry, EntryDraft, EntryId};
 pub use kind::{Kind, KindError, KindName};
-use omp_core::{FastHashSet, Str, Ulid};
+use omp_core::{FastHashSet, Hash32, Str, Ulid};
 use thiserror::Error;
 
 use crate::{
@@ -54,6 +55,7 @@ pub struct Journal {
 	ids:                  FastHashSet<EntryId>,
 	entry_count:          usize,
 	recovered_tail_bytes: u64,
+	integrity:            integrity::Verification,
 }
 
 impl Journal {
@@ -89,6 +91,7 @@ impl Journal {
 			ids: FastHashSet::default(),
 			entry_count: 0,
 			recovered_tail_bytes: 0,
+			integrity: integrity::Verification::default(),
 		})
 	}
 
@@ -102,7 +105,25 @@ impl Journal {
 	/// Returns a typed error for I/O, malformed complete frames, invalid journal
 	/// structure, or invalid branch links.
 	pub fn open(path: impl AsRef<Path>) -> Result<(Self, Vec<Entry>), JournalError> {
-		let path = path.as_ref().to_path_buf();
+		Self::open_checked(path.as_ref(), None, false)
+	}
+
+	/// Opens only sealed history, optionally bound to an independently saved
+	/// tip. Verification and legacy refusal precede torn-tail truncation.
+	/// Session replay uses this boundary so rejected history is never modified.
+	pub fn open_verified(
+		path: impl AsRef<Path>,
+		expected_tip: Option<Hash32>,
+	) -> Result<(Self, Vec<Entry>), JournalError> {
+		Self::open_checked(path.as_ref(), expected_tip, true)
+	}
+
+	fn open_checked(
+		path: &Path,
+		expected_tip: Option<Hash32>,
+		require_sealed: bool,
+	) -> Result<(Self, Vec<Entry>), JournalError> {
+		let path = path.to_path_buf();
 		// Lock the stable sidecar before opening the journal. Locking the
 		// journal inode itself is insufficient: GC replaces that inode, and
 		// an opener that raced the rename could otherwise lock and append to
@@ -110,8 +131,19 @@ impl Journal {
 		let namespace = JournalNamespaceLock::acquire_shared(&path)?;
 		let lock = WriterLock::acquire(&path)?;
 		let file = OpenOptions::new().append(true).read(true).open(&path)?;
-		let bytes = fs::read(&path)?;
-		let (entries, clean_len) = decode_committed(&bytes)?;
+		let mut bytes = Vec::new();
+		(&file).read_to_end(&mut bytes)?;
+		let (entries, verification) = decode_verified(&bytes)?;
+		if require_sealed && verification.legacy_bytes != 0 {
+			return Err(JournalError::LegacyUnsealed {
+				entries: verification.legacy_entries,
+				bytes:   verification.legacy_bytes,
+			});
+		}
+		if expected_tip.is_some() {
+			integrity::verify_bytes(&bytes, expected_tip)?;
+		}
+		let clean_len = verification.committed_bytes;
 		let truncated = bytes.len().saturating_sub(clean_len);
 		if truncated != 0 {
 			file.set_len(u64::try_from(clean_len).map_err(|_| JournalError::FileTooLarge)?)?;
@@ -134,6 +166,7 @@ impl Journal {
 				ids,
 				entry_count: entries.len(),
 				recovered_tail_bytes: truncated as u64,
+				integrity: verification,
 			},
 			entries,
 		))
@@ -144,7 +177,9 @@ impl Journal {
 	///
 	/// This is the read-only path for session indexes, pickers, and
 	/// renderers of a journal that may be live in another process: it sees
-	/// the committed prefix exactly as a later [`Self::open`] would.
+	/// the committed prefix exactly as a later [`Self::open`] would. Legacy
+	/// entries remain readable for inspection; use [`Self::verify_path`] to
+	/// distinguish them, or [`Self::open_verified`] before authoritative replay.
 	///
 	/// # Errors
 	///
@@ -163,6 +198,7 @@ impl Journal {
 	/// its payload is not single-line JSON or exceeds one mebibyte, identity
 	/// generation is exhausted, or the durable write fails.
 	pub fn append(&mut self, draft: EntryDraft) -> Result<Entry, JournalError> {
+		self.require_sealed()?;
 		validate_draft(&draft, self.entry_count, &self.ids)?;
 		let id = EntryId::from(self.generator.generate()?);
 		let entry = Entry {
@@ -174,12 +210,59 @@ impl Journal {
 			data: draft.data,
 		};
 		let mut encoded = Vec::with_capacity(entry.data.len() + 160);
-		sse::encode(&entry, &mut encoded).map_err(map_sse_write_error)?;
+		let tip = integrity::encode(&entry, self.integrity.tip.unwrap_or_default(), &mut encoded)
+			.map_err(map_sse_write_error)?;
 		self.file.write_all(&encoded)?;
 		self.file.sync_data()?;
 		self.ids.insert(id);
 		self.entry_count += 1;
+		self.integrity.tip = Some(tip);
+		self.integrity.sealed_entries += 1;
+		self.integrity.committed_bytes += encoded.len();
+		self.integrity.torn_tail_bytes = 0;
 		Ok(entry)
+	}
+
+	/// Rechecks the on-disk physical chain without mutating it.
+	///
+	/// # Errors
+	/// Returns I/O, integrity, framing or semantic history errors.
+	pub fn verify(&self) -> Result<integrity::Verification, JournalError> {
+		Self::verify_path(&self.path, None)
+	}
+
+	/// Inspects a path without acquiring a writer lock or truncating a torn
+	/// tail. An optional externally retained tip detects complete suffix
+	/// removal too.
+	///
+	/// # Errors
+	/// Returns I/O, integrity (including expected-tip mismatch), framing or
+	/// semantic history errors.
+	pub fn verify_path(
+		path: impl AsRef<Path>,
+		expected_tip: Option<Hash32>,
+	) -> Result<integrity::Verification, JournalError> {
+		let bytes = fs::read(path)?;
+		let (_, report) = decode_verified(&bytes)?;
+		if expected_tip.is_some() {
+			integrity::verify_bytes(&bytes, expected_tip)?;
+		}
+		Ok(report)
+	}
+
+	/// Refuses treating historical unsealed entries as verified history.
+	/// Read-only scanning and verification inventory remain available.
+	///
+	/// # Errors
+	/// Returns [`JournalError::LegacyUnsealed`] for unsealed entries.
+	pub fn require_sealed(&self) -> Result<(), JournalError> {
+		if self.integrity.legacy_bytes != 0 {
+			return Err(JournalError::LegacyUnsealed {
+				entries: self.integrity.legacy_entries,
+				bytes:   self.integrity.legacy_bytes,
+			});
+		}
+		Ok(())
 	}
 
 	/// Returns the journal file path.
@@ -205,6 +288,20 @@ impl Journal {
 /// Journal creation, recovery, validation, and append failure.
 #[derive(Debug, Error)]
 pub enum JournalError {
+	/// A complete physical frame fails its seal or predecessor check.
+	#[error(transparent)]
+	Integrity(#[from] integrity::IntegrityError),
+	/// Legacy bytes have no evidence of integrity and need explicit migration.
+	#[error(
+		"journal contains {entries} legacy entries in {bytes} unsealed bytes; explicit migration is \
+		 required before replay or append"
+	)]
+	LegacyUnsealed {
+		/// Count of entries without physical seals.
+		entries: usize,
+		/// Complete unsealed bytes, including spacer blocks.
+		bytes:   usize,
+	},
 	/// A filesystem operation failed.
 	#[error("journal I/O failed")]
 	Io(#[from] io::Error),
@@ -287,6 +384,12 @@ pub enum JournalError {
 /// Decodes every complete frame, returning the entries and the byte offset of
 /// the last commit point.
 fn decode_committed(bytes: &[u8]) -> Result<(Vec<Entry>, usize), JournalError> {
+	let (entries, report) = decode_verified(bytes)?;
+	Ok((entries, report.committed_bytes))
+}
+
+fn decode_verified(bytes: &[u8]) -> Result<(Vec<Entry>, integrity::Verification), JournalError> {
+	let report = integrity::verify_bytes(bytes, None)?;
 	let mut scanner = Scanner::new(bytes);
 	let mut entries = Vec::new();
 	while let Some(frame) = scanner.next() {
@@ -296,9 +399,8 @@ fn decode_committed(bytes: &[u8]) -> Result<(Vec<Entry>, usize), JournalError> {
 				.entry,
 		);
 	}
-	let clean_len = scanner.offset();
 	validate_history(&entries)?;
-	Ok((entries, clean_len))
+	Ok((entries, report))
 }
 
 /// Stable sidecar lock shared by journal writers and atomic replacement.

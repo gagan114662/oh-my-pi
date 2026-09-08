@@ -194,7 +194,7 @@ impl<'a> Scanner<'a> {
 	}
 }
 
-fn complete_block_end(bytes: &[u8], start: usize) -> Option<usize> {
+pub(crate) fn complete_block_end(bytes: &[u8], start: usize) -> Option<usize> {
 	let mut cursor = start;
 	loop {
 		let relative = memchr(b'\n', &bytes[cursor..])?;

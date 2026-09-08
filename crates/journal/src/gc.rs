@@ -18,7 +18,7 @@ use thiserror::Error;
 use crate::{
 	EntryId, Journal, JournalError, JournalNamespaceLock, WriterLock,
 	blob::{BlobRef, BlobStore, GcPolicy, GcSweep},
-	decode_committed, live_chain, sse,
+	decode_verified, integrity, live_chain, sse,
 };
 
 /// Result of pruning one journal to its selected live chain.
@@ -264,7 +264,17 @@ pub fn collect_blobs_with(
 		}
 		let lock = WriterLock::acquire(path)?;
 		let bytes = fs::read(path)?;
-		let (entries, clean_len) = decode_committed(&bytes)?;
+		let (entries, verification) = decode_verified(&bytes)?;
+		if verification.legacy_bytes != 0 {
+			return Err(
+				JournalError::LegacyUnsealed {
+					entries: verification.legacy_entries,
+					bytes:   verification.legacy_bytes,
+				}
+				.into(),
+			);
+		}
+		let clean_len = verification.committed_bytes;
 		entries_scanned = entries_scanned.saturating_add(entries.len());
 		if entries_scanned > options.max_entries {
 			return Err(GcError::Limit {
@@ -278,8 +288,9 @@ pub fn collect_blobs_with(
 		if abandoned != 0 {
 			journals_with_abandoned += 1;
 			let mut encoded = Vec::new();
+			let mut previous = Hash32::default();
 			for entry in &retained {
-				sse::encode(entry, &mut encoded)?;
+				previous = integrity::encode(entry, previous, &mut encoded)?;
 			}
 			let retained_bytes =
 				u64::try_from(encoded.len()).map_err(|_| io::Error::other("journal is too large"))?;
@@ -495,7 +506,7 @@ fn parse_digest(hex: &str) -> Option<Hash32> {
 /// retained frame cannot be encoded, or staging/sync/replacement fails.
 pub fn prune_abandoned(path: impl AsRef<Path>) -> Result<GcReport, GcError> {
 	let path = path.as_ref();
-	let (journal, entries) = Journal::open(path)?;
+	let (journal, entries) = Journal::open_verified(path, None)?;
 	let bytes_before = fs::metadata(path)?.len();
 	let retained: Vec<_> = live_chain(&entries).cloned().collect();
 	let entries_before = entries.len();
@@ -511,8 +522,9 @@ pub fn prune_abandoned(path: impl AsRef<Path>) -> Result<GcReport, GcError> {
 	}
 
 	let mut encoded = Vec::new();
+	let mut previous = Hash32::default();
 	for entry in &retained {
-		sse::encode(entry, &mut encoded)?;
+		previous = integrity::encode(entry, previous, &mut encoded)?;
 	}
 	let bytes_after =
 		u64::try_from(encoded.len()).map_err(|_| io::Error::other("journal is too large"))?;
