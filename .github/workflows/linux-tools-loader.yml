@@ -1,0 +1,142 @@
+name: Linux tools loader backend diagnosis
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact source revision used by both fresh Linux arms
+        type: string
+        required: true
+        default: b59b952172f1f331c2a79a6bc22f6ea25a3e2135
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    name: Tools loader (${{ matrix.backend }})
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [current, tools-llvm]
+    runs-on: ubuntu-24.04
+    env:
+      DIAGNOSTIC_BACKEND: ${{ matrix.backend }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - name: Install diagnostic prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/read-tail-linux
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pipx zstd gdb libc6-dbg binutils
+          command -v uv >/dev/null || pipx install uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          git rev-parse HEAD > target/read-tail-linux/source-revision.txt
+          rustup show active-toolchain > target/read-tail-linux/toolchain.txt
+          cp .cargo/config.toml target/read-tail-linux/cargo-config.toml
+          uname -a > target/read-tail-linux/platform.txt
+          rustc --version --verbose > target/read-tail-linux/rustc.txt
+          sha256sum Cargo.lock Cargo.toml .cargo/config.toml rust-toolchain.toml > target/read-tail-linux/source-inputs.sha256
+          git status --porcelain > target/read-tail-linux/source-status.txt
+          cc --version > target/read-tail-linux/cc.txt
+          ld --version > target/read-tail-linux/ld.txt
+          printf '%s\n' "$DIAGNOSTIC_BACKEND" > target/read-tail-linux/backend.txt
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare the source's embedded Python
+        shell: bash
+        run: |
+          set -uo pipefail
+          crates/py/scripts/fetch-python.sh 2>&1 | tee target/read-tail-linux/python-setup.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'setup=%s log_write=%s\n' "${codes[0]}" "${codes[1]}" > target/read-tail-linux/python-setup.exit
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Build the same tools libtest with one package backend difference
+        id: build
+        shell: bash
+        run: |
+          set -uo pipefail
+          overrides=()
+          if [ "$DIAGNOSTIC_BACKEND" = tools-llvm ]; then
+            overrides=(--config 'profile.dev.package.omp-tools.codegen-backend="llvm"')
+          fi
+          command=(cargo nextest list --locked --profile ci -p omp-tools --lib --cargo-verbose --cargo-verbose --list-type binaries-only --message-format json "${overrides[@]}")
+          printf '%q ' "${command[@]}" > target/read-tail-linux/build-command.txt
+          printf '\n' >> target/read-tail-linux/build-command.txt
+          "${command[@]}" > target/read-tail-linux/binaries.json 2> target/read-tail-linux/build.log
+          status=$?
+          printf '%s\n' "$status" > target/read-tail-linux/build.exit
+          exit "$status"
+      - name: Execute the actual tools libtest discovery and diagnose a crash
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import gzip, hashlib, json, os, shutil, subprocess
+          from pathlib import Path
+          out = Path('target/read-tail-linux')
+          binaries = json.loads((out / 'binaries.json').read_text())['rust-binaries']
+          binary = binaries['omp-tools']['binary-path']
+          report = {'backend': os.environ['DIAGNOSTIC_BACKEND'], 'binary': binary, 'sha256': hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
+                    'command': [binary, '--list', '--format', 'terse']}
+          try:
+              result = subprocess.run(report['command'], capture_output=True, timeout=120)
+              report['returncode'] = result.returncode
+              (out / 'list.stdout').write_bytes(result.stdout)
+              (out / 'list.stderr').write_bytes(result.stderr)
+          except subprocess.TimeoutExpired as error:
+              report['returncode'] = None
+              report['error'] = 'discovery timed out after 120 seconds'
+              (out / 'list.stdout').write_bytes(error.stdout or b'')
+              (out / 'list.stderr').write_bytes(error.stderr or b'')
+          (out / 'discovery.json').write_text(json.dumps(report, indent=2) + '\n')
+          # Retain identical ELF evidence for both passing and failing binaries.
+          with open(binary, 'rb') as source, gzip.open(out / 'libtest.gz', 'wb') as saved:
+              shutil.copyfileobj(source, saved)
+          for name, command in [('elf', ['readelf', '-aW', binary]),
+                                ('libc-packages', ['dpkg-query', '-W', 'libc6', 'libc6-dbg'])]:
+              inspected = subprocess.run(command, capture_output=True, timeout=120)
+              (out / (name + '.stdout')).write_bytes(inspected.stdout)
+              (out / (name + '.stderr')).write_bytes(inspected.stderr)
+              report[name + '_returncode'] = inspected.returncode
+          try:
+              debug = subprocess.run(['gdb', '--batch', '-ex', 'set pagination off', '-ex', 'run',
+                  '-ex', 'thread apply all bt full', '-ex', 'info registers', '-ex', 'info sharedlibrary',
+                  '-ex', 'info files', '-ex', 'x/16i $pc-32',
+                  '--args', *report['command']], capture_output=True, timeout=120)
+              (out / 'gdb.stdout').write_bytes(debug.stdout)
+              (out / 'gdb.stderr').write_bytes(debug.stderr)
+              report['gdb_returncode'] = debug.returncode
+          except subprocess.TimeoutExpired as error:
+              (out / 'gdb.stdout').write_bytes(error.stdout or b'')
+              (out / 'gdb.stderr').write_bytes(error.stderr or b'')
+              report['gdb_error'] = 'debugger timed out after 120 seconds'
+          (out / 'discovery.json').write_text(json.dumps(report, indent=2) + '\n')
+          raise SystemExit(0 if report['returncode'] == 0 else 1)
+          PY
+      - name: Report Linux discovery without treating baseline crashes as passes
+        if: always()
+        env:
+          REVISION_LABEL: ${{ inputs.source_ref }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          out = Path('target/read-tail-linux')
+          report = out / 'discovery.json'
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('## Linux tools discovery: ' + os.environ['DIAGNOSTIC_BACKEND'] + ' / ' + os.environ['REVISION_LABEL'] + '\n\n')
+              summary.write('Same selected source, pinned toolchain, runtime and embedded Python setup; fresh runner with no build cache. The tools-llvm arm overrides only omp-tools codegen through the recorded Cargo CLI argument. This is discovery evidence, not executed test or doctest coverage; a difference narrows the fault but does not prove its mechanism.\n\n```json\n')
+              summary.write(report.read_text() if report.exists() else '{"error":"discovery did not execute"}')
+              summary.write('\n```\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: tools-loader-${{ matrix.backend }}
+          path: target/read-tail-linux/
+          if-no-files-found: error
