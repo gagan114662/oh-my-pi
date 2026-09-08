@@ -33,6 +33,23 @@ The default interactive process contains `omp-app`, `omp-driver`, `omp-agent`, i
 
 `omp envd` hosts the document authority as a task, not as another mandatory OS process. `EnvServer::open_project` calls `connect_or_start_docserver` in `crates/envd/src/server.rs`; the document service is framed behind its own local endpoint, but its owning task runs in the envd process. `EnvServer::open_local` uses a Tokio duplex stream for the same protocol. LSP and DAP adapters spawned by the document authority are separate child processes when configured (`crates/envd/src/docserver/lsp_process.rs`, `crates/envd/src/docserver/dap_protocol.rs`).
 
+On Unix, the document authority creates its shared lock directory with mode
+`0700` in the creation syscall. A separate creation-then-chmod sequence would
+let another authority observe and reject a briefly public directory. Existing
+entries still require the effective user's ownership, directory type (not a
+symlink), and no group/other permissions; startup never repairs an untrusted
+existing entry. The creation regression runs with umask `000` in an isolated
+child test process and inspects permissions before validation.
+
+Linux Check 34255949854 failed one of 1113 tests during document initialization
+with the owner-only lock-directory error (1112 passed, one failed, two skipped).
+The old source permits the interleaving above, but that run did not capture the
+observed mode or creation ordering. Attribution of that particular failure to
+the race remains a hypothesis. The atomic-creation change and regressions have
+only been formatted and statically reviewed; affected runtime validation is
+pending.
+
+
 The optional `omp serve`, auth-broker, and auth-gateway commands are independent daemon processes, not part of the project-environment owner. `DaemonHandle::start_rpc` registers `Gateway`, `ForwardProxy`, `Inference`, `Blob`, and `Auth` Tonic servers in `crates/app/src/daemon.rs`.
 
 ## Process creation and supervision
