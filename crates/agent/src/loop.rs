@@ -331,48 +331,6 @@ fn append_turn_limit_notice(
 	)
 }
 
-/// Stable fingerprint of a round's tool calls: target and arguments, in
-/// order, ignoring call ids.
-fn calls_fingerprint(calls: &[PreparedCall]) -> u64 {
-	use std::hash::{Hash, Hasher};
-	let mut hasher = std::collections::hash_map::DefaultHasher::new();
-	for call in calls {
-		crate::dispatch::call_target(call).hash(&mut hasher);
-		call.args().map(|args| args.get()).hash(&mut hasher);
-	}
-	hasher.finish()
-}
-
-/// Fingerprint of the last exchange in a projected request: the newest
-/// assistant message and every message after it (its tool results), by
-/// semantic content only. `None` when no assistant message exists yet.
-fn last_exchange_fingerprint(messages: &[omp_ai::Message]) -> Option<u64> {
-	use std::hash::{Hash, Hasher};
-	let start = messages
-		.iter()
-		.rposition(|message| message.role == omp_ai::Role::Assistant)?;
-	let mut hasher = std::collections::hash_map::DefaultHasher::new();
-	for message in &messages[start..] {
-		format!("{:?}", message.role).hash(&mut hasher);
-		for part in message.content.iter() {
-			match part {
-				omp_ai::ContentPart::Text { text, .. } => ("text", text.as_str()).hash(&mut hasher),
-				omp_ai::ContentPart::Reasoning { text, .. } => {
-					("reasoning", text.as_str()).hash(&mut hasher)
-				},
-				omp_ai::ContentPart::ToolCall { name, arguments, .. } => {
-					("call", name.as_str(), arguments.0.to_string()).hash(&mut hasher);
-				},
-				omp_ai::ContentPart::ToolResult { name, content, is_error, .. } => {
-					("result", name.as_deref(), *is_error, format!("{content:?}")).hash(&mut hasher);
-				},
-				other => format!("{other:?}").hash(&mut hasher),
-			}
-		}
-	}
-	Some(hasher.finish())
-}
-
 /// Decides whether a provider error is a context overflow this turn may
 /// still recover from. On the first overflow it journals a
 /// `context-overflow` notice and a `context-window-observed` fact (the
@@ -1382,11 +1340,7 @@ impl<C: Inference> Kernel<C> {
 		let mut overflow_pending = false;
 		let bounded_control = control.clone().bounded_by(&self.runtime_flags);
 		let control = &bounded_control;
-		let loop_guard_limit = self.runtime_flags.loop_guard_limit;
-		let mut last_exchange_fp: Option<u64> = None;
-		let mut last_calls_fp: Option<u64> = None;
-		let mut identical_rounds = 0_u32;
-		let mut refused_rounds = 0_u32;
+		let mut loop_guard = crate::loop_guard::LoopGuard::new(self.runtime_flags.loop_guard_limit);
 
 		'rounds: loop {
 			if control.is_expired() || turn_cancel.is_turn_cancelled() {
@@ -1443,7 +1397,6 @@ impl<C: Inference> Kernel<C> {
 			if self.deliver_settlements(session, turn)? {
 				self.apply_live_components(session)?;
 			}
-			let mut results_repeat = false;
 			let driven = if let Some(calls) = replay.take() {
 				DrivenInference::replayed(calls)
 			} else {
@@ -1649,11 +1602,7 @@ impl<C: Inference> Kernel<C> {
 				}
 				let director_cx = DirectorCx::new(turn, &route);
 				directors.prepare_inference(session.dom(), &director_cx, &mut request);
-				// Loop guard: the last exchange (previous calls and their results)
-				// as the model is about to see it.
-				let exchange_fp = last_exchange_fingerprint(&request.messages);
-				results_repeat = exchange_fp.is_some() && exchange_fp == last_exchange_fp;
-				last_exchange_fp = exchange_fp;
+				loop_guard.observe_request(&request.messages);
 				let request_started = Instant::now();
 				requests_started = requests_started.saturating_add(1);
 				let request_tokens = crate::directors::compaction::estimate_request_tokens(&request);
@@ -1762,31 +1711,16 @@ impl<C: Inference> Kernel<C> {
 			let director_cx = DirectorCx::new(turn, &route);
 			let had_tool_calls = driven.had_tool_calls;
 			let mut settled_reports = Vec::new();
-			// Loop guard bookkeeping: identical calls after identical exchanges
-			// with no visible text are a dead loop, not progress.
-			let calls_fp = had_tool_calls.then(|| calls_fingerprint(&driven.calls));
-			let same_calls = calls_fp.is_some() && calls_fp == last_calls_fp;
-			if loop_guard_limit > 0 && same_calls && driven.text.trim().is_empty() {
-				if refused_rounds > 0 || identical_rounds.saturating_add(2) >= loop_guard_limit {
-					refused_rounds = refused_rounds.saturating_add(1);
-				} else if results_repeat {
-					identical_rounds = identical_rounds.saturating_add(1);
-				} else {
-					identical_rounds = 0;
-				}
-			} else {
-				identical_rounds = 0;
-				refused_rounds = 0;
-			}
-			last_calls_fp = calls_fp;
-			if refused_rounds > 0 && had_tool_calls {
+			let calls_fp = had_tool_calls.then(|| crate::loop_guard::calls_fingerprint(&driven.calls));
+			if let crate::loop_guard::Verdict::Refuse { repeat, settle } =
+				loop_guard.judge(calls_fp, !driven.text.trim().is_empty())
+			{
+				let limit = loop_guard.limit();
 				let calls = std::mem::take(&mut driven.calls);
 				let count = calls.len();
-				let settle = refused_rounds >= loop_guard_limit;
 				let reason = sf!(
-					"loop guard: this exact tool call and its result repeated {} times without textual \
-					 progress; change approach instead of repeating it",
-					loop_guard_limit
+					"loop guard: this exact tool call and its result repeated {limit} times without \
+					 textual progress; change approach instead of repeating it"
 				);
 				for prepared in calls {
 					self
@@ -1800,13 +1734,13 @@ impl<C: Inference> Kernel<C> {
 					Some(Str::new_static("loop-guard")),
 					if settle {
 						sf!(
-							"Loop guard: {count} identical tool call(s) refused {refused_rounds} times \
-							 after {loop_guard_limit} identical executions; the turn stops here"
+							"Loop guard: {count} identical tool call(s) refused {repeat} times after \
+							 {limit} identical executions; the turn stops here"
 						)
 					} else {
 						sf!(
-							"Loop guard: {count} identical tool call(s) refused (repeat {refused_rounds} \
-							 of {loop_guard_limit} before the turn stops)"
+							"Loop guard: {count} identical tool call(s) refused (repeat {repeat} of \
+							 {limit} before the turn stops)"
 						)
 					},
 				)?;
