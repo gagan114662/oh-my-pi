@@ -297,6 +297,9 @@ fn exempt_plan_path(path: &str) -> bool {
 /// Environment-daemon assembly or serving failure.
 #[derive(Debug, Error)]
 pub enum EnvdError {
+	/// Native HTTP policy could not be loaded.
+	#[error(transparent)]
+	NativeHttpPolicy(#[from] crate::http_policy::NativeHttpPolicyError),
 	/// A local filesystem, socket, or child-process operation failed.
 	#[error(transparent)]
 	Io(#[from] io::Error),
@@ -2140,7 +2143,6 @@ fn requires_environment_host(body: &client_frame::Body) -> bool {
 			| client_frame::Body::StartProcess(_)
 			| client_frame::Body::GetProcess(_)
 			| client_frame::Body::RestartProcess(_)
-			| client_frame::Body::HttpRequest(_)
 			| client_frame::Body::ListProcesses(_)
 			| client_frame::Body::AttachOutput(_)
 			| client_frame::Body::SendInput(_)
@@ -2440,6 +2442,7 @@ impl EnvServer {
 		let py_eval = ext_host_config.py_eval;
 		let session_id = ext_host_config.session_id.clone();
 		let authority = Arc::new(AuthorityTable::default());
+		authority.bind_native_http_policies(crate::http_policy::from_con(con)?);
 		ext_host_config.bind_workspace_root(workspace.root());
 		ext_host_config.bind_data_authority(Arc::clone(&authority));
 		bind_live_session_authority_snapshot(
@@ -2720,6 +2723,7 @@ impl EnvServer {
 		let py_eval = ext_host_config.py_eval;
 		let session_id = ext_host_config.session_id.clone();
 		let authority = Arc::new(AuthorityTable::default());
+		authority.bind_native_http_policies(crate::http_policy::from_con(con)?);
 		ext_host_config.bind_workspace_root(&root);
 		ext_host_config.bind_data_authority(Arc::clone(&authority));
 		bind_live_session_authority_snapshot(
@@ -2933,6 +2937,10 @@ impl EnvServer {
 		let py_eval = ext_host_config.py_eval;
 		let session_id = ext_host_config.session_id.clone();
 		let authority = Arc::new(AuthorityTable::default());
+		authority.bind_native_http_policies(crate::http_policy::with_owner_baseline(
+			con,
+			&owner_info.native_http_policies_json,
+		)?);
 		ext_host_config.bind_workspace_root(&root);
 		ext_host_config.bind_data_authority(Arc::clone(&authority));
 		bind_live_session_authority_snapshot(
@@ -3966,15 +3974,16 @@ impl EnvServer {
 			.send_async(server_frame(
 				0,
 				server_frame::Body::Hello(pb::ServerHello {
-					schema_rev:     omp_proto::SCHEMA_REV,
-					min_schema_rev: MIN_SCHEMA_REV,
-					capabilities:   grants.iter().map(str::to_owned).collect(),
-					server_version: self.identity.server_version.to_string(),
-					workspace_id:   self.identity.workspace_id.clone(),
-					root_uri:       self.identity.root_uri.to_string(),
-					server_epoch:   self.identity.server_epoch.clone(),
-					server_build:   self.identity.server_build.to_string(),
-					props:          Default::default(),
+					schema_rev:                omp_proto::SCHEMA_REV,
+					min_schema_rev:            MIN_SCHEMA_REV,
+					capabilities:              grants.iter().map(str::to_owned).collect(),
+					server_version:            self.identity.server_version.to_string(),
+					workspace_id:              self.identity.workspace_id.clone(),
+					root_uri:                  self.identity.root_uri.to_string(),
+					server_epoch:              self.identity.server_epoch.clone(),
+					server_build:              self.identity.server_build.to_string(),
+					native_http_policies_json: self.authority.native_http_policies_json(),
+					props:                     Default::default(),
 				}),
 			))
 			.await
@@ -4988,17 +4997,51 @@ impl EnvServer {
 				}
 			},
 			client_frame::Body::HttpRequest(request) => {
-				match self.http_egress.request(request).await {
-					Ok(response) => {
-						send_body(
-							responses,
-							frame.request_id,
-							server_frame::Body::HttpResponse(response),
-						)
-						.await;
-					},
-					Err(error) => send_http_error(responses, frame.request_id, &error).await,
+				if reject_duplicate_open(connection, frame.request_id, responses).await {
+					return;
 				}
+				let credentials = scope.as_ref().map(|scope| DataAuthority {
+					invocation_id:      &scope.invocation_id,
+					effect_token:       &scope.effect_token,
+					host_generation:    scope.host_generation,
+					session_generation: scope.session_generation,
+				});
+				let http_scope = match connection.authority.native_http_scope(
+					connection.host.as_ref(),
+					connection.connection_owner,
+					credentials,
+				) {
+					Ok(scope) => scope,
+					Err(error) => {
+						send_policy_error(responses, frame.request_id, error).await;
+						return;
+					},
+				};
+				if let Err(error) = connection.quotas.reserve_stream() {
+					send_policy_error(responses, frame.request_id, error).await;
+					return;
+				}
+				let request_id = frame.request_id;
+				let cancel = CancellationToken::new();
+				connection
+					.requests
+					.insert(request_id, RequestState::DataStream { cancel: cancel.clone() });
+				let host = self.http_egress.clone();
+				let responses = responses.clone();
+				let finished = finished.clone();
+				tokio::spawn(async move {
+					tokio::select! {
+						biased;
+						_ = cancel.cancelled() => {},
+						result = host.request(request, http_scope) => match result {
+							Ok(response) => send_body(&responses, request_id, server_frame::Body::HttpResponse(response)).await,
+							Err(error) => send_http_error(&responses, request_id, &error).await,
+						},
+					}
+					let _ = finished
+						.send_async(Finished { request_id, invocation_id: None })
+						.await;
+				});
 			},
 			client_frame::Body::ListProcesses(_) => {
 				send_body(
@@ -11287,6 +11330,10 @@ async fn send_http_error(
 	error: &HttpEgressError,
 ) {
 	let code = match error {
+		HttpEgressError::DestinationDenied | HttpEgressError::Revoked => {
+			pb::ProtocolErrorCode::PermissionDenied
+		},
+		HttpEgressError::Resolution(_) => pb::ProtocolErrorCode::Internal,
 		HttpEgressError::InvalidArgument(_) => pb::ProtocolErrorCode::InvalidArgument,
 		HttpEgressError::TimedOut => pb::ProtocolErrorCode::DeadlineExceeded,
 		HttpEgressError::ResponseTooLarge => pb::ProtocolErrorCode::ResourceExhausted,
@@ -14174,3 +14221,7 @@ mod runtime_operation_contracts {
 		assert_eq!(mcp_operation(&pb::McpOp::default()), None);
 	}
 }
+
+#[cfg(test)]
+#[path = "http_egress_tests.rs"]
+mod http_egress_tests;

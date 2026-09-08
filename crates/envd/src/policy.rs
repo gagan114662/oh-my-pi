@@ -1549,6 +1549,7 @@ fn approval_ticket_json(ticket: &ApprovalTicket) -> Value {
 
 #[derive(Clone)]
 struct AuthorizedInvocation {
+	http_scope:         crate::http_policy::NativeHttpScope,
 	phase:              omp_core::InvocationPhase,
 	effect_token:       Bytes,
 	envelope:           Grants,
@@ -1556,6 +1557,42 @@ struct AuthorizedInvocation {
 	host_generation:    u64,
 	session_generation: u64,
 	claimed_by:         Option<u64>,
+}
+
+fn validate_invocation(
+	invocation: &mut AuthorizedInvocation,
+	connection_owner: u64,
+	credentials: DataAuthority<'_>,
+	capability: Option<&'static str>,
+) -> Result<(), PolicyError> {
+	if invocation.authorized_at_ms == 0
+		|| !invocation
+			.phase
+			.allows_operation(omp_core::InvocationPhase::EffectsAuthorized)
+	{
+		return Err(PolicyError::EffectsNotAuthorized);
+	}
+	if invocation.host_generation != credentials.host_generation
+		|| invocation.session_generation != credentials.session_generation
+	{
+		return Err(PolicyError::StaleGeneration);
+	}
+	if invocation.effect_token.as_ref() != credentials.effect_token
+		|| credentials.effect_token.is_empty()
+	{
+		return Err(PolicyError::InvalidEffectToken);
+	}
+	match invocation.claimed_by {
+		Some(owner) if owner != connection_owner => return Err(PolicyError::InvalidEffectToken),
+		Some(_) => {},
+		None => invocation.claimed_by = Some(connection_owner),
+	}
+	if let Some(capability) = capability
+		&& !invocation.envelope.contains(capability)
+	{
+		return Err(PolicyError::Denied { capability });
+	}
+	Ok(())
 }
 
 #[derive(Default)]
@@ -1567,8 +1604,9 @@ struct HostAuthority {
 
 #[derive(Default)]
 struct AuthorityState {
-	hosts:  HashMap<HostKey, HostAuthority>,
-	leases: HashMap<Bytes, u64>,
+	http_scope: crate::http_policy::NativeHttpScope,
+	hosts:      HashMap<HostKey, HostAuthority>,
+	leases:     HashMap<Bytes, u64>,
 }
 
 /// Shared authoritative invocation/token table for all connections of one
@@ -1580,6 +1618,85 @@ pub struct AuthorityTable {
 }
 
 impl AuthorityTable {
+	/// Binds the Environment-owned native HTTP baseline. Existing requests and
+	/// invocation credentials are revoked when the baseline changes.
+	pub fn bind_native_http_policy(&self, policy: SandboxNetworkPolicy) {
+		self.bind_native_http_policies(vec![policy]);
+	}
+
+	pub(crate) fn bind_native_http_policies(&self, policies: Vec<SandboxNetworkPolicy>) {
+		let mut state = self.state.lock();
+		state.http_scope.revoked.cancel();
+		state.http_scope =
+			crate::http_policy::NativeHttpScope { policies: policies.into(), ..Default::default() };
+		for host in state.hosts.values_mut() {
+			for invocation in host.invocations.values_mut() {
+				invocation.http_scope.revoked.cancel();
+			}
+		}
+	}
+
+	/// Adds a trusted invocation restriction without replacing inherited policy.
+	pub fn narrow_native_http_invocation(
+		&self,
+		host: &HostKey,
+		invocation_id: &str,
+		policy: SandboxNetworkPolicy,
+	) -> Result<(), PolicyError> {
+		let mut state = self.state.lock();
+		let invocation = state
+			.hosts
+			.get_mut(host)
+			.and_then(|host| host.invocations.get_mut(invocation_id))
+			.ok_or(PolicyError::EffectsNotAuthorized)?;
+		// Restrictions are installed before authorization, so no request can race
+		// a widening or observe a partially installed policy.
+		if invocation.phase != omp_core::InvocationPhase::Open {
+			return Err(PolicyError::EffectsNotAuthorized);
+		}
+		invocation.http_scope = invocation.http_scope.narrow(policy);
+		Ok(())
+	}
+
+	pub(crate) fn native_http_scope(
+		&self,
+		host: Option<&HostKey>,
+		connection_owner: u64,
+		credentials: Option<DataAuthority<'_>>,
+	) -> Result<crate::http_policy::NativeHttpScope, PolicyError> {
+		match (host, credentials) {
+			(None, None) => Ok(self.state.lock().http_scope.clone()),
+			(Some(host), Some(credentials)) => {
+				let mut state = self.state.lock();
+				let invocation = state
+					.hosts
+					.get_mut(host)
+					.and_then(|host| host.invocations.get_mut(credentials.invocation_id))
+					.ok_or(PolicyError::EffectsNotAuthorized)?;
+				// Validate and capture under one lock: replacement of an invocation
+				// cannot pair an old token with the new invocation's network scope.
+				validate_invocation(invocation, connection_owner, credentials, Some("env.net"))?;
+				Ok(invocation.http_scope.clone())
+			},
+			_ => Err(PolicyError::EffectsNotAuthorized),
+		}
+	}
+
+	pub(crate) fn native_http_policies_json(&self) -> Vec<String> {
+		let state = self.state.lock();
+		if state.http_scope.policies.is_empty() {
+			return vec![String::from("{\"mode\":\"open\"}")];
+		}
+		state
+			.http_scope
+			.policies
+			.iter()
+			.map(|policy| {
+				serde_json::to_string(policy).expect("network policy contains only serializable fields")
+			})
+			.collect()
+	}
+
 	/// Allocates an opaque connection owner used to bind tokens and leases.
 	pub fn connection_owner(&self) -> u64 {
 		self
@@ -1591,15 +1708,26 @@ impl AuthorityTable {
 	/// Installs the manifest-derived extension grants for one host.
 	pub fn register_host(&self, host: HostKey, grants: Grants) {
 		let mut state = self.state.lock();
-		state.hosts.entry(host).or_default().grants = grants;
+		let host = state.hosts.entry(host).or_default();
+		if host.grants != grants {
+			for invocation in host.invocations.values() {
+				invocation.http_scope.revoked.cancel();
+			}
+		}
+		host.grants = grants;
 	}
 
 	/// Records a newly opened extension invocation at `OPEN`.
 	pub fn open(&self, host: HostKey, invocation_id: Str) {
 		let mut state = self.state.lock();
-		state.hosts.entry(host).or_default().invocations.insert(
+		let http_scope = state.http_scope.clone();
+		let previous = state.hosts.entry(host).or_default().invocations.insert(
 			invocation_id,
 			AuthorizedInvocation {
+				http_scope:         crate::http_policy::NativeHttpScope {
+					policies: http_scope.policies.clone(),
+					revoked:  http_scope.revoked.child_token(),
+				},
 				phase:              omp_core::InvocationPhase::Open,
 				effect_token:       Bytes::new(),
 				envelope:           Grants::default(),
@@ -1609,6 +1737,9 @@ impl AuthorityTable {
 				claimed_by:         None,
 			},
 		);
+		if let Some(previous) = previous {
+			previous.http_scope.revoked.cancel();
+		}
 	}
 
 	/// Advances an open invocation through the canonical seven-phase machine and
@@ -1685,32 +1816,7 @@ impl AuthorityTable {
 		else {
 			return Err(PolicyError::EffectsNotAuthorized);
 		};
-		if invocation.authorized_at_ms == 0
-			|| !invocation
-				.phase
-				.allows_operation(omp_core::InvocationPhase::EffectsAuthorized)
-		{
-			return Err(PolicyError::EffectsNotAuthorized);
-		}
-		if invocation.host_generation != credentials.host_generation
-			|| invocation.session_generation != credentials.session_generation
-		{
-			return Err(PolicyError::StaleGeneration);
-		}
-		if invocation.effect_token.as_ref() != credentials.effect_token
-			|| credentials.effect_token.is_empty()
-		{
-			return Err(PolicyError::InvalidEffectToken);
-		}
-		match invocation.claimed_by {
-			Some(owner) if owner != connection_owner => return Err(PolicyError::InvalidEffectToken),
-			Some(_) => {},
-			None => invocation.claimed_by = Some(connection_owner),
-		}
-		if !invocation.envelope.contains(capability) {
-			return Err(PolicyError::Denied { capability });
-		}
-		Ok(())
+		validate_invocation(invocation, connection_owner, credentials, Some(capability))
 	}
 
 	/// Validates a read-class DATA request's authorization phase, token,
@@ -1730,29 +1836,7 @@ impl AuthorityTable {
 		else {
 			return Err(PolicyError::EffectsNotAuthorized);
 		};
-		if invocation.authorized_at_ms == 0
-			|| !invocation
-				.phase
-				.allows_operation(omp_core::InvocationPhase::EffectsAuthorized)
-		{
-			return Err(PolicyError::EffectsNotAuthorized);
-		}
-		if invocation.host_generation != credentials.host_generation
-			|| invocation.session_generation != credentials.session_generation
-		{
-			return Err(PolicyError::StaleGeneration);
-		}
-		if invocation.effect_token.as_ref() != credentials.effect_token
-			|| credentials.effect_token.is_empty()
-		{
-			return Err(PolicyError::InvalidEffectToken);
-		}
-		match invocation.claimed_by {
-			Some(owner) if owner != connection_owner => return Err(PolicyError::InvalidEffectToken),
-			Some(_) => {},
-			None => invocation.claimed_by = Some(connection_owner),
-		}
-		Ok(())
+		validate_invocation(invocation, connection_owner, credentials, None)
 	}
 
 	/// Settles an invocation and revokes its token before returning.
@@ -1765,6 +1849,7 @@ impl AuthorityTable {
 				invocation.phase = omp_core::InvocationPhase::Settled;
 			}
 			invocation.effect_token = Bytes::new();
+			invocation.http_scope.revoked.cancel();
 		}
 	}
 
