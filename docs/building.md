@@ -54,3 +54,27 @@ Dependency-tree and isolated typecheck results do not establish a clean-host
 build or a passing test sweep. Completing #39 still requires the recorded
 clean-host demonstration, full affected tests and doctests, and hosted evidence
 that unrelated package builds exclude audio C dependencies.
+
+### Minimal-container prerequisite evidence
+
+The `pristine-prerequisites` job in `build-isolation.yml` runs the actual
+`just doctor` from an archived source revision in a newly created Debian
+container. It installs the pinned Rust toolchain and its declared components,
+plus `just` and Python to launch the doctor. Native build prerequisites
+(including CMake and Ninja) are genuinely absent, verified against normal
+PATH discovery and the full package inventory; they are not hidden by a
+restricted PATH or replaced with stubs. The measured invocation has no
+network and no host toolchain, vendor, or Cargo-cache mounts.
+
+The job requires a nonzero diagnostic exit, actionable missing-CMake and
+missing-Ninja lines, recognition of the installed pinned Rust components,
+and elapsed wall time below three seconds. It retains source/checker hashes,
+container image identity/history, package/tool inventories, raw diagnostics,
+measured time, and pass/fail observations even when the check fails.
+
+This proves the minimal **Linux container** missing-prerequisite path in
+roadmap Appendix E. It is not a pristine macOS VM, not literally a Rust-only
+installation (the diagnostic launcher needs just/Python), and not a full
+workspace test sweep. The Apple Silicon lld prerequisite still needs separate
+macOS evidence; configured macOS builds and simulated missing-linker unit
+tests must retain their separate labels.

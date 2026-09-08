@@ -11,6 +11,10 @@ on:
       - Cargo.lock
       - crates/**/Cargo.toml
       - scripts/check-feature-isolation.py
+      - scripts/build-doctor.py
+      - scripts/pristine-host/**
+      - rust-toolchain.toml
+      - justfile
       - .github/workflows/build-isolation.yml
   workflow_dispatch:
     inputs:
@@ -110,4 +114,72 @@ jobs:
         with:
           name: package-feature-isolation
           path: source/target/feature-isolation/
+          if-no-files-found: error
+
+  pristine-prerequisites:
+    name: Actual prerequisite failure in a fresh minimal Linux container
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Prepare clean source and checker provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pristine-evidence pristine-source pristine-image
+          git -C source rev-parse HEAD > pristine-evidence/source-sha.txt
+          git -C proof-tools rev-parse HEAD > pristine-evidence/checker-sha.txt
+          git -C source status --porcelain=v1 > pristine-evidence/source-status.txt
+          git -C source archive HEAD | tar -x -C pristine-source
+          cp proof-tools/scripts/pristine-host/Dockerfile pristine-image/Dockerfile
+          cp pristine-source/rust-toolchain.toml pristine-image/rust-toolchain.toml
+          sha256sum proof-tools/scripts/pristine-host/check.py pristine-image/Dockerfile pristine-image/rust-toolchain.toml > pristine-evidence/checker-files.sha256
+          test ! -e pristine-source/vendor/python
+          test ! -e pristine-source/target
+      - name: Build minimal diagnostic environment without native build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --no-cache --progress plain -t omp-pristine-doctor pristine-image 2>&1 | tee pristine-evidence/image-build.log
+          docker image inspect omp-pristine-doctor > pristine-evidence/image.json
+          docker history --no-trunc omp-pristine-doctor > pristine-evidence/image-history.txt
+      - name: Observe actual entrypoint with no network or host tool mounts
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          docker run --rm --network none \
+            --mount "type=bind,src=$PWD/pristine-source,dst=/source,readonly" \
+            --mount "type=bind,src=$PWD/proof-tools/scripts/pristine-host,dst=/checker,readonly" \
+            --mount "type=bind,src=$PWD/pristine-evidence,dst=/evidence" \
+            omp-pristine-doctor 2>&1 | tee pristine-evidence/container.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'container=%s log_write=%s\n' "${codes[0]}" "${codes[1]}" > pristine-evidence/exit.txt || exit 1
+          for code in "${codes[@]}"; do if [ "$code" -ne 0 ]; then exit 1; fi; done
+      - name: Publish minimal-container evidence and scope
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo 'Source and checker revisions:'
+            echo '```text'
+            cat pristine-evidence/source-sha.txt pristine-evidence/checker-sha.txt
+            if [ -f pristine-evidence/exit.txt ]; then cat pristine-evidence/exit.txt; fi
+            echo '```'
+            if [ -s pristine-evidence/summary.md ]; then cat pristine-evidence/summary.md; else echo '**Proof incomplete: no observed diagnostic report.**'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          test -s pristine-evidence/result.json
+          test -s pristine-evidence/summary.md
+      - name: Retain pristine prerequisite evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pristine-prerequisites
+          path: pristine-evidence/
           if-no-files-found: error
