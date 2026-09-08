@@ -1759,9 +1759,18 @@ impl ExtHostSupervisor {
 			{
 				Ok(Ok(evidence)) => evidence,
 				Ok(Err(error)) => {
+					let mut tail = Vec::new();
+					while let Ok(log) = running.logs().try_recv() {
+						let bytes = log.bytes.as_slice();
+						tail.extend_from_slice(&bytes[bytes.len().saturating_sub(800)..]);
+						if tail.len() > 800 {
+							tail.drain(..tail.len() - 800);
+						}
+					}
 					tracing::warn!(
 						extension_id = %extension.key.extension(),
 						error = %error,
+						output_tail = %String::from_utf8_lossy(&tail).trim(),
 						"Python extension registry freeze failed; containing failure",
 					);
 					running.shutdown().await;
