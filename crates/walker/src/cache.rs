@@ -373,15 +373,9 @@ pub fn invalidate_all() {
 
 #[cfg(test)]
 mod tests {
-	use std::{
-		env, fs,
-		path::{Path, PathBuf},
-		sync::atomic::{AtomicU64, Ordering},
-		thread,
-		time::{Duration, SystemTime, UNIX_EPOCH},
-	};
 	#[cfg(unix)]
 	use std::{ffi::CString, os::unix::ffi::OsStrExt};
+	use std::{fs, path::Path, thread, time::Duration};
 
 	#[cfg(unix)]
 	use super::classify_file_type;
@@ -389,33 +383,6 @@ mod tests {
 	use crate::{
 		CollectedEntry, DirectoryErrorMode, FileType, FollowLinks, WalkDetail, WalkOptions,
 	};
-
-	static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-	struct TempDirGuard(PathBuf);
-
-	impl TempDirGuard {
-		fn new() -> Self {
-			let timestamp = SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("system time is after UNIX_EPOCH")
-				.as_nanos();
-			let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-			let path = env::temp_dir().join(format!("pi-fs-cache-test-{timestamp}-{counter}"));
-			fs::create_dir_all(&path).expect("create temp test directory");
-			Self(path)
-		}
-
-		fn path(&self) -> &Path {
-			&self.0
-		}
-	}
-
-	impl Drop for TempDirGuard {
-		fn drop(&mut self) {
-			let _ = fs::remove_dir_all(&self.0);
-		}
-	}
 
 	#[cfg(unix)]
 	fn make_fifo(path: &Path) {
@@ -485,7 +452,7 @@ mod tests {
 	#[cfg(unix)]
 	#[test]
 	fn classify_file_type_skips_fifo() {
-		let root = TempDirGuard::new();
+		let root = tempfile::tempdir().expect("isolated walker test directory");
 		let fifo = root.path().join("skip-me.fifo");
 		make_fifo(&fifo);
 
@@ -494,7 +461,7 @@ mod tests {
 
 	#[test]
 	fn collect_entries_skips_node_modules() {
-		let root = TempDirGuard::new();
+		let root = tempfile::tempdir().expect("isolated walker test directory");
 		fs::create_dir_all(root.path().join("node_modules/pkg")).unwrap();
 		fs::write(root.path().join("node_modules/pkg/index.js"), "nm").unwrap();
 		fs::write(root.path().join("real.txt"), "ok").unwrap();
@@ -514,7 +481,7 @@ mod tests {
 	#[cfg(unix)]
 	#[test]
 	fn collect_entries_follow_links_always() {
-		let root = TempDirGuard::new();
+		let root = tempfile::tempdir().expect("isolated walker test directory");
 		fs::create_dir_all(root.path().join("target")).unwrap();
 		fs::write(root.path().join("target/linked.txt"), "linked").unwrap();
 		{
@@ -539,7 +506,7 @@ mod tests {
 
 	#[test]
 	fn traversal_gitignore_excludes_files() {
-		let root = TempDirGuard::new();
+		let root = tempfile::tempdir().expect("isolated walker test directory");
 		fs::create_dir_all(root.path().join(".git")).unwrap();
 		fs::write(root.path().join(".gitignore"), "ignored.txt\n").unwrap();
 		fs::write(root.path().join("ignored.txt"), "ignored").unwrap();
@@ -559,7 +526,7 @@ mod tests {
 
 	#[test]
 	fn traversal_hidden_disabled_excludes_files_and_descendants() {
-		let root = TempDirGuard::new();
+		let root = tempfile::tempdir().expect("isolated walker test directory");
 		fs::create_dir_all(root.path().join(".hidden-dir")).unwrap();
 		fs::write(root.path().join(".hidden-dir/child.txt"), "child").unwrap();
 		fs::write(root.path().join(".hidden-file"), "secret").unwrap();
@@ -587,7 +554,7 @@ mod tests {
 
 	#[test]
 	fn traversal_hidden_enabled_includes_non_ignored_hidden_entries() {
-		let root = TempDirGuard::new();
+		let root = tempfile::tempdir().expect("isolated walker test directory");
 		fs::create_dir_all(root.path().join(".git")).unwrap();
 		fs::write(root.path().join(".gitignore"), ".ignored-hidden\n").unwrap();
 		fs::create_dir_all(root.path().join(".hidden-dir")).unwrap();
@@ -611,7 +578,7 @@ mod tests {
 
 	#[test]
 	fn collect_entries_respects_pre_cancelled_token() {
-		let root = TempDirGuard::new();
+		let root = tempfile::tempdir().expect("isolated walker test directory");
 		fs::write(root.path().join("real.txt"), "ok").unwrap();
 
 		thread::sleep(Duration::from_millis(1));
@@ -631,7 +598,7 @@ mod tests {
 
 	#[test]
 	fn scan_detail_controls_metadata_collection() {
-		let root = TempDirGuard::new();
+		let root = tempfile::tempdir().expect("isolated walker test directory");
 		fs::write(root.path().join("real.txt"), "ok").unwrap();
 
 		let minimal =
