@@ -200,8 +200,6 @@ impl CompactionDirector {
 		} else {
 			cx.route.context_window
 		};
-		let context_tokens = context_tokens(dom, previous_boundary, request);
-		let target_tokens = threshold_tokens(context_window, &settings);
 		if unknown_window && !self.manual && settings.enabled && !unknown_window_noted(dom) {
 			crate::steering::append_named_notice(
 				cx.session,
@@ -214,6 +212,10 @@ impl CompactionDirector {
 				),
 			)?;
 		}
+		// The notice above appended to the session; borrow the tree again.
+		let dom = cx.session.dom();
+		let context_tokens = context_tokens(dom, previous_boundary, request);
+		let target_tokens = threshold_tokens(context_window, &settings);
 		if !self.manual {
 			// The dead-end guard rejects a request whose newest marker is the
 			// head: that request already compacted.
