@@ -107,6 +107,31 @@ migration, browser-readable production session corruption evidence, and
 operation-specific compaction/lift/import proofs are not delivered by this slice. No complete #49 acceptance
 claim follows from the implementation or from unit test existence.
 
+### Operation regression coverage (runtime pending)
+
+The existing production `Session::compaction` regression now verifies every
+physical frame, its summary/frame blob identities and retained boundary, and
+checks the same seal after replay. The import regression invokes `import_file`,
+verifies the native chain and causal links, reads the original foreign bytes
+back from the addressed CAS object, and checks the projected message. This
+covers conversion; it does not exercise picker selection or atomic publication.
+The rewind regression additionally prunes the actual Session journal, checks
+all retained entries against the selected branch, and compares the projected
+conversation after replay. Internal DOM handles may be reassigned by pruning.
+No existing behavioral assertion was removed.
+
+P10 additionally verifies the journal from real dispatch of lifted arguments,
+its call revision/arguments, terminal result cause and replayed snapshot. Its
+historical lift input remains a synthetic proto thread. This is **not** a proof
+of lifting persisted journal history: `ToolCall.rev` stores only a number,
+`journal_revision` discards the revision family, and `project_thread` omits the
+`omp/tool-rev` property consumed by `project_thread_history`. A correct durable
+lift requires preserving the original full revision at call admission and
+projecting it after replay; looking up today's family would invent provenance.
+These additional tests have been formatted and source-reviewed only. Hosted
+execution, journal-backed lift coverage and explicit legacy migration remain
+pending.
+
 ## References
 
 - [0003](0003-one-authoritative-session-tree.md): session authority and fold

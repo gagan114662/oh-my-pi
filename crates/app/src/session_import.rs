@@ -525,8 +525,47 @@ mod tests {
 		let destination = directory.path().join("destination.oms");
 		fs::write(&source, r#"{"type":"user","message":{"content":"hello"}}"#).unwrap();
 		assert_eq!(import_file(ForeignFormat::Claude, &source, &destination).unwrap(), 1);
+		let source_bytes = fs::read(&source).unwrap();
+		let sealed = omp_journal::Journal::verify_path(&destination, None).unwrap();
+		let entries = omp_journal::Journal::scan(&destination).unwrap();
+		assert_eq!(sealed.sealed_entries, entries.len());
+		assert_eq!((sealed.legacy_entries, sealed.legacy_bytes, sealed.torn_tail_bytes), (0, 0, 0));
+		assert!(sealed.tip.is_some());
+		for (index, entry) in entries.iter().enumerate().skip(1) {
+			assert!(
+				entries[..index]
+					.iter()
+					.any(|cause| Some(cause.id) == entry.by),
+				"import entry must retain an earlier cause"
+			);
+		}
+
 		let session = Session::open(&destination, ComponentRegistry::standard()).unwrap();
 		let meta = session.dom().get(session.dom().meta()).unwrap();
+		let mut digest = omp_core::Hash32::hasher();
+		digest.update(&source_bytes);
+		let reference =
+			omp_journal::blob::BlobRef { hash: digest.finalize(), size: source_bytes.len() as u64 };
+		let source_address = format!("artifact://sha256/{}", reference.hash);
+		assert_eq!(
+			meta
+				.prop(&PropKey::Custom(Str::new_static("import-source-blob")))
+				.and_then(DomValue::as_str),
+			Some(source_address.as_str())
+		);
+		assert_eq!(session.blobs().get(&reference).unwrap().as_ref(), source_bytes.as_slice());
+		let projected = omp_session::project_thread(session.dom());
+		assert!(projected.iter().any(|item| match item.kind.as_ref() {
+			Some(omp_proto::thread::v1::item::Kind::Message(message)) => message.parts.iter().any(|part| matches!(part.kind.as_ref(), Some(omp_proto::thread::v1::part::Kind::Text(text)) if text == "hello")),
+			_ => false,
+		}));
+		assert_eq!(omp_journal::Journal::verify_path(&destination, sealed.tip).unwrap(), sealed);
+		assert_eq!(
+			fs::read(&source).unwrap(),
+			source_bytes,
+			"import preserves original foreign bytes"
+		);
+
 		assert_eq!(
 			meta
 				.prop(&PropKey::Custom(Str::new_static("import-source")))

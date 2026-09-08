@@ -456,10 +456,31 @@ fn receipt_and_compaction_facts_materialize_and_survive_reopen() {
 			}],
 		})
 		.expect("compaction");
+	let sealed = omp_journal::Journal::verify_path(&path, None).expect("compaction chain verifies");
+	let entries = omp_journal::Journal::scan(&path).expect("compaction entries");
+	assert_eq!(sealed.sealed_entries, entries.len());
+	assert_eq!((sealed.legacy_entries, sealed.legacy_bytes, sealed.torn_tail_bytes), (0, 0, 0));
+	assert!(sealed.tip.is_some());
+	let compact_entry = entries.last().expect("compaction entry");
+	assert_eq!(compact_entry.kind.to_string(), "compaction@1");
+	let recorded: Compaction =
+		serde_json::from_str(&compact_entry.data).expect("compaction payload");
+	assert_eq!(recorded.boundary, receipt);
+	assert_eq!(recorded.summary, summary);
+	assert_eq!(recorded.frames[0].blob, frame);
+	assert!(
+		entries
+			.iter()
+			.any(|entry| Some(entry.id) == compact_entry.by)
+	);
 	let live = session.dom().snapshot();
 	drop(session);
 
 	let reopened = Session::open(&path, ComponentRegistry::default()).expect("session reopens");
+	assert_eq!(
+		omp_journal::Journal::verify_path(&path, sealed.tip).expect("same physical history"),
+		sealed
+	);
 	assert_eq!(reopened.dom().snapshot(), live);
 	let dom = reopened.dom();
 	let mut usages = dom.select("body turn usage").expect("selector");

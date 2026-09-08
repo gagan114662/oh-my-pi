@@ -22,13 +22,12 @@ fn child(session: &Session, parent: omp_dom::Handle, tag: KnownTag) -> omp_dom::
 #[test]
 fn subscription_survives_rewind_and_marks_branch_prior() {
 	let directory = tempfile::tempdir().expect("temporary session directory");
-	let mut session =
-		Session::create(directory.path().join("subscription.oms"), ComponentRegistry::default())
-			.expect("session creates");
+	let path = directory.path().join("subscription.oms");
+	let mut session = Session::create(&path, ComponentRegistry::default()).expect("session creates");
 	let target = session.begin_turn().expect("turn starts");
 	let (snapshot, events) = session.subscribe();
 	let mut replica = omp_dom::Dom::from_snapshot(&snapshot);
-	session
+	let abandoned = session
 		.user("abandoned", Vec::new())
 		.expect("message appends");
 	while let Ok(event) = events.try_recv() {
@@ -42,7 +41,7 @@ fn subscription_survives_rewind_and_marks_branch_prior() {
 	replica.apply_event(&reset).expect("reset applies");
 	assert_eq!(replica.snapshot().as_bytes(), session.dom().snapshot().as_bytes());
 
-	session.begin_turn().expect("branch append");
+	let branch = session.begin_turn().expect("branch append");
 	session
 		.user("selected", Vec::new())
 		.expect("branch message appends");
@@ -55,6 +54,49 @@ fn subscription_survives_rewind_and_marks_branch_prior() {
 	}
 	assert!(saw_prior);
 	assert_eq!(replica.snapshot().as_bytes(), session.dom().snapshot().as_bytes());
+	let live = session.dom().snapshot();
+	let projected = omp_session::project_thread(session.dom());
+	drop(session);
+	let sealed = omp_journal::Journal::verify_path(&path, None).expect("rewound chain verifies");
+	let entries = omp_journal::Journal::scan(&path).expect("physical history");
+	assert_eq!(sealed.sealed_entries, entries.len());
+	assert_eq!((sealed.legacy_entries, sealed.legacy_bytes, sealed.torn_tail_bytes), (0, 0, 0));
+	assert!(sealed.tip.is_some());
+	assert!(entries.iter().any(|entry| entry.id == abandoned));
+	assert_eq!(
+		entries
+			.iter()
+			.find(|entry| entry.id == branch)
+			.expect("branch")
+			.prior,
+		Some(target)
+	);
+	assert!(!omp_journal::live_chain(&entries).any(|entry| entry.id == abandoned));
+	let reopened = Session::open(&path, ComponentRegistry::default()).expect("rewound replay");
+	assert_eq!(reopened.dom().snapshot(), live);
+	drop(reopened);
+	omp_journal::gc::prune_abandoned(&path).expect("prune actual session");
+	let pruned = omp_journal::Journal::verify_path(&path, None).expect("pruned session verifies");
+	let retained = omp_journal::Journal::scan(&path).expect("retained entries");
+	assert_eq!(pruned.sealed_entries, retained.len());
+	assert_eq!((pruned.legacy_entries, pruned.legacy_bytes, pruned.torn_tail_bytes), (0, 0, 0));
+	assert!(pruned.tip.is_some());
+	assert_eq!(
+		retained.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+		omp_journal::live_chain(&entries)
+			.map(|entry| entry.id)
+			.collect::<Vec<_>>()
+	);
+	// Pruning may reclaim ephemeral DOM handles; durable entries and model
+	// state must retain the selected branch's identities and content.
+	assert_eq!(
+		retained,
+		omp_journal::live_chain(&entries)
+			.cloned()
+			.collect::<Vec<_>>()
+	);
+	let pruned_session = Session::open(&path, ComponentRegistry::default()).expect("pruned replay");
+	assert_eq!(omp_session::project_thread(pruned_session.dom()), projected);
 }
 
 #[test]
