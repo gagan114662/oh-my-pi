@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -144,7 +145,7 @@ print('ARTIFACT_TAIL_PARITY_OK')
                 ("directory", call("read", path="directory.mp4:-1"), ["zzz.txt"], ["aaa.txt", "mmm.txt"], False),
                 ("invalid-zero", call("read", path="short.txt:-0"), [], ["KEEP_LAST"], True),
                 ("invalid-overflow", call("read", path="short.txt:-18446744073709551616"), [], ["KEEP_LAST"], True),
-                ("artifact-python-parity", call("eval", language="py", code=artifact_code), ["ARTIFACT_TAIL_PARITY_OK"], ["AssertionError"], False),
+                ("artifact-python-parity", call("bash", command="dyn eval --json " + shlex.quote(json.dumps({"language": "py", "code": artifact_code})), i="Checking artifact Python parity"), ["ARTIFACT_TAIL_PARITY_OK"], ["AssertionError"], False),
                 ("video-preview", call("read", path="demo.mp4"), ["3x3", "Resolution: 64x48", "Video codec: h264"], [], False),
                 ("video-frame", call("read", path="demo';echo-not-executed.mp4:2"), ["Frame: 2 (zero-based)"], [], False),
                 ("video-time", call("read", path="demo.mp4:1s"), ["Timestamp: 1.000s"], [], False),
@@ -194,7 +195,7 @@ print('ARTIFACT_TAIL_PARITY_OK')
                             captures = mock.state()["captures"]
                             self.assertTrue(captures, "provider must receive the tool catalog")
                             advertised = {tool.get("function", {}).get("name") for tool in captures[0].get("tools", [])}
-                            self.assertIn("eval" if name == "artifact-python-parity" else "read", advertised,
+                            self.assertIn("bash" if name == "artifact-python-parity" else "read", advertised,
                                           "requested fixture tool must be enabled before inference")
                             self.assertEqual(len(captures), 2, "tool result must reach the next provider request")
                             results = [message for message in captures[1]["messages"] if message.get("role") == "tool"]
