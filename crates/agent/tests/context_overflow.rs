@@ -105,7 +105,11 @@ fn compactions(path: &std::path::Path) -> Vec<Option<Str>> {
 	journal_entries(path)
 		.into_iter()
 		.filter(|entry| entry.kind.name.as_str() == "compaction")
-		.map(|entry| entry.label)
+		.map(|entry| {
+			serde_json::from_str::<serde_json::Value>(&entry.data)
+				.ok()
+				.and_then(|payload| payload.get("method")?.as_str().map(Str::new))
+		})
 		.collect()
 }
 

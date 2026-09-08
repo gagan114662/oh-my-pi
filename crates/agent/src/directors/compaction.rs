@@ -13,7 +13,7 @@ use omp_ai::{
 };
 use omp_con::Ctx;
 use omp_core::{Str, StrMut, sf};
-use omp_dom::{Dom, Handle, KnownTag, Node, PropId, PropKey, Tag, Value};
+use omp_dom::{Dom, Handle, KnownTag, Node, Op, PropId, PropKey, Tag, Txn, Value};
 use omp_journal::{EntryId, data::Compaction};
 use omp_proto::toolhost::v1::HookEventId;
 use omp_session::{project_thread, project_thread_through};
@@ -201,18 +201,26 @@ impl CompactionDirector {
 			cx.route.context_window
 		};
 		if unknown_window && !self.manual && settings.enabled && !unknown_window_noted(dom) {
-			crate::steering::append_named_notice(
-				cx.session,
-				cx.turn,
-				Str::new_static("warn"),
-				Some(Str::new_static("context-window-unknown")),
-				sf!(
-					"The catalog declares no context window for this model; compaction assumes \
-					 {UNKNOWN_CONTEXT_WINDOW_TOKENS} tokens"
-				),
-			)?;
+			// Journaled once as session metadata (not a turn notice): the
+			// assumption is replayable and visible without changing what the
+			// model or the transcript sees.
+			let meta = dom
+				.select("meta")
+				.ok()
+				.and_then(|mut handles| handles.next());
+			if let Some(meta) = meta {
+				cx.session.patch(Txn {
+					cause: head,
+					label: Some(Str::new_static("context-window-assumed")),
+					ops:   vec![Op::Set {
+						h:     meta,
+						prop:  PropKey::Custom(Str::new_static(UNKNOWN_WINDOW_PROP)),
+						value: Value::Int(UNKNOWN_CONTEXT_WINDOW_TOKENS as i64),
+					}],
+				})?;
+			}
 		}
-		// The notice above appended to the session; borrow the tree again.
+		// The patch above may have appended to the session; borrow the tree again.
 		let dom = cx.session.dom();
 		let context_tokens = context_tokens(dom, previous_boundary, request);
 		let target_tokens = threshold_tokens(context_window, &settings);
@@ -564,17 +572,21 @@ fn media_as_text(message: &Message) -> Message {
 	Message { role: message.role, content, name: message.name.clone() }
 }
 
-/// Whether the session already carries the one-time unknown-window notice.
+/// Prop on `<meta>` recording the window compaction assumed for a model
+/// whose catalog declares none.
+const UNKNOWN_WINDOW_PROP: &str = "context-window-assumed";
+
+/// Whether the session already records the assumed window.
 fn unknown_window_noted(dom: &Dom) -> bool {
-	let Ok(handles) = dom.select("body turn notice") else {
-		return false;
-	};
-	handles.into_iter().any(|handle| {
-		dom.get(handle)
-			.and_then(|node| node.prop(&PropKey::Custom(Str::new_static("name"))))
-			.and_then(Value::as_str)
-			== Some("context-window-unknown")
-	})
+	dom.select("meta")
+		.ok()
+		.and_then(|mut handles| handles.next())
+		.and_then(|meta| dom.get(meta))
+		.is_some_and(|node| {
+			node
+				.prop(&PropKey::Custom(Str::new_static(UNKNOWN_WINDOW_PROP)))
+				.is_some()
+		})
 }
 
 /// Context occupancy in whole percent of the window, saturating at 100 (an
