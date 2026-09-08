@@ -768,6 +768,7 @@ impl RouteComposer for ProductionRouteComposer {
 				.transport_timeout
 				.min(framework_timeout)
 				.min(Duration::from_secs(self.dependencies.settings.providers.timeout_seconds)),
+			stream_idle_timeout: self.dependencies.settings.providers.stream_idle_timeout(),
 		};
 		let admission = self
 			.dependencies
@@ -1323,13 +1324,14 @@ impl Codec for RouteCodecSet {
 
 #[derive(Clone)]
 struct RouteEncoder {
-	route:             RouteDef,
-	auth_schemes:      Box<[AuthScheme]>,
-	headers:           Box<[RequestHeader]>,
-	codec:             Arc<dyn Codec>,
-	azure_endpoint:    Option<AzureEndpointConfig>,
-	regional_route:    Option<RouteDef>,
-	transport_timeout: Duration,
+	route:               RouteDef,
+	auth_schemes:        Box<[AuthScheme]>,
+	headers:             Box<[RequestHeader]>,
+	codec:               Arc<dyn Codec>,
+	azure_endpoint:      Option<AzureEndpointConfig>,
+	regional_route:      Option<RouteDef>,
+	transport_timeout:   Duration,
+	stream_idle_timeout: Option<Duration>,
 }
 
 const fn forced_choice_penalty(penalty: NativeToolChoicePenalty) -> Penalty {
@@ -1792,6 +1794,15 @@ impl AttemptEncoder<Call, Option<CredentialLease>> for RouteEncoder {
 					.streaming
 					.watchdog
 					.and_then(omp_catalog::StreamWatchdog::first_event_timeout),
+				// The catalog's per-model idle interval wins; the runtime default
+				// covers models that declare none, so a stalled body is never left
+				// to the whole-attempt deadline alone.
+				idle_timeout: plan
+					.wire_policy
+					.streaming
+					.watchdog
+					.and_then(omp_catalog::StreamWatchdog::idle_timeout)
+					.or(self.stream_idle_timeout),
 			},
 		})
 	}
@@ -3554,6 +3565,7 @@ mod tests {
 				azure_endpoint: None,
 				regional_route: None,
 				transport_timeout: Duration::from_secs(30),
+				stream_idle_timeout: None,
 			},
 			call,
 			account,
