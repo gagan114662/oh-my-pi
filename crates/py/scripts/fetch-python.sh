@@ -64,13 +64,7 @@ prepare_tree() {
 
 	if [ "$NEEDS_FETCH" = "1" ]; then
 		echo "fetching ${NAME} into ${VENDOR_NAME}..." >&2
-		local TMP_EXTRACT
-		TMP_EXTRACT=$(mktemp -d "$DEST/.fetch-py.XXXXXX")
-		curl -fsSL "$URL" | zstd -d | tar -x -C "$TMP_EXTRACT"
-		rm -rf "$VENDOR"
-		mv "$TMP_EXTRACT/python" "$VENDOR"
-		echo "$NAME" > "$VENDOR/.archive.stamp"
-		rm -rf "$TMP_EXTRACT"
+		bash "$SCRIPT_DIR/fetch-python-archive.sh" "$URL" "$VENDOR" "$NAME"
 	fi
 	if [ "$NEEDS_LLD" = "1" ]; then
 		touch "$VENDOR/needs-lld"
