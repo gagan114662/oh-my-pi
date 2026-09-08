@@ -746,7 +746,9 @@ impl ApprovalDesk {
 				Some(decision) => {
 					self.book.decide(session, id.as_str(), decision)?;
 				},
-				None => self.book.withdraw(session, id.as_str())?,
+				None => {
+					self.book.withdraw(session, id.as_str())?;
+				},
 			}
 		}
 		Ok(())
