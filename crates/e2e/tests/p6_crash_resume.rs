@@ -11,7 +11,7 @@ use std::{
 	path::Path,
 	pin::Pin,
 	sync::{
-		Arc, Mutex,
+		Arc,
 		atomic::{AtomicBool, Ordering},
 	},
 	task::{Context, Poll},
@@ -52,6 +52,7 @@ use omp_e2e::support::{
 	OwnedProcess, create_session, install_omp_binary_env, omp_binary, reopen_session, within,
 };
 use omp_tool::Registry as ToolRegistry;
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tokio::{process::Command, time};
 use tower::Service;
@@ -272,7 +273,7 @@ impl PtyDrain {
 					Ok(0) | Err(Errno::EAGAIN) => thread::sleep(Duration::from_millis(5)),
 					Ok(count) => {
 						bytes += count;
-						let mut tail = reader_tail.lock().expect("PTY tail lock");
+						let mut tail = reader_tail.lock();
 						tail.extend_from_slice(&buffer[..count]);
 						let overflow = tail.len().saturating_sub(PTY_TAIL_LIMIT);
 						tail.drain(..overflow);
@@ -474,12 +475,21 @@ async fn retain_shutdown_failure(resumed: &ChatProcess, debug: &Path, journal: &
 		Ok(frame) => frame,
 		Err(error) => json!({"error": error.to_string()}),
 	};
-	let tail = resumed.drain.tail.lock().expect("PTY tail lock").clone();
+	let tail = resumed.drain.tail.lock().clone();
 	observation["pty_tail"] = json!(String::from_utf8_lossy(&tail));
 	observation["pty_tail_limit"] = json!(PTY_TAIL_LIMIT);
 	// This fixture contains only synthetic input and provider output.
-	observation["journal"] = match fs::read_to_string(journal) {
-		Ok(journal) => json!(journal),
+	observation["journal"] = match fs::File::open(journal).and_then(|file| {
+		use std::io::Read as _;
+		let mut bytes = Vec::new();
+		file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+		Ok(bytes)
+	}) {
+		Ok(mut bytes) => {
+			let truncated = bytes.len() > 1024 * 1024;
+			bytes.truncate(1024 * 1024);
+			json!({"encoding": "byte_array", "bytes": bytes, "truncated": truncated, "limit_bytes": 1024 * 1024})
+		},
 		Err(error) => json!({"error": error.to_string()}),
 	};
 	eprintln!("P6 shutdown failure: {observation}");

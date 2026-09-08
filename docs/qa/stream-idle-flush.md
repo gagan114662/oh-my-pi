@@ -53,7 +53,8 @@ until the entire proof succeeds. Quit duration is a separate diagnostic field;
 the existing timing checker and its acceptance limits are unchanged. After a
 failed quit wait, the fixture captures the owned resumed PID's `ps` state
 (without command-line arguments), a debug-frame response, the last 64KiB of PTY
-output, and the synthetic journal in `normal.shutdown.json` or
+output, and up to 1MiB of the synthetic journal as raw byte-array JSON (with
+an explicit truncation flag) in `normal.shutdown.json` or
 `contended.shutdown.json` beside the timing file. Process inspection has a
 separate two-second diagnostic timeout, and the debug socket retains its existing
 I/O limits. These observations happen after failure and cannot make the failed
