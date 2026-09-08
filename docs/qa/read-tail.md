@@ -1,7 +1,8 @@
 # Tail selector acceptance evidence (#31)
 
-`read-tail.yml` runs the same production-binary checker against the parent of
-this change (`b59b952172`) and the selected head. Each side builds its own source,
+`read-tail.yml` runs the selected head on push. Dispatch it separately with
+`source_ref=b59b952172` to run the same production-binary checker against the
+parent of this change, retaining its red result in a separate run. Each side builds its own source,
 uses its own shared HTTP mock harness, and records source/checker/binary digests.
 The checker invokes real `read` and `eval` tools and inspects the tool results
 sent back to the provider. Synthetic assistant responses cannot satisfy the
@@ -32,7 +33,8 @@ execution: the `omp-tools` libtest binary received SIGSEGV while executing
 This is failed execution evidence, not a passing test result. No root cause or
 baseline classification has been established from that log.
 
-The leaf workflow's Linux before/after jobs build exactly the same four affected
+The leaf workflow's Linux job builds the selected source. Its separately
+dispatched before/after runs build exactly the same four affected
 package targets with the pinned toolchain, unmodified source Cargo settings,
 and source-provided embedded Python setup. Each directly runs the tools libtest
 listing with a 120-second deadline, preserving its exit/signal code, binary

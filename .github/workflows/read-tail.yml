@@ -33,10 +33,6 @@ jobs:
     name: Production tail reads and complete affected targets
     runs-on: macos-15
     timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        revision: [before, after]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: source
-          ref: ${{ matrix.revision == 'before' && 'b59b952172' || inputs.source_ref || github.sha }}
+          ref: ${{ inputs.source_ref || github.sha }}
       - name: Install the same QA checker and record provenance
         working-directory: source
         shell: bash
@@ -108,7 +104,6 @@ jobs:
         working-directory: source
         shell: bash
         env:
-          OMP_READ_TAIL_REVISION: ${{ matrix.revision }}
           OMP_READ_TAIL_EVIDENCE_DIR: ${{ github.workspace }}/source/target/read-tail/qa
         run: |
           set +e
@@ -140,8 +135,6 @@ jobs:
           done
           exit "$suite_status"
       - name: Publish complete and missing evidence
-        env:
-          OMP_READ_TAIL_REVISION: ${{ matrix.revision }}
         if: always()
         working-directory: source
         shell: bash
@@ -153,7 +146,7 @@ jobs:
           out.mkdir(parents=True, exist_ok=True)
           provenance = out / 'provenance.json'
           lines = ['## Tail selector evidence', '',
-                   'The binary is built from the selected source with a copied QA checker. No build cache is restored. The before build is the recorded parent of the first tail fix; its QA semantic failure is expected and stays red, while all affected package tests must pass.',
+                   'The binary is built from the selected source with a copied QA checker. No build cache is restored. Dispatch source_ref=b59b952172 separately for the recorded parent; its QA semantic failure is expected and stays red, while all affected package tests must pass.',
                    'Missing, skipped, and failed execution is not passing evidence.', '', '```json',
                    provenance.read_text() if provenance.exists() else '{"error":"provenance missing"}', '```', '',
                    '| Check | Command exit | Log-write exit | Result |', '| --- | --- | --- | --- |']
@@ -174,7 +167,7 @@ jobs:
                   runs = json.loads(qa_manifest.read_text())['runs']
                   if not runs:
                       raise ValueError('QA manifest contains no runs')
-                  baseline = os.environ['OMP_READ_TAIL_REVISION'] == 'before'
+                  baseline = json.loads(provenance.read_text())['source_revision'].startswith('b59b952172')
                   if baseline and not any(row['case'] == 'local-large' and row.get('terminal_validated') and row.get('semantic_mismatch') for row in runs):
                       raise ValueError('Baseline did not expose a semantic mismatch')
                   if not baseline and (len(runs) != 9 or any(row['status'] != 'passed' for row in runs)):
@@ -204,22 +197,18 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: read-tail-${{ matrix.revision }}
+          name: read-tail
           path: source/target/read-tail/
           if-no-files-found: error
 
   linux-discovery:
-    name: Linux tools discovery (${{ matrix.revision }})
+    name: Linux tools discovery
     runs-on: ubuntu-24.04
     timeout-minutes: 75
-    strategy:
-      fail-fast: false
-      matrix:
-        revision: [before, after]
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.revision == 'before' && 'b59b952172' || inputs.source_ref || github.sha }}
+          ref: ${{ inputs.source_ref || github.sha }}
       - name: Install diagnostic prerequisites
         shell: bash
         run: |
@@ -285,7 +274,7 @@ jobs:
       - name: Report Linux discovery without treating baseline crashes as passes
         if: always()
         env:
-          REVISION_LABEL: ${{ matrix.revision }}
+          REVISION_LABEL: ${{ inputs.source_ref || github.sha }}
         run: |
           python3 - <<'PY'
           import os
@@ -301,6 +290,6 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: read-tail-linux-${{ matrix.revision }}
+          name: read-tail-linux
           path: target/read-tail-linux/
           if-no-files-found: error
