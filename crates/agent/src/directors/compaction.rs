@@ -12,7 +12,7 @@ use omp_ai::{
 	},
 };
 use omp_con::Ctx;
-use omp_core::{Str, StrMut};
+use omp_core::{Str, StrMut, sf};
 use omp_dom::{Dom, Handle, KnownTag, Node, PropId, PropKey, Tag, Value};
 use omp_journal::{EntryId, data::Compaction};
 use omp_proto::toolhost::v1::HookEventId;
@@ -32,6 +32,9 @@ const RESERVE_FRACTION: f64 = 0.15;
 /// Default count of recent tokens retained verbatim.
 const DEFAULT_KEEP_RECENT_TOKENS: u64 = 20_000;
 const BYTES_PER_TOKEN: u64 = 4;
+/// Window assumed when the catalog declares none: compaction stays armed
+/// instead of silently off, and the session is told once (#112).
+pub const UNKNOWN_CONTEXT_WINDOW_TOKENS: u64 = 32_000;
 const MESSAGE_OVERHEAD_TOKENS: u64 = 4;
 const TOOL_OVERHEAD_TOKENS: u64 = 16;
 const MEDIA_OVERHEAD_TOKENS: u64 = 256;
@@ -43,11 +46,14 @@ const SUMMARY_INSTRUCTION: &str = include_str!("../../prompts/compaction/handoff
 /// the threshold.
 #[derive(Clone, Debug, Default)]
 pub struct CompactionDirector {
-	focus:  Option<Str>,
-	manual: bool,
+	focus:        Option<Str>,
+	manual:       bool,
 	/// Journaled `method` for a manual run (`manual`, `handoff`); `None`
 	/// uses the automatic/manual default.
-	method: Option<Str>,
+	method:       Option<Str>,
+	/// Overflow recovery: keep only the current turn verbatim and hide
+	/// everything before it, regardless of the configured recent budget.
+	current_only: bool,
 }
 
 /// Effective compaction settings.
@@ -138,13 +144,27 @@ impl CompactionDirector {
 	/// Creates the standard automatic compaction director.
 	#[must_use]
 	pub const fn new() -> Self {
-		Self { focus: None, manual: false, method: None }
+		Self { focus: None, manual: false, method: None, current_only: false }
 	}
 
 	/// Creates a one-shot manual compaction request with optional summary focus.
 	#[must_use]
 	pub const fn manual(focus: Option<Str>) -> Self {
-		Self { focus, manual: true, method: None }
+		Self { focus, manual: true, method: None, current_only: false }
+	}
+
+	/// Creates the forced compaction that recovers a provider context
+	/// overflow: threshold-free like a manual run, journaled as `overflow`,
+	/// keeping the current turn's prompt verbatim and hiding every earlier
+	/// turn so the retry is as small as one compaction can make it.
+	#[must_use]
+	pub fn overflow() -> Self {
+		Self {
+			focus:        None,
+			manual:       true,
+			method:       Some(Str::new_static("overflow")),
+			current_only: true,
+		}
 	}
 
 	/// Labels the journaled compaction method (`/handoff` journals
@@ -174,14 +194,30 @@ impl CompactionDirector {
 		let settings = Settings::resolve(cx.con, dom);
 		let previous = newest_marker(dom);
 		let previous_boundary = previous.as_ref().map(|marker| marker.boundary);
-		let context_window = cx.route.context_window;
+		let unknown_window = cx.route.context_window == 0;
+		let context_window = if unknown_window {
+			UNKNOWN_CONTEXT_WINDOW_TOKENS
+		} else {
+			cx.route.context_window
+		};
 		let context_tokens = context_tokens(dom, previous_boundary, request);
 		let target_tokens = threshold_tokens(context_window, &settings);
+		if unknown_window && !self.manual && settings.enabled && !unknown_window_noted(dom) {
+			crate::steering::append_named_notice(
+				cx.session,
+				cx.turn,
+				Str::new_static("warn"),
+				Some(Str::new_static("context-window-unknown")),
+				sf!(
+					"The catalog declares no context window for this model; compaction assumes \
+					 {UNKNOWN_CONTEXT_WINDOW_TOKENS} tokens"
+				),
+			)?;
+		}
 		if !self.manual {
 			// The dead-end guard rejects a request whose newest marker is the
 			// head: that request already compacted.
 			if !settings.enabled
-				|| context_window == 0
 				|| previous.as_ref().is_some_and(|marker| marker.id == head)
 				|| context_tokens <= target_tokens
 				|| (!settings.mid_turn_enabled && turn_has_inference(dom, cx.turn))
@@ -194,8 +230,12 @@ impl CompactionDirector {
 			cx.turn,
 			head,
 			previous_boundary,
-			settings.keep_recent_tokens,
-			!self.manual,
+			if self.current_only {
+				0
+			} else {
+				settings.keep_recent_tokens
+			},
+			!self.manual || self.current_only,
 		) else {
 			return Ok(Prepared::Unchanged);
 		};
@@ -522,6 +562,19 @@ fn media_as_text(message: &Message) -> Message {
 	Message { role: message.role, content, name: message.name.clone() }
 }
 
+/// Whether the session already carries the one-time unknown-window notice.
+fn unknown_window_noted(dom: &Dom) -> bool {
+	let Ok(handles) = dom.select("body turn notice") else {
+		return false;
+	};
+	handles.into_iter().any(|handle| {
+		dom.get(handle)
+			.and_then(|node| node.prop(&PropKey::Custom(Str::new_static("name"))))
+			.and_then(Value::as_str)
+			== Some("context-window-unknown")
+	})
+}
+
 /// Context occupancy in whole percent of the window, saturating at 100 (an
 /// unknown window reads as 0).
 fn occupancy_percent(context_tokens: u64, context_window: u64) -> u8 {
@@ -756,7 +809,7 @@ fn prop_u64(node: &Node, prop: PropId) -> u64 {
 	}
 }
 
-fn estimate_request_tokens(request: &ChatRequest) -> u64 {
+pub(crate) fn estimate_request_tokens(request: &ChatRequest) -> u64 {
 	let message_bytes = request.messages.iter().fold(0_u64, |total, message| {
 		total
 			.saturating_add(estimate_message_bytes(message))
