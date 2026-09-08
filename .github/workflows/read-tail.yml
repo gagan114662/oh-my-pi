@@ -134,17 +134,6 @@ jobs:
             done
           done
           exit "$suite_status"
-      - name: Run real environment-owned video extraction fixture
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        working-directory: source
-        shell: bash
-        run: |
-          set +e
-          set -uo pipefail
-          cargo nextest run --locked --profile ci -p omp-envd --run-ignored all -E 'test(video_fixture_frame_time_and_preview)' --no-tests fail 2>&1 | tee target/read-tail/video-fixture.log
-          codes=("${PIPESTATUS[@]}")
-          printf 'video-fixture,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/read-tail/exits.csv || exit 1
-          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
       - name: Publish complete and missing evidence
         if: always()
         working-directory: source
@@ -165,7 +154,7 @@ jobs:
           rows = list(csv.reader(exits.open())) if exits.exists() else []
           observed = {row[0]: row[1:] for row in rows}
           failed = not provenance.exists()
-          for name in ('build', 'qa', 'video-fixture', 'omp-tools-tests', 'omp-tools-doctests', 'omp-envd-tests', 'omp-envd-doctests', 'omp-driver-tests', 'omp-driver-doctests', 'omp-py-tests', 'omp-py-doctests'):
+          for name in ('build', 'qa', 'omp-tools-tests', 'omp-tools-doctests', 'omp-envd-tests', 'omp-envd-doctests', 'omp-driver-tests', 'omp-driver-doctests', 'omp-py-tests', 'omp-py-doctests'):
               codes = observed.get(name)
               passed = codes == ['0', '0']
               failed |= not passed

@@ -73,9 +73,9 @@ class ReadTail(unittest.TestCase):
             (project / "large.txt").write_text("".join(f"TAIL_LINE_{n:06d}\n" for n in range(1, 200001)))
             (project / "short.txt").write_text("OMIT_FIRST\nKEEP_LAST\n")
             (project / "empty.txt").write_text("")
-            (project / "directory").mkdir()
+            (project / "directory.mp4").mkdir()
             for name in ("aaa.txt", "mmm.txt", "zzz.txt"):
-                (project / "directory" / name).write_text(name)
+                (project / "directory.mp4" / name).write_text(name)
             # These are encoded videos, not mocked PNG responses. A tiny long
             # clip exercises the exact Appendix E timestamp without a large asset.
             for filename, source in (("demo.mp4", "testsrc2=size=64x48:rate=2:duration=4"),
@@ -86,6 +86,7 @@ class ReadTail(unittest.TestCase):
                 (output / (filename + ".generation.stderr")).write_bytes(generated.stderr)
                 self.assertEqual(generated.returncode, 0, generated.stderr)
                 (output / filename).write_bytes((project / filename).read_bytes())
+            (project / "demo';echo-not-executed.mp4").write_bytes((project / "demo.mp4").read_bytes())
             (project / "corrupt.mp4").write_bytes(b"not video")
             artifact_code = r"""import omp
 ref = await omp.artifacts.put(b'one\ntwo\n', media_type='text/plain')
@@ -101,12 +102,12 @@ print('ARTIFACT_TAIL_PARITY_OK')
                 ("local-raw-terminal-empty", call("read", path="short.txt:raw:-1"), [], ["KEEP_LAST", "OMIT_FIRST"], False),
                 ("local-short", call("read", path="short.txt:-60"), ["OMIT_FIRST", "KEEP_LAST"], [], False),
                 ("local-empty", call("read", path="empty.txt:-60"), [], ["KEEP_LAST"], False),
-                ("directory", call("read", path="directory:-1"), ["zzz.txt"], ["aaa.txt", "mmm.txt"], False),
+                ("directory", call("read", path="directory.mp4:-1"), ["zzz.txt"], ["aaa.txt", "mmm.txt"], False),
                 ("invalid-zero", call("read", path="short.txt:-0"), [], ["KEEP_LAST"], True),
                 ("invalid-overflow", call("read", path="short.txt:-18446744073709551616"), [], ["KEEP_LAST"], True),
                 ("artifact-python-parity", call("eval", language="py", code=artifact_code), ["ARTIFACT_TAIL_PARITY_OK"], ["AssertionError"], False),
                 ("video-preview", call("read", path="demo.mp4"), ["3x3", "Resolution: 64x48", "Video codec: h264"], [], False),
-                ("video-frame", call("read", path="demo.mp4:2"), ["Frame: 2 (zero-based)"], [], False),
+                ("video-frame", call("read", path="demo';echo-not-executed.mp4:2"), ["Frame: 2 (zero-based)"], [], False),
                 ("video-time", call("read", path="demo.mp4:1s"), ["Timestamp: 1.000s"], [], False),
                 ("video-appendix-e", call("read", path="long.mov:1h5m42s"), ["Timestamp: 3942.000s"], [], False),
                 ("video-outside", call("read", path="demo.mp4:9s"), [], [], True),

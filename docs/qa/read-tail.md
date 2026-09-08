@@ -47,3 +47,14 @@ also receives a bounded GDB run that captures all-thread backtraces, registers,
 and shared libraries. Failures remain failures on both revisions. A passing
 macOS result does not resolve this Linux failure; compare the actual Linux
 artifacts before classifying it.
+
+## Video QA prerequisites
+
+The production video checker requires both `ffmpeg` and `ffprobe` on PATH, with
+an encoder supporting `libx264` for the generated fixtures. On macOS use
+`brew install ffmpeg`; on Ubuntu use `sudo apt-get install ffmpeg`. The read-tail
+leaf installs this explicitly. Ordinary Rust selector and bounded-reader tests
+do not need external media utilities; no test is newly ignored. Existing CI
+runner availability is not assumed, and a missing utility makes production QA
+fail with its process diagnostic. Runtime video reads also return a typed
+missing-binary fault instead of claiming an extraction succeeded.

@@ -56,8 +56,8 @@ remain in place. These tests require the repository's supported build environmen
 Browser-reviewable CI summaries and uploaded evidence remain required by #31;
 this decision does not replace that evidence or declare an unexecuted test passed.
 
-Video verification adds grammar/bounds tests, bounded-reader tests, and an
-explicit ffmpeg-dependent envd fixture test. The leaf runs that test separately
+Video verification adds normal grammar/bounds and bounded-reader Rust tests.
+Real video execution is required by the production QA; it adds no ignored tests
 and requires the actual production `read` result to deliver PNG data to a
 vision-capable local mock provider. Generated fixtures cover frame/time parity,
 preview dimensions, the exact `1h5m42s` demo timestamp, corrupt input and
