@@ -2932,12 +2932,8 @@ impl<C: Inference> Kernel<C> {
 							.registry()
 							.resolved_identity(name.as_str())
 							.ok_or_else(|| RegistryError::UnknownTool(name.clone()))?;
-						let (entry, sid) = session.call_streaming(
-							name.clone(),
-							crate::journal_revision(&identity.rev),
-							Str::new(&id),
-							None,
-						)?;
+						let (entry, sid) =
+							session.call_streaming(name.clone(), &identity.rev, Str::new(&id), None)?;
 						record_provider_tool_index(session, entry, index)?;
 						self.apply_live_components(session)?;
 						let call_id = Str::new(&id);
@@ -3032,7 +3028,7 @@ impl<C: Inference> Kernel<C> {
 							let call_id = Str::new(&call.id);
 							let (entry, _) = session.call_streaming(
 								call.name.clone(),
-								crate::journal_revision(&identity.rev),
+								&identity.rev,
 								call_id.clone(),
 								intent,
 							)?;
@@ -3136,7 +3132,7 @@ impl<C: Inference> Kernel<C> {
 							));
 							let entry = session.call(
 								"edit",
-								crate::journal_revision(&identity.rev),
+								&identity.rev,
 								call_id.clone(),
 								None,
 								Some(args.clone()),
@@ -3537,7 +3533,7 @@ impl<C: Inference> Kernel<C> {
 		{
 			let entry = session.call(
 				identity.name.clone(),
-				crate::journal_revision(&identity.rev),
+				&identity.rev,
 				call_id.clone(),
 				None,
 				Some(args.clone()),

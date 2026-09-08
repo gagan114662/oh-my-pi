@@ -31,7 +31,7 @@ use omp_tool::{
 	Abort, ArtifactLifetime, BlobRef as ToolBlobRef, CallOutcome, CallOutcomeDetails, CapsBase,
 	Diag, DiagEnvelope, DiagKind, Effects, ErasedEv, ErasedOutcome, ExpectedArtifact,
 	IncomingParams, Interrupt, InvocationFeed, JobKind, JobMetadata, JobOwner, JobRef, ModelClass,
-	OutputProjection, OutputRequest, Part, ProjectionSpan, PromptCaps, Registry, RegistryError, Rev,
+	OutputProjection, OutputRequest, Part, ProjectionSpan, PromptCaps, Registry, RegistryError,
 	Severity, ToolIdentity, ToolRoute, ToolSpec, Unit as ToolUnit, VisibilityReceipt,
 	VisibleSourceLine,
 };
@@ -3601,10 +3601,4 @@ fn projection_blob(blob: &BlobRef) -> ToolBlobRef {
 
 pub(crate) fn artifact_address(blob: &BlobRef) -> Str {
 	sf!("artifact://sha256/{}", blob.to_hex())
-}
-
-/// Converts a semantic revision into the journal's numeric revision field.
-#[must_use]
-pub fn journal_revision(rev: &Rev) -> u32 {
-	u32::from(rev.n)
 }

@@ -120,17 +120,29 @@ all retained entries against the selected branch, and compares the projected
 conversation after replay. Internal DOM handles may be reassigned by pruning.
 No existing behavioral assertion was removed.
 
-P10 additionally verifies the journal from real dispatch of lifted arguments,
-its call revision/arguments, terminal result cause and replayed snapshot. Its
-historical lift input remains a synthetic proto thread. This is **not** a proof
-of lifting persisted journal history: `ToolCall.rev` stores only a number,
-`journal_revision` discards the revision family, and `project_thread` omits the
-`omp/tool-rev` property consumed by `project_thread_history`. A correct durable
-lift requires preserving the original full revision at call admission and
-projecting it after replay; looking up today's family would invent provenance.
-These additional tests have been formatted and source-reviewed only. Hosted
-execution, journal-backed lift coverage and explicit legacy migration remain
-pending.
+P10 verifies the journal from real dispatch of lifted arguments, its call
+revision/arguments, terminal result cause and replayed snapshot. The original
+synthetic proto test is retained. Additional cases now admit and settle an
+actual Session call, reopen its verified journal, and apply the production
+history projection/lift. Recorded `rep.1` calls must transform to the live
+revision; calls without a recorded family must remain unchanged. Both cases
+require byte-for-byte and seal stability across projection.
+
+New registry-backed calls retain their original revision family alongside the
+numeric `tool.call@1` revision. The optional field preserves historical payload
+decoding without inventing missing provenance. Session admission accepts a
+full `&Rev` or an explicitly unknown-family numeric revision through one
+`CallRevision` representation; all registry-backed kernel/local admission
+paths pass the resolved full revision, including streaming calls. Replay
+materializes `omp/tool-rev`, and projection carries that property and the
+stored terminal verdict needed for a deterministic lift. It never consults
+today's registry to guess an absent historical family. This is journal
+provenance, not a claim that an unkeyed seal authenticates its author.
+
+The session regression covers both complete and streamed admission followed
+by settlement/reopen; a decoder regression preserves absent historical family.
+These additions have been formatted and source-reviewed only. Hosted runtime
+execution and explicit legacy migration remain pending.
 
 ## References
 

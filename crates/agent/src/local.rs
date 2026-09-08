@@ -96,7 +96,7 @@ impl<C: Inference> Kernel<C> {
 		let call_id = Str::new(format!("local-{}", Ulid::generate()));
 		let entry = session.call(
 			Str::new_static(name),
-			crate::journal_revision(&identity.rev),
+			&identity.rev,
 			call_id.clone(),
 			None,
 			Some(args.clone()),

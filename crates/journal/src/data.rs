@@ -538,6 +538,10 @@ pub struct MsgAssistantEnd {
 /// `tool.call@1` payload.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolCall {
+	/// Original semantic revision family. Absent historical records cannot be
+	/// lifted by guessing a family from the current tool registry.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub family:  Option<Str>,
 	/// Tool name.
 	pub name:    Str,
 	/// Tool contract revision.
