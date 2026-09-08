@@ -61,6 +61,15 @@ corrupt metadata, out-of-range selections, utility failures and output bounds
 produce typed video faults, never successful text fallbacks. Internal subprocess
 I/O/JSON sources remain typed until the serialized tool-fault boundary.
 
+## Status in omp
+
+**Partial.** Tail selection is implemented in `crates/tools/src/read/selector.rs`
+and the source resolvers. `crates/tools/src/read/video.rs` owns video selectors
+and projection; `crates/envd/src/tool_video.rs` owns confined media subprocesses.
+Gap: passing production and hosted evidence for the combined implementation is
+still required; the verification below describes required coverage, not a claim
+that the integrated revision has passed it.
+
 ## Verification
 
 Regression tests cover selector bounds/compounds and literal-path precedence;
