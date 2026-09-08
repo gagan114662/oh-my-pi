@@ -381,17 +381,25 @@ async fn compaction_trigger_uses_receipted_context_tokens_and_threshold_tokens_p
 		.find(|entry| entry.kind.name == kind::COMPACTION)
 		.map(|entry| serde_json::from_str(entry.data.as_str()).expect("compaction payload"))
 		.expect("compaction journaled");
-	assert_eq!(payload.tokens_before, Some(350));
+	// 350 receipted tokens plus the estimate of the one-line prompt turn
+	// journaled after the receipt, which no receipt has counted yet (#112).
+	assert!(
+		matches!(payload.tokens_before, Some(350..=400)),
+		"tokens_before is the receipt plus the post-receipt estimate, got {:?}",
+		payload.tokens_before
+	);
 
 	// A receipt at or below the explicit threshold does not trigger, even
 	// though the fraction path (ai_compact_threshold 0.1 → 68 tokens) would.
+	// The receipt leaves room for the post-receipt estimate of the prompt
+	// turn, so the total stays at or below the 300-token threshold.
 	AI_COMPACT_THRESHOLD.set(&con, 0.1).expect("fraction");
 	let directory = tempfile::tempdir().expect("temporary directory");
 	let (mut session, blobs) = open(directory.path());
 	session.begin_turn().expect("history turn");
 	session.user("history", Vec::new()).expect("history");
 	session
-		.receipt(TurnReceipt { tokens_in: 250, tokens_out: 50, ..Default::default() })
+		.receipt(TurnReceipt { tokens_in: 230, tokens_out: 50, ..Default::default() })
 		.expect("receipt");
 	session.begin_turn().expect("turn");
 	session.user("tiny", Vec::new()).expect("prompt");
@@ -693,5 +701,58 @@ async fn manual_compaction_carries_focus_and_ignores_threshold() {
 			.map(message_text)
 			.collect::<Vec<_>>(),
 		["small history", "later"]
+	);
+}
+
+#[tokio::test]
+async fn content_journaled_after_the_receipt_counts_toward_the_trigger() {
+	// Receipt lag (#112): the newest receipt reflects the previous request. A
+	// large tool result or prompt journaled after it must be counted before
+	// the next request, or the provider sees the overflow first.
+	let con = keep_nothing();
+	let route = route(200_000);
+	let directory = tempfile::tempdir().expect("temporary directory");
+	let (mut session, blobs) = open(directory.path());
+	session.begin_turn().expect("history turn");
+	session.user("history", Vec::new()).expect("history");
+	// Below the threshold on its own: 80% of the post-reserve window.
+	session
+		.receipt(TurnReceipt { tokens_in: 100_000, tokens_out: 1_000, ..Default::default() })
+		.expect("receipt");
+	// ~100k tokens of content after the receipt.
+	let big = "x".repeat(400 * 1024);
+	session.begin_turn().expect("turn");
+	session.user(big.clone(), Vec::new()).expect("big prompt");
+	let mut inference = FakeInference::with_reply("lag summary");
+	let turn = turn_handle(&session);
+	let mut cx = MutDirectorCx {
+		session: &mut session,
+		inference: &mut inference,
+		blobs: &blobs,
+		route: &route,
+		turn,
+		director: None,
+		events: None,
+		con: Some(&con),
+		hooks: None,
+	};
+	assert_eq!(
+		CompactionDirector::new()
+			.before_inference(&mut cx, &request(&big))
+			.await
+			.expect("lagged preparation"),
+		Prepared::Rebuild,
+		"the receipt alone is under the threshold; the content after it is not"
+	);
+	let entries = Journal::scan(session.journal_path()).expect("journal");
+	let payload: Compaction = entries
+		.iter()
+		.find(|entry| entry.kind.name == kind::COMPACTION)
+		.map(|entry| serde_json::from_str(entry.data.as_str()).expect("compaction payload"))
+		.expect("compaction journaled");
+	assert!(
+		payload.tokens_before.is_some_and(|tokens| tokens > 200_000),
+		"tokens_before carries the receipt and the lagging estimate, got {:?}",
+		payload.tokens_before
 	);
 }

@@ -601,12 +601,32 @@ fn occupancy_percent(context_tokens: u64, context_window: u64) -> u8 {
 	u8::try_from(percent.min(100)).unwrap_or(100)
 }
 
-/// Calculates context tokens from the newest receipt on the live body after
-/// the previous compaction boundary; the byte estimate of the projected
-/// request stands in until a receipt exists.
+/// Context tokens for the trigger: the newest receipt on the live body after
+/// the previous compaction boundary plus the byte estimate of everything
+/// journaled after that receipt (tool results, attachments, the new prompt),
+/// which no receipt has counted yet (#112). The byte estimate of the whole
+/// projected request stands in until a receipt exists.
 fn context_tokens(dom: &Dom, previous_boundary: Option<EntryId>, request: &ChatRequest) -> u64 {
-	for turn in dom.children(dom.body()).iter().rev() {
-		for child in dom.children(*turn).iter().rev() {
+	let ContextCount { receipted, lagging } = context_count(dom, previous_boundary, request);
+	receipted.saturating_add(lagging)
+}
+
+/// The two halves of [`context_tokens`]: what the provider last reported and
+/// what landed after it.
+struct ContextCount {
+	receipted: u64,
+	lagging:   u64,
+}
+
+fn context_count(
+	dom: &Dom,
+	previous_boundary: Option<EntryId>,
+	request: &ChatRequest,
+) -> ContextCount {
+	let turns = dom.children(dom.body());
+	for (turn_index, turn) in turns.iter().enumerate().rev() {
+		let children = dom.children(*turn);
+		for (child_index, child) in children.iter().enumerate().rev() {
 			let Some(node) = dom.get(*child) else {
 				continue;
 			};
@@ -619,12 +639,22 @@ fn context_tokens(dom: &Dom, previous_boundary: Option<EntryId>, request: &ChatR
 			{
 				continue;
 			}
-			return [PropId::TokensIn, PropId::TokensOut, PropId::CacheRead, PropId::CacheWrite]
-				.into_iter()
-				.fold(0_u64, |total, prop| total.saturating_add(prop_u64(node, prop)));
+			let receipted =
+				[PropId::TokensIn, PropId::TokensOut, PropId::CacheRead, PropId::CacheWrite]
+					.into_iter()
+					.fold(0_u64, |total, prop| total.saturating_add(prop_u64(node, prop)));
+			let mut after_bytes = 0_u64;
+			for later in &children[child_index.saturating_add(1)..] {
+				subtree_bytes(dom, *later, &mut after_bytes);
+			}
+			let mut lagging = after_bytes.div_ceil(BYTES_PER_TOKEN);
+			for later_turn in &turns[turn_index.saturating_add(1)..] {
+				lagging = lagging.saturating_add(turn_estimate_tokens(dom, *later_turn));
+			}
+			return ContextCount { receipted, lagging };
 		}
 	}
-	estimate_request_tokens(request)
+	ContextCount { receipted: estimate_request_tokens(request), lagging: 0 }
 }
 
 /// An explicit token limit wins; otherwise use the configured fraction of the
@@ -709,15 +739,16 @@ fn turn_has_inference(dom: &Dom, turn: Handle) -> bool {
 
 /// Byte/4 estimate of everything a turn projects: element text, text props,
 /// and structured data, plus one message overhead per turn child.
-fn turn_estimate_tokens(dom: &Dom, turn: Handle) -> u64 {
-	fn subtree_bytes(dom: &Dom, handle: Handle, total: &mut u64) {
-		if let Some(node) = dom.get(handle) {
-			*total = total.saturating_add(node_bytes(node));
-		}
-		for child in dom.children(handle) {
-			subtree_bytes(dom, *child, total);
-		}
+fn subtree_bytes(dom: &Dom, handle: Handle, total: &mut u64) {
+	if let Some(node) = dom.get(handle) {
+		*total = total.saturating_add(node_bytes(node));
 	}
+	for child in dom.children(handle) {
+		subtree_bytes(dom, *child, total);
+	}
+}
+
+fn turn_estimate_tokens(dom: &Dom, turn: Handle) -> u64 {
 	let mut bytes = 0_u64;
 	for child in dom.children(turn) {
 		bytes = bytes.saturating_add(MESSAGE_OVERHEAD_TOKENS.saturating_mul(BYTES_PER_TOKEN));
