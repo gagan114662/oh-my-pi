@@ -1241,6 +1241,7 @@ impl<C: ArtifactCatalog, B: BlobAuthority> ArtifactResolver<C, B> {
 		size: u64,
 		ranges: &[LineRange],
 		raw: bool,
+		include_context: bool,
 	) -> Result<ResolvedRead, Fault> {
 		let offsets = self.offsets(record, size).await?;
 		let total_lines = offsets.line_count(raw);
@@ -1254,7 +1255,7 @@ impl<C: ArtifactCatalog, B: BlobAuthority> ArtifactResolver<C, B> {
 				.end_line
 				.map_or(total_lines, |end| usize::try_from(end).unwrap_or(usize::MAX))
 				.min(total_lines);
-			let (start_line, end_line) = if ranges.len() == 1 && !raw {
+			let (start_line, end_line) = if include_context && ranges.len() == 1 && !raw {
 				(
 					start.saturating_sub(1).max(1),
 					if range.end_line.is_some() {
@@ -1339,7 +1340,8 @@ impl<C: ArtifactCatalog, B: BlobAuthority> ArtifactResolver<C, B> {
 		let record = self.record(resource).await?;
 		let size = self.blobs.stat(&record.digest).await?.byte_len;
 		let resolved;
-		let selector = if matches!(selector, ParsedSelector::Tail { .. }) {
+		let tail = matches!(selector, ParsedSelector::Tail { .. });
+		let selector = if tail {
 			let offsets = self.offsets(&record, size).await?;
 			resolved = selector.resolve_tail(offsets.line_count(selector.is_raw()) as u64);
 			resolved.as_ref()
@@ -1349,7 +1351,7 @@ impl<C: ArtifactCatalog, B: BlobAuthority> ArtifactResolver<C, B> {
 		match selector {
 			ParsedSelector::Lines { ranges, raw } => {
 				self
-					.selected_bytes(resource, &record, size, ranges, *raw)
+					.selected_bytes(resource, &record, size, ranges, *raw, !tail)
 					.await
 			},
 			ParsedSelector::None | ParsedSelector::Raw if size > 8 * 1024 * 1024 => {
