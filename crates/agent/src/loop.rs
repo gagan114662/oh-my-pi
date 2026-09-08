@@ -489,6 +489,8 @@ pub struct Kernel<C> {
 	pub(crate) events:       crate::events::KernelEvents,
 	prompt:                  Arc<dyn PromptSource>,
 	route:                   RouteFacts,
+	/// Wait ceiling for approval prompts routed through the mailbox (#121).
+	approval_prompt_ceiling: Option<Duration>,
 	/// Context window learned from a provider overflow, journaled as a
 	/// `context-window-observed` notice and re-read on open; caps the catalog
 	/// window until a restart proves it wrong (#112).
@@ -539,6 +541,7 @@ impl<C> Kernel<C> {
 			events,
 			prompt: Arc::new(prompt),
 			route: RouteFacts::default(),
+			approval_prompt_ceiling: Some(crate::approvals::DEFAULT_PROMPT_CEILING),
 			observed_context_window: None,
 			con: None,
 			runtime_flags: RuntimeFlags::default(),
@@ -732,13 +735,22 @@ impl<C> Kernel<C> {
 	/// fire through the installed hook gate.
 	#[must_use]
 	pub fn approval_route(&self) -> crate::ApprovalRoute {
-		crate::ApprovalRoute::to_kernel(
+		crate::ApprovalRoute::to_kernel_with_ceiling(
 			self.mailbox_tx.clone(),
 			self
 				.lifecycle_hooks
 				.as_ref()
 				.map(|hooks| Arc::clone(hooks.hook_gate())),
+			self.approval_prompt_ceiling,
 		)
+	}
+
+	/// Bounds how long a routed approval prompt may wait for a human;
+	/// `None` waits until answered. Applies to routes created afterwards.
+	#[must_use]
+	pub const fn with_approval_prompt_ceiling(mut self, ceiling: Option<Duration>) -> Self {
+		self.approval_prompt_ceiling = ceiling;
+		self
 	}
 
 	/// Prompt ids journaled by this kernel that still wait on a host answer.

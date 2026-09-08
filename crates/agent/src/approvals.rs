@@ -460,10 +460,16 @@ pub struct ApprovalRoute {
 	inner: Arc<RouteInner>,
 }
 
+/// Longest any prompt waits for a human when no reason sets a shorter
+/// timeout: an unattended run must not hold a turn forever (#121).
+pub const DEFAULT_PROMPT_CEILING: Duration = Duration::from_secs(10 * 60);
+
 struct RouteInner {
 	next_id: AtomicU64,
 	tx:      RouteSink,
 	pending: Mutex<std::collections::BTreeMap<Str, PendingRequest>>,
+	/// Upper bound on every prompt's wait; `None` waits until answered.
+	ceiling: Option<Duration>,
 	/// `tool_approval_requested` / `tool_approval_resolved` observers around
 	/// every prompted approval.
 	hooks:   Option<crate::LifecycleHooks>,
@@ -576,6 +582,10 @@ pub struct ApprovalRequest {
 	/// Prompt awaiting a decision.
 	pub ticket: ApprovalTicket,
 	reply:      flume::Sender<ApprovalDecision>,
+	/// The verdict the requesting policy applied on its own (a route
+	/// timeout) before it stopped waiting; the sweep journals it as the
+	/// prompt's decision instead of a bare withdrawal (#121).
+	verdict:    Arc<Mutex<Option<ApprovalDecision>>>,
 }
 
 impl ApprovalRequest {
@@ -592,6 +602,12 @@ impl ApprovalRequest {
 	#[must_use]
 	pub fn is_abandoned(&self) -> bool {
 		self.reply.is_disconnected()
+	}
+
+	/// The decision the requester recorded before abandoning, if any.
+	#[must_use]
+	pub fn abandon_verdict(&self) -> Option<ApprovalDecision> {
+		self.verdict.lock().clone()
 	}
 }
 
@@ -712,13 +728,28 @@ impl ApprovalDesk {
 				.filter(|(_, requests)| requests.iter().all(ApprovalRequest::is_abandoned))
 				.map(|(id, _)| id.clone())
 				.collect::<Vec<_>>();
-			for id in &ids {
-				pending.remove(id);
-			}
-			ids
+			ids.into_iter()
+				.map(|id| {
+					let verdict = pending
+						.remove(&id)
+						.unwrap_or_default()
+						.iter()
+						.find_map(ApprovalRequest::abandon_verdict);
+					(id, verdict)
+				})
+				.collect::<Vec<_>>()
 		};
-		for id in abandoned {
-			self.book.withdraw(session, id.as_str())?;
+		for (id, verdict) in abandoned {
+			match verdict {
+				// The policy decided on its own (route timeout): journal that
+				// decision so the tree says why the call was denied.
+				Some(decision) => {
+					self.book.decide(session, id.as_str(), decision)?;
+				},
+				None => {
+					self.book.withdraw(session, id.as_str())?;
+				},
+			}
 		}
 		Ok(())
 	}
@@ -784,6 +815,7 @@ impl ApprovalRoute {
 					tx:      RouteSink::Inbox(tx),
 					pending: Mutex::new(std::collections::BTreeMap::new()),
 					hooks:   hook_gate.map(crate::LifecycleHooks::new),
+					ceiling: Some(DEFAULT_PROMPT_CEILING),
 				}),
 			},
 			ApprovalInbox { rx },
@@ -798,12 +830,24 @@ impl ApprovalRoute {
 		mailbox: flume::Sender<crate::Up>,
 		hook_gate: Option<Arc<crate::HookGate>>,
 	) -> Self {
+		Self::to_kernel_with_ceiling(mailbox, hook_gate, Some(DEFAULT_PROMPT_CEILING))
+	}
+
+	/// [`Self::to_kernel`] with an explicit wait ceiling; `None` lets a
+	/// prompt whose reasons set no timeout wait until it is answered.
+	#[must_use]
+	pub fn to_kernel_with_ceiling(
+		mailbox: flume::Sender<crate::Up>,
+		hook_gate: Option<Arc<crate::HookGate>>,
+		ceiling: Option<Duration>,
+	) -> Self {
 		Self {
 			inner: Arc::new(RouteInner {
 				next_id: AtomicU64::new(1),
-				tx:      RouteSink::Kernel(mailbox),
+				tx: RouteSink::Kernel(mailbox),
 				pending: Mutex::new(std::collections::BTreeMap::new()),
-				hooks:   hook_gate.map(crate::LifecycleHooks::new),
+				hooks: hook_gate.map(crate::LifecycleHooks::new),
+				ceiling,
 			}),
 		}
 	}
@@ -841,6 +885,7 @@ impl ApprovalRoute {
 			created_at_ms,
 		};
 		let (reply, response) = flume::bounded(1);
+		let verdict: Arc<Mutex<Option<ApprovalDecision>>> = Arc::new(Mutex::new(None));
 		self
 			.inner
 			.pending
@@ -851,17 +896,28 @@ impl ApprovalRoute {
 			});
 		let _guard =
 			PendingGuard { inner: Arc::clone(&self.inner), ticket_id: ticket_id.clone() };
+		// The shortest explicit reason timeout wins; the route ceiling bounds
+		// a prompt whose reasons set none, so `timeout_ms: 0` no longer means
+		// forever.
 		let timeout_ms = ticket
 			.reasons
 			.iter()
 			.map(|reason| reason.timeout_ms)
 			.filter(|value| *value != 0)
 			.min();
+		let ceiling_ms = self
+			.inner
+			.ceiling
+			.map(|ceiling| u64::try_from(ceiling.as_millis()).unwrap_or(u64::MAX));
+		let timeout_ms = match (timeout_ms, ceiling_ms) {
+			(Some(explicit), Some(ceiling)) => Some(explicit.min(ceiling)),
+			(explicit, ceiling) => explicit.or(ceiling),
+		};
 		let filed = std::time::Instant::now();
 		if self
 			.inner
 			.tx
-			.deliver(ApprovalRequest { ticket: ticket.clone(), reply })
+			.deliver(ApprovalRequest { ticket: ticket.clone(), reply, verdict: Arc::clone(&verdict) })
 			.is_err()
 		{
 			let decision = unreachable_decision(&ticket, "approval host disconnected");
@@ -884,7 +940,13 @@ impl ApprovalRoute {
 					match result {
 						Ok(Ok(decision)) => decision,
 						Ok(Err(_)) => unreachable_decision(&ticket, "approval host became unreachable"),
-						Err(_) => timeout_decision(&ticket),
+						Err(_) => {
+							let decision = timeout_decision(&ticket);
+							// Recorded on the shared request so the desk's sweep journals
+							// this as the prompt's decision, not a bare withdrawal.
+							*verdict.lock() = Some(decision.clone());
+							decision
+						},
 					}
 				},
 			}

@@ -169,6 +169,13 @@ struct Harness {
 }
 
 fn harness(scripts: Vec<Vec<omp_ai::ChatEvent>>) -> Harness {
+	harness_with_ceiling(scripts, Some(omp_agent::approvals::DEFAULT_PROMPT_CEILING))
+}
+
+fn harness_with_ceiling(
+	scripts: Vec<Vec<omp_ai::ChatEvent>>,
+	ceiling: Option<Duration>,
+) -> Harness {
 	let temp = tempfile::tempdir().expect("tempdir");
 	let route = Arc::new(Mutex::new(None));
 	let (inference, _) = ScriptedInference::new(scripts);
@@ -177,7 +184,8 @@ fn harness(scripts: Vec<Vec<omp_ai::ChatEvent>>) -> Harness {
 		gated_registry(Arc::clone(&route)),
 		DispatchPolicy::new(BlobStore::open(temp.path().join("blobs")).expect("blobs")),
 		StaticPrompt(sf!("system")),
-	);
+	)
+	.with_approval_prompt_ceiling(ceiling);
 	*route.lock() = Some(kernel.approval_route());
 	let events = kernel.subscribe();
 	let session = fresh_session(&temp.path().join("approvals.oms"));
@@ -249,6 +257,38 @@ async fn allow_journals_the_decision_and_the_tool_runs() {
 		"{outputs:?}"
 	);
 	assert!(harness.kernel.waiting_approvals().is_empty());
+}
+
+#[tokio::test]
+async fn an_unanswered_prompt_is_denied_at_the_route_ceiling() {
+	// A connected host that never answers (a silent RPC client) used to hold
+	// the call forever because the tool prompt carries `timeout_ms: 0`.
+	let mut harness = harness_with_ceiling(
+		vec![
+			tool_script("gated-1", "gated", serde_json::json!({"command": "make deploy"})),
+			text_script("done"),
+		],
+		Some(Duration::from_millis(250)),
+	);
+	let started = std::time::Instant::now();
+	let seen = run(&mut harness, |_| None).await;
+	assert_eq!(seen.len(), 1, "the prompt was filed once");
+	assert!(
+		started.elapsed() < Duration::from_secs(5),
+		"the ceiling, not the 10 s test guard, ended the wait"
+	);
+	let journaled = prompts(&harness.session);
+	assert_eq!(journaled.len(), 1);
+	assert_eq!(journaled[0].state, TicketState::Decided);
+	let decision = journaled[0]
+		.decision
+		.as_ref()
+		.expect("timed-out prompt carries a decision");
+	assert!(!decision.approved, "default false denies");
+	assert_eq!(decision.source, ApprovalSource::Timeout);
+	let outputs = results(&harness.session);
+	assert!(outputs.iter().any(|text| text.contains("timed out")), "{outputs:?}");
+	assert!(harness.kernel.waiting_approvals().is_empty(), "nothing is left pending");
 }
 
 #[tokio::test]
