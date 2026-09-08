@@ -783,19 +783,39 @@ fn probe_controlling_terminal(
 	cfmakeraw(&mut raw_termios);
 	tcsetattr(&tty, SetArg::TCSANOW, &raw_termios).ok()?;
 	let Ok(original_flags) = fcntl(&tty, FcntlArg::F_GETFL) else {
-		let _ = tcsetattr(&tty, SetArg::TCSANOW, &original_termios);
+		let _ = restore_probe_mode(&tty, &original_termios);
 		return None;
 	};
 	let flags = OFlag::from_bits_truncate(original_flags);
 	if fcntl(&tty, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).is_err() {
-		let _ = tcsetattr(&tty, SetArg::TCSANOW, &original_termios);
+		let _ = restore_probe_mode(&tty, &original_termios);
 		return None;
 	}
 
 	let result = probe_polled(&mut tty, timeout, inside_tmux, include_osc99);
 	let _ = fcntl(&tty, FcntlArg::F_SETFL(flags));
-	let _ = tcsetattr(&tty, SetArg::TCSANOW, &original_termios);
+	let _ = restore_probe_mode(&tty, &original_termios);
 	Some(result)
+}
+
+#[cfg(unix)]
+fn restore_probe_mode(tty: &fs::File, original: &nix::sys::termios::Termios) -> nix::Result<()> {
+	tcsetattr(tty, SetArg::TCSANOW, original)?;
+	#[cfg(target_os = "macos")]
+	if !original
+		.local_flags
+		.contains(nix::sys::termios::LocalFlags::PENDIN)
+	{
+		// Darwin adds PENDIN when restoring ICANON with TCSANOW. FIONREAD
+		// processes that pending input without consuming or flushing it, so
+		// later terminal preparation does not save the transient flag as original.
+		// See XNU bsd/kern/tty.c: ttioctl(TIOCSETA*) and ttnread.
+		nix::ioctl_read_bad!(pending_input, libc::FIONREAD, libc::c_int);
+		let mut pending = 0;
+		// SAFETY: tty owns a valid descriptor and pending is a writable c_int.
+		unsafe { pending_input(std::os::fd::AsRawFd::as_raw_fd(tty), &mut pending) }?;
+	}
+	Ok(())
 }
 
 #[cfg(unix)]
@@ -1288,6 +1308,30 @@ fn detect_with(
 
 #[cfg(test)]
 mod tests {
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn probe_restore_preserves_typed_input_without_leaking_pending_flag() {
+		use nix::sys::termios::{SetArg, cfmakeraw, tcgetattr, tcsetattr};
+		for queued in [b"".as_slice(), b"typed\n".as_slice()] {
+			let pty = nix::pty::openpty(None, None).expect("probe PTY");
+			let mut slave = std::fs::File::from(pty.slave);
+			let mut master = std::fs::File::from(pty.master);
+			let before = tcgetattr(&slave).expect("original mode");
+			let mut raw = before.clone();
+			cfmakeraw(&mut raw);
+			tcsetattr(&slave, SetArg::TCSANOW, &raw).expect("raw probe mode");
+			master.write_all(queued).expect("input during probe");
+			super::restore_probe_mode(&slave, &before).expect("restore probe mode");
+			let after = tcgetattr(&slave).expect("restored mode");
+			assert_eq!(after, before, "probe changed original terminal settings");
+			let mut input = vec![0; queued.len()];
+			slave
+				.read_exact(&mut input)
+				.expect("queued input survives probe");
+			assert_eq!(input, queued);
+		}
+	}
+
 	use std::{
 		collections::HashMap,
 		io::{self, Read, Write},

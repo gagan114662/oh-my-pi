@@ -1031,7 +1031,10 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	// card, band, and composer must survive the rebuild.
 	let resized = wait_snapshot(&mut debug, &raw_capture, "streaming resize", |snapshot| {
 		let surface = snapshot.combined();
-		surface.contains("interrupt-ready")
+		// text is the published paint; frame is a separate host query and can
+		// already contain the rebuilt tree while the resize paint is pending.
+		!snapshot.text.trim().is_empty()
+			&& surface.contains("interrupt-ready")
 			&& surface.contains("interrupt the next tool")
 			&& surface.contains(COMPOSER_PROMPT)
 	});
