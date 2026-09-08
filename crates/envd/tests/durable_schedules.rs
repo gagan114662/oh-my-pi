@@ -344,7 +344,8 @@ async fn coalesce_backfill_and_overlap_are_projected_durably() {
 			.iter()
 			.filter(|row| row.get("outcome").and_then(Value::as_str) == Some("injected"))
 			.count(),
-		1
+		1,
+		"overlap history: {overlap_history:?}",
 	);
 	assert!(
 		overlap_history
