@@ -188,6 +188,7 @@ async fn user_turn_journals_assistant_text_in_the_explicit_turn() {
 		kind::MSG_ASSISTANT_START,
 		kind::MSG_ASSISTANT_END,
 		kind::TURN_RECEIPT,
+		kind::TURN_OUTCOME,
 	] {
 		assert!(
 			entries
@@ -196,6 +197,24 @@ async fn user_turn_journals_assistant_text_in_the_explicit_turn() {
 			"missing {required}"
 		);
 	}
+	let terminal: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == kind::TURN_OUTCOME)
+		.collect();
+	assert_eq!(terminal.len(), 1);
+	assert_eq!(
+		terminal[0].by,
+		entries
+			.iter()
+			.find(|entry| entry.kind.name == kind::TURN_START)
+			.map(|entry| entry.id)
+	);
+	assert_eq!(
+		serde_json::from_str::<omp_journal::data::TurnOutcome>(terminal[0].data.as_str())
+			.unwrap()
+			.status,
+		omp_journal::data::TurnStatus::Completed
+	);
 }
 
 #[tokio::test]
@@ -517,6 +536,21 @@ async fn tool_call_round_settles_in_the_dom_then_runs_second_inference() {
 		.find(|entry| entry.kind.name.as_str() == kind::TOOL_RESULT)
 		.expect("tool result journals");
 	assert_eq!(result.by, Some(call.id));
+	assert_eq!(
+		entries
+			.iter()
+			.filter(|entry| entry.kind.name == kind::TURN_RECEIPT)
+			.count(),
+		2
+	);
+	assert_eq!(
+		entries
+			.iter()
+			.filter(|entry| entry.kind.name == kind::TURN_OUTCOME)
+			.count(),
+		1,
+		"tool continuations complete one explicit turn"
+	);
 }
 
 #[tokio::test]
@@ -842,6 +876,19 @@ async fn request_budget_prevents_the_first_disallowed_provider_call() {
 			.count(),
 		1
 	);
+	assert_eq!(outcome.terminal_status, omp_journal::data::TurnStatus::Incomplete);
+	drop(session);
+	let entries = journal_entries(&journal_path);
+	let terminal = entries
+		.iter()
+		.find(|entry| entry.kind.name == kind::TURN_OUTCOME)
+		.expect("terminal outcome");
+	assert_eq!(
+		serde_json::from_str::<omp_journal::data::TurnOutcome>(terminal.data.as_str())
+			.unwrap()
+			.status,
+		omp_journal::data::TurnStatus::Incomplete
+	);
 }
 
 #[tokio::test]
@@ -890,6 +937,17 @@ async fn interrupt_returns_cancelled_without_journaling_a_false_completion() {
 		!entries
 			.iter()
 			.any(|entry| entry.kind.name.as_str() == kind::TURN_RECEIPT)
+	);
+	let terminal: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == kind::TURN_OUTCOME)
+		.collect();
+	assert_eq!(terminal.len(), 1);
+	assert_eq!(
+		serde_json::from_str::<omp_journal::data::TurnOutcome>(terminal[0].data.as_str())
+			.unwrap()
+			.status,
+		omp_journal::data::TurnStatus::Cancelled
 	);
 }
 

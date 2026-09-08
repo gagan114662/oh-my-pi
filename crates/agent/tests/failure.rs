@@ -197,6 +197,17 @@ async fn handshake_failure_is_journaled_as_an_error_notice_before_the_error_retu
 	assert_all_entries_caused(&entries);
 	let reopened = Session::open(&journal_path, ComponentRegistry::default()).expect("replays");
 	assert_eq!(error_notices(&reopened).len(), 1, "the notice is durable across resume");
+	let terminal: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == "turn.outcome")
+		.collect();
+	assert_eq!(terminal.len(), 1);
+	assert_eq!(
+		serde_json::from_str::<omp_journal::data::TurnOutcome>(terminal[0].data.as_str())
+			.unwrap()
+			.status,
+		omp_journal::data::TurnStatus::Failed
+	);
 }
 
 #[tokio::test]

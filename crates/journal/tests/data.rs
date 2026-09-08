@@ -9,6 +9,7 @@ fn closed_kind_vocabulary_round_trips_through_text() {
 	let names = [
 		kind::JOURNAL,
 		kind::TURN_START,
+		kind::TURN_OUTCOME,
 		kind::MSG_USER,
 		kind::MSG_ASSISTANT_START,
 		kind::STREAM,

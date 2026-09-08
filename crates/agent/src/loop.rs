@@ -200,13 +200,16 @@ pub enum TurnStop {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TurnOutcome {
 	/// Terminal control reason.
-	pub stop:           TurnStop,
+	pub stop:            TurnStop,
+	/// Durable settlement status; bounded early returns are incomplete even when
+	/// the legacy control stop is `Completed`.
+	pub terminal_status: omp_journal::data::TurnStatus,
 	/// Visible assistant text accumulated across tool continuations.
-	pub assistant_text: Str,
+	pub assistant_text:  Str,
 	/// Total input tokens across inference attempts.
-	pub tokens_in:      u64,
+	pub tokens_in:       u64,
 	/// Total output tokens across inference attempts.
-	pub tokens_out:     u64,
+	pub tokens_out:      u64,
 }
 
 /// Caller-owned cancellation and optional deadline for one turn.
@@ -1018,37 +1021,49 @@ impl<C: Inference> Kernel<C> {
 		}
 		let turn_cancel = self.cancel.begin_turn();
 		session.begin_turn()?;
-		self.apply_live_components(session)?;
-		match (skill_prompt, custom_message) {
-			(Some(prompt), None) => {
-				session.skill_prompt(prompt)?;
-			},
-			(None, Some(message)) => {
-				let turn = current_turn(session)?;
-				append_custom_message(session, turn, message)?;
-			},
-			(None, None) => {
-				let mention_paths = parse_file_mentions(&input.text);
-				if let Some(author) = author {
-					session.user_authored(input.text, input.attachments, author)?;
-				} else {
-					session.user(input.text, input.attachments)?;
-				}
-				self.append_file_mentions(session, mention_paths).await?;
-			},
-			(Some(_), Some(_)) => unreachable!("one explicit turn source"),
-		}
-		self.apply_live_components(session)?;
 		let turn = current_turn(session)?;
-		let _activity = TurnActivity::enter(Arc::clone(&self.turn_active));
-		let result = self
-			.run_turn_body(session, turn, &turn_cancel, &control, None)
-			.await;
-		self.turn_active.store(false, Ordering::Release);
-		self
-			.settle_reply_obligations(session, &turn_cancel, &control)
-			.await?;
-		self.finish_turn(session, turn, &submission_id, result)
+		let result = async {
+			self.apply_live_components(session)?;
+			match (skill_prompt, custom_message) {
+				(Some(prompt), None) => {
+					session.skill_prompt(prompt)?;
+				},
+				(None, Some(message)) => {
+					let turn = current_turn(session)?;
+					append_custom_message(session, turn, message)?;
+				},
+				(None, None) => {
+					let mention_paths = parse_file_mentions(&input.text);
+					if let Some(author) = author {
+						session.user_authored(input.text, input.attachments, author)?;
+					} else {
+						session.user(input.text, input.attachments)?;
+					}
+					self.append_file_mentions(session, mention_paths).await?;
+				},
+				(Some(_), Some(_)) => unreachable!("one explicit turn source"),
+			}
+			self.apply_live_components(session)?;
+			let _activity = TurnActivity::enter(Arc::clone(&self.turn_active));
+			let result = self
+				.run_turn_body(session, turn, &turn_cancel, &control, None)
+				.await;
+			self.turn_active.store(false, Ordering::Release);
+			self
+				.settle_reply_obligations(session, &turn_cancel, &control)
+				.await?;
+			if result.is_ok()
+				&& (control.is_expired()
+					|| turn_cancel.is_turn_cancelled()
+					|| self.cancel.is_session_cancelled())
+			{
+				Ok(cancelled_outcome())
+			} else {
+				result
+			}
+		}
+		.await;
+		self.finish_turn(session, turn, &submission_id, result, &turn_cancel, &control)
 	}
 
 	async fn settle_reply_obligations(
@@ -1088,7 +1103,19 @@ impl<C: Inference> Kernel<C> {
 		turn: Handle,
 		submission_id: &Str,
 		result: Result<TurnOutcome, KernelError>,
+		turn_cancel: &crate::TurnCancellation,
+		control: &RunControl,
 	) -> Result<TurnOutcome, KernelError> {
+		let mut result = result;
+		// A rewind may have abandoned this turn while final obligations settled.
+		// Never attach the old result to the newly selected turn.
+		if current_turn(session).ok() != Some(turn) {
+			self.resync_session_state(session);
+			self
+				.events
+				.publish(KernelEvent::TurnEnded { stop: TurnStop::Cancelled });
+			return Ok(cancelled_outcome());
+		}
 		match &result {
 			Err(error) => self.journal_turn_failure(session, turn, error),
 			Ok(outcome) if outcome.stop == TurnStop::Cancelled => {
@@ -1096,37 +1123,58 @@ impl<C: Inference> Kernel<C> {
 			},
 			Ok(_) => {},
 		}
-		self.events.publish(KernelEvent::TurnEnded {
-			stop: match &result {
-				Ok(outcome) => outcome.stop,
-				Err(_) => TurnStop::Failed,
-			},
-		});
-		self.flush_session_state(session)?;
-		self.resync_session_state(session);
-		if let Some(hooks) = &self.lifecycle_hooks {
-			let (stop, interrupted, error) = match &result {
-				Ok(outcome) => (
-					format!("{:?}", outcome.stop).to_ascii_lowercase(),
-					outcome.stop == TurnStop::Cancelled,
-					None,
-				),
-				Err(_) => ("error".to_owned(), false, Some("agent turn failed")),
-			};
-			hooks.notify(
-				HookEventId::HookEventAgentEnd,
-				serde_json::json!({
-					"submission_id": submission_id,
-					"summary": {
-						"committed_turns": committed_requests(session, turn),
-						"interrupted": interrupted,
-						"stop": stop,
-					},
-					"continued": false,
-					"error": error,
-				}),
-			)?;
+		let finalized = (|| -> Result<(), KernelError> {
+			self.flush_session_state(session)?;
+			self.resync_session_state(session);
+			if let Some(hooks) = &self.lifecycle_hooks {
+				let (stop, interrupted, error) = match &result {
+					Ok(outcome) => (
+						format!("{:?}", outcome.stop).to_ascii_lowercase(),
+						outcome.stop == TurnStop::Cancelled,
+						None,
+					),
+					Err(_) => ("error".to_owned(), false, Some("agent turn failed")),
+				};
+				hooks.notify(
+					HookEventId::HookEventAgentEnd,
+					serde_json::json!({
+						"submission_id": submission_id,
+						"summary": {
+							"committed_turns": committed_requests(session, turn),
+							"interrupted": interrupted,
+							"stop": stop,
+						},
+						"continued": false,
+						"error": error,
+					}),
+				)?;
+			}
+			Ok(())
+		})();
+		if let Err(error) = finalized {
+			self.journal_turn_failure(session, turn, &error);
+			result = Err(error);
 		}
+		if result
+			.as_ref()
+			.is_ok_and(|outcome| outcome.stop != TurnStop::Cancelled)
+			&& (control.is_expired()
+				|| turn_cancel.is_turn_cancelled()
+				|| self.cancel.is_session_cancelled())
+		{
+			self.journal_turn_interrupt(session, turn);
+			result = Ok(cancelled_outcome());
+		}
+		let stop = result
+			.as_ref()
+			.map_or(TurnStop::Failed, |outcome| outcome.stop);
+		let status = result
+			.as_ref()
+			.map_or(omp_journal::data::TurnStatus::Failed, |outcome| outcome.terminal_status);
+		// This synced journal append is the success boundary. A crash before it
+		// leaves no completion; a crash after it cannot duplicate the turn ID.
+		session.finish_turn(turn, status)?;
+		self.events.publish(KernelEvent::TurnEnded { stop });
 		result
 	}
 
@@ -1194,7 +1242,14 @@ impl<C: Inference> Kernel<C> {
 		let result = self
 			.run_turn_body(session, turn, &turn_cancel, &control, Some(calls))
 			.await;
-		self.finish_turn(session, turn, &submission_id, result)
+		let result = match self
+			.settle_reply_obligations(session, &turn_cancel, &control)
+			.await
+		{
+			Ok(()) => result,
+			Err(error) => Err(error),
+		};
+		self.finish_turn(session, turn, &submission_id, result, &turn_cancel, &control)
 	}
 
 	/// Records an interrupted turn in the tree (ADR 0004: lifecycle derives
@@ -1930,7 +1985,11 @@ impl<C: Inference> Kernel<C> {
 					} else {
 						TurnStop::Completed
 					};
-					return Ok(outcome(stop, total_text, tokens_in, tokens_out));
+					let mut accepted = outcome(stop, total_text, tokens_in, tokens_out);
+					if stop == TurnStop::Completed {
+						accepted.terminal_status = omp_journal::data::TurnStatus::Completed;
+					}
+					return Ok(accepted);
 				},
 			}
 		}
@@ -4225,7 +4284,18 @@ pub(crate) fn outcome(
 	tokens_in: u64,
 	tokens_out: u64,
 ) -> TurnOutcome {
-	TurnOutcome { stop, assistant_text: Str::new(text), tokens_in, tokens_out }
+	TurnOutcome {
+		stop,
+		terminal_status: match stop {
+			TurnStop::Completed => omp_journal::data::TurnStatus::Incomplete,
+			TurnStop::Cancelled => omp_journal::data::TurnStatus::Cancelled,
+			TurnStop::Failed => omp_journal::data::TurnStatus::Failed,
+			TurnStop::Steered => omp_journal::data::TurnStatus::Steered,
+		},
+		assistant_text: Str::new(text),
+		tokens_in,
+		tokens_out,
+	}
 }
 
 #[cfg(test)]
@@ -4359,9 +4429,10 @@ mod streaming_edit_tests {
 
 pub(crate) const fn cancelled_outcome() -> TurnOutcome {
 	TurnOutcome {
-		stop:           TurnStop::Cancelled,
-		assistant_text: Str::new_static(""),
-		tokens_in:      0,
-		tokens_out:     0,
+		terminal_status: omp_journal::data::TurnStatus::Cancelled,
+		stop:            TurnStop::Cancelled,
+		assistant_text:  Str::new_static(""),
+		tokens_in:       0,
+		tokens_out:      0,
 	}
 }

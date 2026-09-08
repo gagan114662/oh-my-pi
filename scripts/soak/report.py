@@ -23,6 +23,8 @@ import statistics
 import sys
 from pathlib import Path
 
+from journal_accounting import completed_turns, select_journal
+
 
 def jsonl(path: Path) -> list[dict]:
 	if not path.exists():
@@ -55,6 +57,7 @@ def main() -> None:
 	parser.add_argument("--min-minutes", type=float, default=60)
 	parser.add_argument("--sentinel", default="")
 	parser.add_argument("--strict", action="store_true")
+	parser.add_argument("--head", help="selected durable journal head; default is the last committed entry")
 	options = parser.parse_args()
 	out = Path(options.out)
 	samples = list(csv.DictReader((out / "samples.csv").open())) if (out / "samples.csv").exists() else []
@@ -62,8 +65,23 @@ def main() -> None:
 	driver = jsonl(out / "driver.jsonl")
 	provider = jsonl(out / "provider.jsonl")
 	requests = [r for r in provider if r.get("kind") == "request"]
-	journals = sorted(Path(options.session_dir).glob("*.oms"), key=lambda p: p.stat().st_mtime)
-	journal = journals[-1].read_text(errors="replace") if journals else ""
+	try:
+		session_file = out / "session.txt"
+		session_id = session_file.read_text().strip() if session_file.exists() else None
+		selected_journal = select_journal(Path(options.session_dir), session_id)
+		journal = selected_journal.read_text(errors="replace")
+		journals = [selected_journal]
+		try:
+			accounting = completed_turns(selected_journal, options.head)
+			completed = accounting["count"]
+			(out / "turn-accounting.json").write_text(json.dumps(accounting, indent=2) + "\n")
+		except (OSError, ValueError) as error:
+			completed = f"unknown: {error}"
+	except (OSError, ValueError) as error:
+		journals, journal, completed = [], "", f"unknown: {error}"
+
+	if not isinstance(completed, int):
+		(out / "turn-accounting.json").write_text(json.dumps({"count": None, "error": completed}, indent=2) + "\n")
 
 	def count(prefix: str) -> int:
 		return journal.count(f"\nevent: {prefix}") + (1 if journal.startswith(f"event: {prefix}") else 0)
@@ -81,12 +99,8 @@ def main() -> None:
 			minutes = float(d.get("minutes", 0))
 	turns_started = sum(1 for d in driver if d.get("kind") == "turn_start")
 	turns_ok = sum(1 for d in driver if d.get("kind") == "turn_end" and d.get("exit") == 0)
-	# Receipts account for inference requests, not explicit user turns. A
-	# tool continuation/retry can emit several receipts; a later failure can
-	# leave them all durable. The current journal has no successful turn-end
-	# event after the Director/hook yield checks, so this criterion is unknown.
-	# Fail closed even when every driver process exited successfully.
-	row("#105", "completed distinct turns (journal)", "unknown: no durable successful turn-end event", f">= {options.min_turns}", False)
+	# Only explicit successful terminal outcomes on the selected ancestry count.
+	row("#105", "completed distinct turns (journal)", completed, f">= {options.min_turns}", isinstance(completed, int) and completed >= options.min_turns)
 	row("#105", "inference receipts (turn.receipt@1)", receipts, "info; not completed turns", None)
 	row("#105", "driver minutes", f"{minutes:.1f}", f">= {options.min_minutes}", minutes >= options.min_minutes)
 	row("#105", "driver attempts started / processes exiting 0", f"{turns_started} / {turns_ok}", "info", None)
@@ -193,9 +207,9 @@ def main() -> None:
 		mark = "info" if ok is None else ("PASS" if ok else "**FAIL**")
 		failed += 0 if ok in (None, True) else 1
 		lines.append(f"| {issue} | {name} | {value} | {threshold} | {mark} |")
-	lines += ["", "### Samples (every interval, taken by the shell)", "", "| min | phase | journal B | data dir B | rss omp kB | rss envd kB | omp | envd | receipts | compactions | stream | asst | notices |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+	lines += ["", "### Samples (every interval, taken by the shell)", "", "| min | phase | journal B | data dir B | rss omp kB | rss envd kB | omp | envd | receipts | compactions | stream | asst | notices | completed turns |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
 	for s in samples:
-		lines.append("| " + " | ".join(s[k] for k in ("minute", "phase", "journal_bytes", "blob_bytes", "rss_omp_kb", "rss_envd_kb", "omp_procs", "envd_procs", "receipts", "compactions", "stream_entries", "assistant_starts", "notices")) + " |")
+		lines.append("| " + " | ".join(s[k] for k in ("minute", "phase", "journal_bytes", "blob_bytes", "rss_omp_kb", "rss_envd_kb", "omp_procs", "envd_procs", "receipts", "compactions", "stream_entries", "assistant_starts", "notices")) + " | " + s.get("completed_turns", "unknown") + " |")
 	text = "\n".join(lines) + "\n"
 	print(text)
 	summary = os.environ.get("GITHUB_STEP_SUMMARY")

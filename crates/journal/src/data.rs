@@ -22,6 +22,31 @@ pub struct Genesis {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnStart {}
 
+/// Terminal status committed after the kernel's final settlement and hooks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnStatus {
+	/// The kernel accepted the yield and completed final settlement.
+	Completed,
+	/// The kernel returned without an accepted yield, for example a request cap.
+	Incomplete,
+	/// The kernel returned an error.
+	Failed,
+	/// Cancellation ended the turn.
+	Cancelled,
+	/// Steering returned control; this is not a completed-turn accounting
+	/// marker.
+	Steered,
+}
+
+/// `turn.outcome@1`; the entry's `by` identifies its `turn.start@1`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnOutcome {
+	/// Authoritative terminal lifecycle status, not provider stop reason.
+	pub status: TurnStatus,
+}
+
 /// One user attachment in a `msg.user@1` payload.
 ///
 /// The content-addressed bytes plus their media type let the projection hand
