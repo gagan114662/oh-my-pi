@@ -2715,16 +2715,25 @@ __omp_display(first)
 		let runtime = runtime();
 		let first_session = runtime.open_session().await.expect("first session opens");
 		let second_session = runtime.open_session().await.expect("second session opens");
+		// open_session only spawns a thread. Complete both namespace bootstraps
+		// before starting either two-second cancellation fixture: waiting for a
+		// second cold worker must not consume the first cell's execution budget.
+		for session in [&first_session, &second_session] {
+			let (_, ready) = run_to_completion(&runtime, session, "None", false).await;
+			assert_eq!(ready.status.outcome, CellOutcome::Complete, "worker warmup");
+		}
 		let request = || RunRequest {
 			code:    sf!("while True: pass"),
 			timeout: Some(StdDuration::from_secs(2)),
 			reset:   false,
 			runtime: RuntimeSnapshot::default(),
 		};
+		let first_submitted = std::time::Instant::now();
 		let mut first = runtime
 			.run(&first_session, request())
 			.await
 			.expect("first starts");
+		let second_submitted = std::time::Instant::now();
 		let mut second = runtime
 			.run(&second_session, request())
 			.await
@@ -2732,7 +2741,24 @@ __omp_display(first)
 		assert!(matches!(first.next_event().await.unwrap(), Some(RunEvent::Started { .. })));
 		assert!(matches!(second.next_event().await.unwrap(), Some(RunEvent::Started { .. })));
 
+		eprintln!(
+			"first pre-cancel: since submission={:?}, cancelled={}, worker_alive={}, target_active={}",
+			first_submitted.elapsed(),
+			first.cancelled.load(Ordering::Acquire),
+			first.state.alive.load(Ordering::Acquire),
+			first
+				.state
+				.active
+				.lock()
+				.as_ref()
+				.is_some_and(|active| Arc::ptr_eq(&active.cancelled, &first.cancelled)),
+		);
 		first.cancel().await.expect("first cancels");
+		eprintln!(
+			"first cancellation returned after {:?}, cancelled={}",
+			first_submitted.elapsed(),
+			first.cancelled.load(Ordering::Acquire)
+		);
 		assert_eq!(completion(&mut first).await.status.outcome, CellOutcome::Cancelled);
 		assert!(
 			tokio::time::timeout(StdDuration::from_millis(30), second.next_event())
@@ -2740,7 +2766,25 @@ __omp_display(first)
 				.is_err(),
 			"second worker must remain active",
 		);
+		eprintln!(
+			"second pre-cancel: since submission={:?}, cancelled={}, worker_alive={}, \
+			 target_active={}",
+			second_submitted.elapsed(),
+			second.cancelled.load(Ordering::Acquire),
+			second.state.alive.load(Ordering::Acquire),
+			second
+				.state
+				.active
+				.lock()
+				.as_ref()
+				.is_some_and(|active| Arc::ptr_eq(&active.cancelled, &second.cancelled)),
+		);
 		second.cancel().await.expect("second cancels independently");
+		eprintln!(
+			"second cancellation returned after {:?}, cancelled={}",
+			second_submitted.elapsed(),
+			second.cancelled.load(Ordering::Acquire)
+		);
 		assert_eq!(completion(&mut second).await.status.outcome, CellOutcome::Cancelled);
 	}
 
