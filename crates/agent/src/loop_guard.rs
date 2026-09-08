@@ -8,12 +8,10 @@
 //! identical round is refused; after `limit` refusals the turn settles.
 //! Different arguments or different results are progress and reset it.
 
-use std::{
-	collections::hash_map::DefaultHasher,
-	hash::{Hash, Hasher},
-};
+use std::hash::{BuildHasher, Hash, Hasher};
 
 use omp_ai::{ContentPart, Message, Role};
+use omp_core::FastState;
 
 use crate::dispatch::{PreparedCall, call_target};
 
@@ -31,7 +29,6 @@ pub(crate) enum Verdict {
 pub(crate) struct LoopGuard {
 	limit:            u32,
 	last_exchange:    Option<u64>,
-	results_repeat:   bool,
 	last_calls:       Option<u64>,
 	identical_rounds: u32,
 	refused_rounds:   u32,
@@ -39,14 +36,7 @@ pub(crate) struct LoopGuard {
 
 impl LoopGuard {
 	pub(crate) const fn new(limit: u32) -> Self {
-		Self {
-			limit,
-			last_exchange: None,
-			results_repeat: false,
-			last_calls: None,
-			identical_rounds: 0,
-			refused_rounds: 0,
-		}
+		Self { limit, last_exchange: None, last_calls: None, identical_rounds: 0, refused_rounds: 0 }
 	}
 
 	pub(crate) const fn limit(&self) -> u32 {
@@ -57,7 +47,16 @@ impl LoopGuard {
 	/// request, after the request is final.
 	pub(crate) fn observe_request(&mut self, messages: &[Message]) {
 		let exchange = exchange_fingerprint(messages);
-		self.results_repeat = exchange.is_some() && exchange == self.last_exchange;
+		// Count completed exchanges, not the calls we are about to judge.
+		// A refusal produces a synthetic result; it must not look like tool
+		// progress and reset the escalation of the same refused calls.
+		if self.refused_rounds == 0 {
+			self.identical_rounds = match exchange {
+				Some(_) if exchange == self.last_exchange => self.identical_rounds.saturating_add(1),
+				Some(_) => 1,
+				None => 0,
+			};
+		}
 		self.last_exchange = exchange;
 	}
 
@@ -72,20 +71,12 @@ impl LoopGuard {
 			self.refused_rounds = 0;
 			return Verdict::Proceed;
 		}
-		// `identical_rounds` counts consecutive rounds whose calls AND
-		// results matched the round before; two more executions than that
-		// count have run, so refusal starts once `limit` have executed.
-		if self.refused_rounds > 0 || self.identical_rounds.saturating_add(2) >= self.limit {
+		if self.refused_rounds > 0 || self.identical_rounds >= self.limit {
 			self.refused_rounds = self.refused_rounds.saturating_add(1);
 			return Verdict::Refuse {
 				repeat: self.refused_rounds,
 				settle: self.refused_rounds >= self.limit,
 			};
-		}
-		if self.results_repeat {
-			self.identical_rounds = self.identical_rounds.saturating_add(1);
-		} else {
-			self.identical_rounds = 0;
 		}
 		Verdict::Proceed
 	}
@@ -94,7 +85,7 @@ impl LoopGuard {
 /// Stable fingerprint of a round's tool calls: target and arguments, in
 /// order, ignoring call ids.
 pub(crate) fn calls_fingerprint(calls: &[PreparedCall]) -> u64 {
-	let mut hasher = DefaultHasher::new();
+	let mut hasher = FastState::default().build_hasher();
 	for call in calls {
 		call_target(call).hash(&mut hasher);
 		call.args().map(|args| args.get()).hash(&mut hasher);
@@ -109,9 +100,9 @@ fn exchange_fingerprint(messages: &[Message]) -> Option<u64> {
 	let start = messages
 		.iter()
 		.rposition(|message| message.role == Role::Assistant)?;
-	let mut hasher = DefaultHasher::new();
+	let mut hasher = FastState::default().build_hasher();
 	for message in &messages[start..] {
-		format!("{:?}", message.role).hash(&mut hasher);
+		std::mem::discriminant(&message.role).hash(&mut hasher);
 		for part in message.content.iter() {
 			match part {
 				ContentPart::Text { text, .. } => ("text", text.as_str()).hash(&mut hasher),
@@ -195,6 +186,69 @@ mod tests {
 				text(Role::User, &format!("page {page}")),
 			]);
 			assert_eq!(guard.judge(Some(9), false), Verdict::Proceed, "round {page}");
+		}
+	}
+
+	#[test]
+	fn completed_exchanges_reach_the_limit_before_refusal() {
+		for limit in [1, 2, 3, 8] {
+			let mut guard = LoopGuard::new(limit);
+			guard.observe_request(&[text(Role::User, "go")]);
+			assert_eq!(guard.judge(Some(9), false), Verdict::Proceed);
+			for _ in 1..limit {
+				repeated_exchange(&mut guard);
+				assert_eq!(guard.judge(Some(9), false), Verdict::Proceed);
+			}
+			repeated_exchange(&mut guard);
+			assert_eq!(guard.judge(Some(9), false), Verdict::Refuse { repeat: 1, settle: limit == 1 });
+			for repeat in 2..=limit {
+				guard.observe_request(&[
+					text(Role::Assistant, "same"),
+					text(Role::User, &format!("loop guard refusal {repeat}")),
+				]);
+				assert_eq!(guard.judge(Some(9), false), Verdict::Refuse {
+					repeat,
+					settle: repeat == limit
+				});
+			}
+		}
+	}
+
+	#[test]
+	fn changed_result_at_the_threshold_starts_a_new_streak() {
+		let mut guard = LoopGuard::new(3);
+		guard.observe_request(&[]);
+		assert_eq!(guard.judge(Some(9), false), Verdict::Proceed);
+		for _ in 0..2 {
+			repeated_exchange(&mut guard);
+			assert_eq!(guard.judge(Some(9), false), Verdict::Proceed);
+		}
+		let changed = [text(Role::Assistant, "same"), text(Role::User, "new result")];
+		for _ in 0..2 {
+			guard.observe_request(&changed);
+			assert_eq!(guard.judge(Some(9), false), Verdict::Proceed);
+		}
+		guard.observe_request(&changed);
+		assert_eq!(guard.judge(Some(9), false), Verdict::Refuse { repeat: 1, settle: false });
+	}
+
+	#[test]
+	fn new_calls_or_visible_text_clear_an_active_refusal() {
+		for textual_progress in [false, true] {
+			let mut guard = LoopGuard::new(2);
+			guard.observe_request(&[]);
+			assert_eq!(guard.judge(Some(9), false), Verdict::Proceed);
+			repeated_exchange(&mut guard);
+			assert_eq!(guard.judge(Some(9), false), Verdict::Proceed);
+			repeated_exchange(&mut guard);
+			assert_eq!(guard.judge(Some(9), false), Verdict::Refuse { repeat: 1, settle: false });
+			let calls = Some(if textual_progress { 9 } else { 10 });
+			repeated_exchange(&mut guard);
+			assert_eq!(guard.judge(calls, textual_progress), Verdict::Proceed);
+			repeated_exchange(&mut guard);
+			assert_eq!(guard.judge(calls, false), Verdict::Proceed);
+			repeated_exchange(&mut guard);
+			assert_eq!(guard.judge(calls, false), Verdict::Refuse { repeat: 1, settle: false });
 		}
 	}
 
