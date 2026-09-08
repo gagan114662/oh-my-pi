@@ -187,6 +187,100 @@ def summarize(metadata, runs):
             'errors': sorted(set(errors)), 'count_semantics': 'unique binary-id/test-name outcomes; no doctests included'}
 
 
+def target_inventory(metadata, runs):
+    """Retain every declared test target, even when discovery never reaches it."""
+    names = members(metadata)
+    rows = {}
+    for package in metadata['packages']:
+        if package['id'] not in names:
+            continue
+        for target in package.get('targets', []):
+            if not target.get('test'):
+                continue
+            kind = target['kind'][0]
+            if kind in ('lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'):
+                kind = 'lib'
+            key = (package['id'], kind, target['name'])
+            if key in rows:
+                raise ValueError('Duplicate Cargo test target: ' + repr(key))
+            rows[key] = {'package': package['name'], 'target': target['name'], 'kind': kind,
+                         'required_features': target.get('required-features', []),
+                         'registered': set(), 'expected': set(), 'passed': set(),
+                         'failed': set(), 'skipped': set(), 'missing': set(),
+                         'discovered': False, 'execution_evidence': False, 'problems': []}
+    for run, folder in runs:
+        touched = []
+        try:
+            if run.get('discovery_exit') != 0:
+                for key, row in rows.items():
+                    if key[0] in run['packages']:
+                        row['problems'].append(run['phase'] + ': discovery/build incomplete')
+                continue
+            data = json.loads((folder / 'list.json').read_text())
+            binaries, registered, expected, _ = listed_tests(data, names, run['packages'])
+            target_keys = {}
+            for binary, suite in data['rust-suites'].items():
+                kind = suite['kind']
+                if kind in ('proc-macro', 'rlib', 'dylib', 'cdylib', 'staticlib'):
+                    kind = 'lib'
+                key = (suite['package-id'], kind, suite['binary-name'])
+                if key not in rows:
+                    raise ValueError('Listed binary has no Cargo test target: ' + binary)
+                target_keys[binary] = key
+                touched.append(key)
+            for key in touched:
+                rows[key]['discovered'] = True
+            for field, values in [('registered', registered), ('expected', expected)]:
+                for identity in values:
+                    rows[target_keys[identity[0]]][field].add(identity)
+            report = folder / 'junit.xml'
+            if not report.exists():
+                for key in touched:
+                    rows[key]['problems'].append(run['phase'] + ': JUnit unavailable')
+                continue
+            actual = junit_results(report, binaries, registered)
+            for key in touched:
+                rows[key]['execution_evidence'] = True
+            for identity, outcome in actual.items():
+                rows[target_keys[identity[0]]][outcome].add(identity)
+            for identity in expected - actual.keys():
+                rows[target_keys[identity[0]]]['missing'].add(identity)
+            for identity in expected:
+                if actual.get(identity) == 'skipped':
+                    rows[target_keys[identity[0]]]['problems'].append('Selected test skipped')
+        except (OSError, ValueError, KeyError, TypeError, ET.ParseError) as error:
+            # Never erase manifest rows when a listing or result is corrupt.
+            for key, row in rows.items():
+                if key[0] in run.get('packages', []):
+                    row['problems'].append(run.get('phase', 'unknown') + ': invalid evidence: ' + str(error))
+    output = []
+    for row in rows.values():
+        row['passed'] -= row['failed']
+        executed = row['passed'] | row['failed']
+        if not row['discovered']:
+            status = 'not observed: selection/build unknown'
+        elif not row['registered']:
+            status = 'zero registered tests'
+        elif not row['execution_evidence']:
+            status = 'unknown: execution unavailable'
+        elif row['failed']:
+            status = 'failed tests'
+        elif not executed:
+            status = 'zero executed tests'
+        elif row['missing'] or row['problems']:
+            status = 'incomplete evidence'
+        else:
+            status = 'passed'
+        result = {key: row[key] for key in ('package', 'target', 'kind', 'required_features')}
+        result.update(status=status, problems=sorted(set(row['problems'])))
+        result['registered'] = len(row['registered']) if row['discovered'] else None
+        for field in ('passed', 'failed', 'skipped', 'missing'):
+            result[field] = len(row[field]) if row['execution_evidence'] else None
+        result['run'] = len(executed) if row['execution_evidence'] else None
+        output.append(result)
+    return sorted(output, key=lambda row: (row['package'], row['kind'], row['target']))
+
+
 def invoke(command, log, stdout=None):
     if stdout is not None:
         with stdout.open('w') as out, log.open('w') as err:
@@ -266,6 +360,7 @@ def report(args):
         parsed_metadata = json.loads(metadata.read_text())
         # Preserve the authoritative crate rows if a later phase artifact is corrupt.
         result = summarize(parsed_metadata, [])
+        result['targets'] = target_inventory(parsed_metadata, [])
         runs = []
         for path in sorted(args.output.glob('*/run.json')):
             run = json.loads(path.read_text())
@@ -275,7 +370,8 @@ def report(args):
                 if digest(path.parent / name) != value:
                     raise ValueError('Evidence changed: ' + str(path.parent / name))
             runs.append((run, path.parent))
-        result = summarize(json.loads(metadata.read_text()), runs)
+        result = summarize(parsed_metadata, runs)
+        result['targets'] = target_inventory(parsed_metadata, runs)
         result['revision'] = manifest['revision']
         result['nextest_summaries'] = []
         for run, folder in runs:
@@ -292,6 +388,14 @@ def report(args):
             '|---|---:|---:|---:|---:|---:|---:|---|']
     for row in result['packages']:
         text.append('| ' + ' | '.join(('unknown' if row[k] is None else str(row[k])) for k in ('package','registered','run','passed','failed','skipped','missing','status')) + ' |')
+    text.extend(['', '## Declared test targets', '',
+                 'Unobserved targets remain visible; optional features and target selection can prevent discovery. Zero-test targets are reported explicitly. This table does not change the existing per-crate gate.', '',
+                 '| Crate | Target | Kind | Run | Passed | Failed | Status | Required features |',
+                 '|---|---|---|---:|---:|---:|---|---|'])
+    for row in result.get('targets', []):
+        values = [row[key] for key in ('package', 'target', 'kind', 'run', 'passed', 'failed', 'status')]
+        values.append(', '.join(row['required_features']))
+        text.append('| ' + ' | '.join('unknown' if value is None else str(value).replace('|', '&#124;') for value in values) + ' |')
     text.extend(['', 'Counts come from nextest list/JUnit, not source markers. Doctests remain separate.', ''])
     text.extend('- ' + error for error in result['errors'])
     for phase in result.get('nextest_summaries', []):

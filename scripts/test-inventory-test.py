@@ -45,6 +45,66 @@ class EvidenceTests(unittest.TestCase):
         report = inventory.summarize(self.metadata, runs)
         return report, {r['package']: r for r in report['packages']}
 
+    def target_metadata(self):
+        for package in self.metadata['packages']:
+            package['targets'] = [
+                {'name': 'integration', 'kind': ['test'], 'test': True},
+                {'name': 'optional', 'kind': ['test'], 'test': True,
+                 'required-features': ['extra']},
+                {'name': 'build-script-build', 'kind': ['custom-build'], 'test': False}]
+        return self.metadata
+
+    def target_phase(self, label, package, tests, xml=None, **kwargs):
+        run, folder = self.phase(label, package, tests, xml, **kwargs)
+        data = json.loads((folder / 'list.json').read_text())
+        for suite in data['rust-suites'].values():
+            suite.update(kind='test', **{'binary-name': 'integration'})
+        (folder / 'list.json').write_text(json.dumps(data))
+        return run, folder
+
+    def test_target_table_retains_unobserved_and_empty_targets(self):
+        runs = [self.target_phase('ok', 'a@1', ['x'], self.xml('a', [('x', '')])),
+                self.target_phase('empty', 'b@1', [], self.xml('b', []))]
+        rows = inventory.target_inventory(self.target_metadata(), runs)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(rows[0]['run'], 1)
+        self.assertEqual(rows[0]['status'], 'passed')
+        self.assertIsNone(rows[1]['run'])
+        self.assertEqual(rows[1]['required_features'], ['extra'])
+        self.assertEqual(rows[2]['status'], 'zero registered tests')
+        self.assertEqual(rows[2]['run'], 0)
+
+    def test_target_table_matches_proc_macro_binary(self):
+        metadata = self.target_metadata()
+        metadata['packages'][0]['targets'][0]['kind'] = ['proc-macro']
+        run, folder = self.target_phase('macro', 'a@1', ['x'], self.xml('a', [('x', '')]))
+        data = json.loads((folder / 'list.json').read_text())
+        data['rust-suites']['a::integration']['kind'] = 'proc-macro'
+        (folder / 'list.json').write_text(json.dumps(data))
+        row = inventory.target_inventory(metadata, [(run, folder)])[0]
+        self.assertEqual(row['status'], 'passed')
+        self.assertEqual(row['kind'], 'lib')
+
+    def test_target_table_preserves_failure_across_repeat(self):
+        runs = [self.target_phase('bad', 'a@1', ['x'], self.xml('a', [('x', '<failure/>')]), run=1),
+                self.target_phase('good', 'a@1', ['x'], self.xml('a', [('x', '')]))]
+        row = inventory.target_inventory(self.target_metadata(), runs)[0]
+        self.assertEqual((row['run'], row['passed'], row['failed']), (1, 0, 1))
+
+    def test_target_table_build_failure_is_unknown_not_zero_pass(self):
+        runs = [self.target_phase('build', 'a@1', [], discovery=100, run=None)]
+        row = inventory.target_inventory(self.target_metadata(), runs)[0]
+        self.assertIsNone(row['run'])
+        self.assertIn('not observed', row['status'])
+        self.assertIn('discovery/build incomplete', row['problems'][0])
+
+    def test_target_table_missing_and_corrupt_results_are_not_passes(self):
+        for index, xml in enumerate([None, '<broken>', self.xml('a', [])]):
+            run = self.target_phase(str(index), 'a@1', ['x'], xml)
+            row = inventory.target_inventory(self.target_metadata(), [run])[0]
+            self.assertNotEqual(row['status'], 'passed')
+            self.assertEqual(row['registered'], 1)
+
     def test_both_crates_pass_with_equal_test_names_different_binaries(self):
         phases = [self.phase(x, x+'@1', ['same'], self.xml(x, [('same', '')])) for x in ['a', 'b']]
         report, rows = self.rows(phases)

@@ -91,3 +91,18 @@ are owned separately.
 
 Format references: [nextest list](https://nexte.st/docs/machine-readable/list/),
 [nextest JUnit](https://nexte.st/docs/machine-readable/junit/).
+
+## Per-target detail
+
+The same summary also lists every Cargo target with `test: true`, across all
+workspace crates. It matches actual nextest binary kind/name/package identities
+and joins their JUnit outcomes. Required features remain visible; a target not
+observed in discovery is labelled selection/build unknown, never zero failures.
+Empty and ignored-only targets have explicit rows. Repeated success does not
+hide an earlier failure. This diagnostic table does not impose a new requirement
+that every library or executable contain unit tests; the existing per-crate
+nonzero gate is unchanged. Joined acceptance still must run separately.
+
+This covers the per-target evidence obligation in #47 without assuming the old
+68-target count is still current. The final hosted artifact and step summary
+must be inspected before claiming that issue complete.
