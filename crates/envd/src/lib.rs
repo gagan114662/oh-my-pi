@@ -162,6 +162,9 @@ omp_con::var! {
 		default: true,
 		flags: archive,
 		meta: {
+			"ui.tab": "tasks",
+			"ui.group": "Commands & Skills",
+			"ui.label": "Skill Discovery",
 			"legacy.path": "skills.enabled",
 		},
 	};

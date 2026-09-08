@@ -25,7 +25,7 @@ import pyte
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness import MODELS_TOML, OMP_BINARY, MockModel
-from pty_debug import request as debug_request, kill_and_reap
+from pty_debug import request as debug_request, kill_and_reap, launch, termios_mode
 
 
 def process_command(pid):
@@ -156,9 +156,9 @@ def main():
             fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 140, 0, 0))
             env['OMP_TTY'] = os.ttyname(slave)
             with (output / 'stdout.log').open('wb') as stdout, (output / 'stderr.log').open('wb') as stderr:
-                process = subprocess.Popen([str(OMP_BINARY), 'chat', '--model', 'mock', '--project',
+                process = launch([str(OMP_BINARY), 'chat', '--model', 'mock', '--project',
                     str(root / 'project'), '--envd-idle-timeout', '2'], cwd=root / 'project', env=env,
-                    stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
+                    stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
                 deadline = time.monotonic() + 40
                 while True:
                     drain()
@@ -222,8 +222,10 @@ def main():
                     deadline = time.monotonic() + 10
                     while process.poll() is None and time.monotonic() < deadline:
                         drain()
-                    restored = process.poll() == 0 and termios.tcgetattr(slave) == before
-                    rows.append(('quit', 'zero exit and original termios restored', restored))
+                    mode_before, mode_after = termios_mode(before), termios_mode(termios.tcgetattr(slave))
+                    restored = process.poll() == 0 and mode_after == mode_before
+                    rows.append(('quit', json.dumps({'exit': process.poll(), 'termios_before': mode_before,
+                                                     'termios_after': mode_after}), restored))
                     if not restored:
                         failures.append('clean quit or termios restoration failed')
                 except Exception as error:

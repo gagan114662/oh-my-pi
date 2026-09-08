@@ -122,9 +122,6 @@ omp_con::var! {
 		validate: |_ctx, values| validate_approval_map(values),
 		flags: archive,
 		meta: {
-			"ui.tab": "interaction",
-			"ui.group": "Approvals",
-			"ui.label": "Tool Approval Policies",
 			"legacy.path": "tools.approval",
 		},
 	};

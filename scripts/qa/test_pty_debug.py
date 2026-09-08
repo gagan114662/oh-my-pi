@@ -1,14 +1,17 @@
 """Real PTY backpressure and bounded cleanup tests; no production UI claim."""
 import os
 import pty
+import select
 import socket
 import subprocess
+import sys
+import termios
 import threading
 import time
 import unittest
 from unittest.mock import patch
 
-from pty_debug import read_reply, kill_and_reap
+from pty_debug import read_reply, kill_and_reap, launch, termios_mode
 
 
 class PtyDebugTests(unittest.TestCase):
@@ -83,6 +86,66 @@ class PtyDebugTests(unittest.TestCase):
     def test_real_child_exit_is_observed_and_reaped(self):
         child = subprocess.Popen(['sleep', '60'], start_new_session=True)
         record = kill_and_reap(child, None, lambda chunk: None)
+        self.assertTrue(record['reaped'])
+        self.assertLess(record['exit_code'], 0)
+
+    RAW_CHILD = (
+        'import os, sys, termios, tty\n'
+        'fd = os.open(sys.argv[1], os.O_RDWR)\n'
+        'original = termios.tcgetattr(fd)\n'
+        'tty.setraw(fd)\n'
+        'if sys.argv[2] == "restore":\n'
+        '    termios.tcsetattr(fd, termios.TCSANOW, original)\n'
+        'os.write(fd, b"done\\r\\n")\n'
+        'os._exit(0)\n'
+    )
+
+    def _run_raw_child(self, restore):
+        master, slave = pty.openpty()
+        received = bytearray()
+        try:
+            before = termios.tcgetattr(slave)
+            child = launch([sys.executable, '-c', self.RAW_CHILD, os.ttyname(slave), 'restore' if restore else 'leave'],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            record = None
+            deadline = time.monotonic() + 10
+            while child.poll() is None and time.monotonic() < deadline:
+                if select.select([master], [], [], 0.05)[0]:
+                    try:
+                        received.extend(os.read(master, 65536))
+                    except OSError:
+                        break
+            if child.poll() is None:
+                record = kill_and_reap(child, master, received.extend)
+            self.assertEqual(child.returncode, 0, (record, child.stderr.read()))
+            # The driver's own slave descriptor must still answer after the
+            # child exits: a revoked slave (session leader + controlling tty
+            # on macOS) would raise ENOTTY here and hide the real answer.
+            after = termios.tcgetattr(slave)
+            return termios_mode(before), termios_mode(after), bytes(received)
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_child_that_leaves_raw_mode_is_detected_after_exit(self):
+        before, after, received = self._run_raw_child(restore=False)
+        self.assertIn(b'done', received)
+        self.assertTrue(before['ICANON'] and before['ECHO'] and before['OPOST'])
+        self.assertNotEqual(before, after)
+        self.assertFalse(after['ICANON'])
+
+    def test_child_that_restores_termios_matches_before_exit(self):
+        before, after, received = self._run_raw_child(restore=True)
+        self.assertIn(b'done', received)
+        self.assertEqual(before, after)
+
+    def test_launch_creates_a_signalable_process_group(self):
+        child = launch(['sleep', '60'])
+        try:
+            self.assertEqual(os.getpgid(child.pid), child.pid)
+            self.assertNotEqual(os.getsid(child.pid), child.pid)
+        finally:
+            record = kill_and_reap(child, None, lambda chunk: None)
         self.assertTrue(record['reaped'])
         self.assertLess(record['exit_code'], 0)
 

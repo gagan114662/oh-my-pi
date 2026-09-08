@@ -5,6 +5,9 @@ import os
 import select
 import signal
 import socket
+import subprocess
+import sys
+import termios
 import time
 
 
@@ -75,3 +78,47 @@ def kill_and_reap(process, master, consume, timeout=5):
     except Exception as error:
         record['error'] = f'{type(error).__name__}: {error}'
     return record
+
+
+def launch(args, **kwargs):
+    """Spawn the terminal application in its own process group, not a new session.
+
+    A session leader that opens the pty slave acquires it as its controlling
+    terminal (BSD open(2) semantics), and macOS revokes every descriptor of that
+    slave when the leader exits, so the driver's ``tcgetattr`` fails with ENOTTY
+    and the termios-restoration check could never be observed. A plain process
+    group keeps the driver's slave descriptor valid after exit and still lets
+    ``kill_and_reap`` signal the whole group.
+    """
+    if sys.version_info >= (3, 11):
+        kwargs['process_group'] = 0
+    else:
+        kwargs['preexec_fn'] = os.setpgrp
+    return subprocess.Popen(args, **kwargs)
+
+
+def termios_mode(attributes):
+    """The terminal-mode bits an application must restore before it exits.
+
+    Exact ``tcgetattr`` equality is not portable: the kernel toggles unrelated
+    bits (for example the local-flag high bits on macOS) across open/close.
+    Canonical input, echo, signal generation, extended input, output
+    post-processing, CR translation, flow control and the VMIN/VTIME pair are
+    what a raw-mode application changes and must put back.
+    """
+    iflag, oflag, _cflag, lflag, _ispeed, _ospeed, cc = attributes
+
+    def control(value):
+        return value if isinstance(value, int) else (value[0] if value else 0)
+
+    return {
+        'ICANON': bool(lflag & termios.ICANON),
+        'ECHO': bool(lflag & termios.ECHO),
+        'ISIG': bool(lflag & termios.ISIG),
+        'IEXTEN': bool(lflag & termios.IEXTEN),
+        'OPOST': bool(oflag & termios.OPOST),
+        'ICRNL': bool(iflag & termios.ICRNL),
+        'IXON': bool(iflag & termios.IXON),
+        'VMIN': control(cc[termios.VMIN]),
+        'VTIME': control(cc[termios.VTIME]),
+    }

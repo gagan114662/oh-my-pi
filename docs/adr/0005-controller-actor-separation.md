@@ -84,12 +84,14 @@ produce its control; a label attached to an unrenderable variable does not close
 the gap. Host-conditional rows still count as declarations.
 
 The baseline has **56 unique group names and 57 tab/group pairs**: `General`
-appears in both Context and Memory. The corrected roster has **42 unique names
-and 43 pairs**. Coverage is checked per pair, so a binding in one tab cannot
+appears in both Context and Memory. The corrected roster has **43 unique names
+and 44 pairs**. Coverage is checked per pair, so a binding in one tab cannot
 justify an empty group in another.
 
-Fourteen unbound declarations have been removed from the curated roster. This
-removes no convar and implements none of the missing capabilities below. The
+Thirteen unbound declarations have been removed from the curated roster and one
+(`Tasks / Commands & Skills`) is bound to the nine `sv_skills_*` booleans that
+`chat_cmd.rs` and `discovery/skills.rs` already consume. This removes no convar
+and implements none of the missing capabilities below. The
 panel already filtered empty groups; the defect being closed here is the
 unguarded disagreement between declarations, not a claim that fourteen empty
 panels were visible in the current product.
@@ -107,9 +109,16 @@ panels were visible in the current product.
 | Model / Vision | Reserved vision-settings heading had no bindings. Image/vision functionality elsewhere is not removed. |
 | Tools / Todos | Reserved todo-settings heading had no bindings. Existing todo tools are unchanged. |
 | Tools / Developer | Reserved developer-tool settings heading had no bindings. |
-| Tasks / Commands & Skills | Reserved command/skill settings heading had no bindings. Discovery and execution remain separate capabilities. |
-| Providers / Timeouts | Reserved provider-timeout heading had no bindings. Existing timeout/retry convars in other groups remain. |
+| Providers / Timeouts | Heading had no bindings. `ai_provider_timeout_seconds`, `ai_provider_stream_idle_seconds` and `ai_provider_call_timeout_seconds` exist but no code reads them, so binding them would satisfy the invariant with a no-op control; the heading goes until a consumer exists. |
 | Providers / Privacy | Reserved provider-privacy heading had no bindings. This does not introduce a privacy policy/control. |
+
+Two `Kv` convars carried `ui.tab`/`ui.group`/`ui.label` that the row projector
+has never been able to render (`widget` returns `None` for `Kv`):
+`sv_tools_approval` (Interaction / Approvals) and `ai_retry_fallback_chains`
+(Model / Retry & Fallback). The audit surfaces them as unrenderable, so that
+dead metadata is removed. Both remain console-only (`sv_tools_approval …`,
+`ai_retry_fallback_chains …` and `/approvals` help) until a `Kv` widget exists;
+the panel never showed them before this change.
 
 Cross-session continuity (#35) also remains unresolved; removing unused settings
 declarations is not evidence for memory capabilities. A future feature can add a
