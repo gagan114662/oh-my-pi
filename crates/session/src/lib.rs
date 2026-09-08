@@ -41,4 +41,4 @@ pub use projection::{
 	project_thread_history, project_thread_through,
 };
 pub use rewind::{LifecycleWork, diff};
-pub use session::{AttachmentInput, Session, SessionError, UnsettledCall};
+pub use session::{AttachmentInput, CallRevision, Session, SessionError, UnsettledCall};

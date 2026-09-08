@@ -765,6 +765,18 @@ fn project_tool(dom: &Dom, handle: Handle, name: &str, node: &Node, items: &mut 
 		.and_then(|handle| dom.get(handle))
 		.and_then(node_text)
 		.unwrap_or_default();
+	let revision = node
+		.prop(&omp_dom::PropKey::Custom(omp_core::Str::new_static(TOOL_REV_PROP)))
+		.and_then(Value::as_str);
+	let revision_props = revision.map(|revision| {
+		let mut props = inference::ValueMap::default();
+		props
+			.fields
+			.insert(TOOL_REV_PROP.to_owned(), inference::Value {
+				kind: Some(inference::value::Kind::String(revision.to_owned())),
+			});
+		props
+	});
 	items.push(Item {
 		seq:           0,
 		created_at_ms: 0,
@@ -775,9 +787,20 @@ fn project_tool(dom: &Dom, handle: Handle, name: &str, node: &Node, items: &mut 
 			intent: prop_text(node, PropId::I).map(str::to_owned),
 			..Default::default()
 		})),
-		props:         None,
+		props:         revision_props.clone(),
 	});
 	let result_node = terminal_node(dom, handle, status);
+	let details = revision.and_then(|_| result_node).and_then(|terminal| {
+		let property = if status == "error" {
+			PropId::Fault
+		} else {
+			PropId::Outcome
+		};
+		match terminal.prop(&property.into()) {
+			Some(Value::Json(raw)) => serde_json::from_str(raw.get()).ok().map(json_proto_value),
+			_ => None,
+		}
+	});
 	let mut parts = result_node
 		.and_then(projected_tool_parts)
 		.unwrap_or_else(|| {
@@ -801,6 +824,7 @@ fn project_tool(dom: &Dom, handle: Handle, name: &str, node: &Node, items: &mut 
 		seq:           0,
 		created_at_ms: 0,
 		kind:          Some(item::Kind::ToolResult(thread::ToolResult {
+			details,
 			call_id: id,
 			name: name.to_owned(),
 			is_error: status == "error",
@@ -808,7 +832,7 @@ fn project_tool(dom: &Dom, handle: Handle, name: &str, node: &Node, items: &mut 
 			attribution: thread::tool_result::Attribution::Agent as i32,
 			..Default::default()
 		})),
-		props:         None,
+		props:         revision_props,
 	});
 }
 

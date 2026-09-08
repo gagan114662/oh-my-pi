@@ -260,6 +260,19 @@ impl Session {
 			.with_prop(PropId::Order, Value::Str(Str::new(entry.id.to_string())))
 			.with_prop(PropId::Status, Value::Str(Str::new(status)))
 			.with_prop(PropId::Rev, Value::Int(i64::from(payload.rev)));
+		if let Some(family) = payload.family {
+			// An explicitly recorded empty family is a canonical bare revision,
+			// distinct from absent historical provenance.
+			let revision = if family.is_empty() {
+				payload.rev.to_string()
+			} else {
+				format!("{family}.{}", payload.rev)
+			};
+			tool_node = tool_node.with_prop(
+				PropKey::Custom(Str::new_static(omp_tool::TOOL_REV_PROP)),
+				Value::Str(Str::new(revision)),
+			);
+		}
 		if let Some(intent) = payload.i {
 			tool_node = tool_node.with_prop(PropId::I, Value::Str(intent));
 		}

@@ -175,7 +175,7 @@ async fn p10_edit_lift_is_idempotent_and_dispatches_at_the_live_revision() -> Re
 		reason:    RejectionReason::InvalidPatch { message: Str::new_static("no match") },
 		conflicts: Vec::new(),
 	}))?;
-	let raw = historical_thread(&historical, args, &verdict);
+	let raw = historical_thread(&historical, args.clone(), &verdict);
 	let first = project_thread_history(&raw, registry.as_ref(), &CAPS)?;
 	let second = project_thread_history(&first, registry.as_ref(), &CAPS)?;
 	let (first_item, first_call, first_result) = pair(&first);
@@ -204,6 +204,73 @@ async fn p10_edit_lift_is_idempotent_and_dispatches_at_the_live_revision() -> Re
 			.to_string()
 	);
 
+	// Exercise the real journal-first admission, settlement, reopen and
+	// projection path. Neither provenance nor result details are transplanted
+	// into the projected thread by this test.
+	for (label, revision, has_family) in [
+		("recorded-family", omp_session::CallRevision::from(&historical.rev), true),
+		("unknown-family", omp_session::CallRevision::from(1_u32), false),
+	] {
+		let path = scratch.state().join(format!("{label}.oms"));
+		let mut session = create_session(&path)?;
+		session.begin_turn()?;
+		session.user("historical edit", Vec::new())?;
+		let call = session.call(
+			"edit",
+			revision,
+			"p10-recorded",
+			None,
+			Some(serde_json::value::RawValue::from_string(String::from_utf8(args.to_vec())?)?),
+			None,
+		)?;
+		session.fail(call, serde_json::value::to_raw_value(&verdict)?)?;
+		let snapshot = session.dom().snapshot();
+		drop(session);
+		let before = std::fs::read(&path)?;
+		let sealed = omp_journal::Journal::verify_path(&path, None)?;
+		let entries = omp_journal::Journal::scan(&path)?;
+		assert_eq!(sealed.sealed_entries, entries.len());
+		assert_eq!((sealed.legacy_entries, sealed.legacy_bytes, sealed.torn_tail_bytes), (0, 0, 0));
+		assert!(sealed.tip.is_some());
+		let recorded: omp_journal::data::ToolCall = serde_json::from_str(
+			&entries
+				.iter()
+				.find(|entry| entry.id == call)
+				.expect("recorded call")
+				.data,
+		)?;
+		assert_eq!(recorded.family.as_deref(), has_family.then_some("rep"));
+		assert_eq!(recorded.rev, 1);
+		assert!(
+			entries
+				.iter()
+				.any(|entry| entry.kind.to_string() == "tool.result@1" && entry.by == Some(call))
+		);
+		let reopened = omp_session::Session::open(&path, omp_session::ComponentRegistry::standard())?;
+		assert_eq!(reopened.dom().snapshot(), snapshot);
+		let history = thread::Thread { items: omp_session::project_thread(reopened.dom()) };
+		let lifted = project_thread_history(&history, registry.as_ref(), &CAPS)?;
+		let twice = project_thread_history(&lifted, registry.as_ref(), &CAPS)?;
+		assert_eq!(lifted, twice, "journal-derived lift is idempotent");
+		if has_family {
+			let (original_item, original_call, original_result) = pair(&history);
+			assert_eq!(original_call.args_json, args);
+			assert_eq!(original_result.details, Some(proto_value(&verdict)));
+			assert_eq!(original_item.props, raw.items[0].props);
+			let (lifted_item, lifted_call, lifted_result) = pair(&lifted);
+			assert_ne!(lifted_call.args_json, original_call.args_json, "real legacy arguments change");
+			assert_eq!(lifted_call.args_json, first_call.args_json);
+			assert_eq!(lifted_result.details, first_result.details);
+			assert_eq!(lifted_result.parts, first_result.parts);
+			assert_eq!(lifted_item.props, first_item.props);
+		} else {
+			assert_eq!(lifted, history, "missing family is never guessed from today's registry");
+			assert!(pair(&history).0.props.is_none());
+		}
+		assert_eq!(std::fs::read(&path)?, before, "projection does not rewrite history");
+		assert_eq!(omp_journal::Journal::verify_path(&path, sealed.tip)?, sealed);
+	}
+
 	let live_identity = registry.resolved_identity("edit").expect("live identity");
 	let live_args =
 		serde_json::value::RawValue::from_string(String::from_utf8(first_call.args_json.to_vec())?)?;
@@ -213,7 +280,7 @@ async fn p10_edit_lift_is_idempotent_and_dispatches_at_the_live_revision() -> Re
 	dispatch_session.user("dispatch lifted edit", Vec::new())?;
 	let dispatch_call = dispatch_session.call(
 		"edit",
-		u32::from(live_identity.rev.n),
+		&live_identity.rev,
 		"p10-live",
 		None,
 		Some(live_args.clone()),
@@ -236,8 +303,8 @@ async fn p10_edit_lift_is_idempotent_and_dispatches_at_the_live_revision() -> Re
 		})
 		.await?;
 	assert!(report.is_error, "empty lifted edit is rejected by the real tool, not the dispatcher");
-	// This verifies the actual dispatch of lifted arguments. The historical
-	// input above is a proto fixture, not a journal-backed revision migration.
+	// Also verify actual dispatch of the lifted arguments; journal-backed
+	// projection above must leave its historical input untouched.
 	let sealed = omp_journal::Journal::verify_path(&dispatch_path, None)?;
 	let entries = omp_journal::Journal::scan(&dispatch_path)?;
 	assert_eq!(sealed.sealed_entries, entries.len());

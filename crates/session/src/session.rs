@@ -26,6 +26,28 @@ use crate::{
 	rewind::{LifecycleWork, diff},
 };
 
+/// Revision provenance supplied when recording a call.
+///
+/// A numeric revision explicitly represents unknown historical family. Live
+/// registry-backed callers supply `&omp_tool::Rev` to retain the full identity.
+#[derive(Clone, Debug)]
+pub struct CallRevision {
+	number: u32,
+	family: Option<Str>,
+}
+
+impl From<u32> for CallRevision {
+	fn from(number: u32) -> Self {
+		Self { number, family: None }
+	}
+}
+
+impl From<&omp_tool::Rev> for CallRevision {
+	fn from(revision: &omp_tool::Rev) -> Self {
+		Self { number: u32::from(revision.n), family: Some(revision.family.clone()) }
+	}
+}
+
 /// Failure to append, decode, or fold a session entry.
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -733,13 +755,14 @@ impl Session {
 	pub fn call(
 		&mut self,
 		name: impl Into<Str>,
-		rev: u32,
+		rev: impl Into<CallRevision>,
 		call_id: impl Into<Str>,
 		i: Option<Str>,
 		args: Option<Box<RawValue>>,
 		sid: Option<Sid>,
 	) -> Result<EntryId, SessionError> {
 		let by = self.turn_cause()?;
+		let rev = rev.into();
 		if let Some(actual) = sid {
 			let expected = self
 				.next_sid
@@ -756,7 +779,8 @@ impl Session {
 		}
 		self.commit(KindName::ToolCall, Some(by), None, None, &ToolCall {
 			name: name.into(),
-			rev,
+			rev: rev.number,
+			family: rev.family,
 			call_id: call_id.into(),
 			i,
 			args,
@@ -772,7 +796,7 @@ impl Session {
 	pub fn call_streaming(
 		&mut self,
 		name: impl Into<Str>,
-		rev: u32,
+		rev: impl Into<CallRevision>,
 		call_id: impl Into<Str>,
 		i: Option<Str>,
 	) -> Result<(EntryId, Sid), SessionError> {
