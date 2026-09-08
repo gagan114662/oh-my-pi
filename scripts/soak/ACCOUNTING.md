@@ -61,3 +61,21 @@ The raw negative checker exit and its expected-control result are separate.
 This two-turn smoke proof does not replace the >=500-turn, >=60-minute soak.
 The existing lifecycle hook field `summary.committed_turns` retains its prior
 inference-request meaning; the new accounting does not interpret that field.
+
+The original parent job in run `34257276585` built source
+`29fe965b37ba9a0a5ced3ddf7a73bb751db0ab7d`, but its provider did not publish
+readiness within the unchanged 10-second limit. Its observation contained no
+app processes or journals, so that run is a fixture startup failure, not a
+semantic negative for completed-turn accounting. The empty provider log does
+not establish which startup operation stalled.
+
+The provider now builds responses without constructing a throwaway mock HTTP
+listener. Both it and the shared QA mock bind numeric loopback without the
+standard library HTTP server's reverse-DNS lookup. An offline subprocess
+regression makes reverse DNS unavailable, starts the actual provider within
+the same 10-second limit, and checks JSON and streaming responses. This
+reproduces and removes an unnecessary DNS dependency; it does not prove DNS
+caused the historical hosted failure. Startup logs identify imports and bind
+phases, and a stack dump after nine seconds diagnoses stalls before the
+existing readiness gate. A fresh hosted parent execution must still run the
+real turns before it can qualify as the semantic negative.
