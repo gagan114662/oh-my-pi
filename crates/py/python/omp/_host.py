@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from threading import Lock, Timer
+from time import monotonic
 from typing import Any
 
 from _omp import (
@@ -565,6 +566,9 @@ class Host:
 
     def _accept(self, frame: _Frame) -> None:
         if frame.kind == "AuthoritySnapshot":
+            if not isinstance(frame.correlation, int) or isinstance(frame.correlation, bool) or frame.correlation <= 0:
+                raise HostDisconnected("authority snapshot requires a positive correlation")
+            bootstrap_started = monotonic()
             if self._backend_installed:
                 raise HostDisconnected("CONTROL authority snapshot was installed twice")
             host_generation = frame.body.get("host_generation")
@@ -624,6 +628,15 @@ class Host:
             registry = importlib.import_module("omp._registry")
             registry.services._install_control_transport(self)
             self._backend_installed = True
+            self._write({
+                "kind": "BootstrapReady",
+                "correlation": frame.correlation,
+                "body": {
+                    "host_generation": self._host_generation,
+                    "session_generation": self._session_generation,
+                    "bootstrap_ms": int((monotonic() - bootstrap_started) * 1000),
+                },
+            })
             return
         if frame.kind == "ResourceReceipt":
             if (

@@ -112,30 +112,33 @@ pub struct SpawnSpec {
 
 /// Owned parent ends for an extension-host child.
 pub struct SpawnedHost {
+	startup_started: time::Instant,
 	/// Authenticated host identity.
-	pub key:      HostKey,
+	pub key:         HostKey,
 	/// Supervised child process group leader.
-	pub child:    Child,
+	pub child:       Child,
 	/// Dedicated bidirectional CONTROL transport, never stdio.
-	pub control:  UnixStream,
+	pub control:     UnixStream,
 	/// Captured stdout/stderr records.
-	pub logs:     Receiver<HostLog>,
-	restart_spec: SpawnSpec,
-	sandbox:      Option<PreparedSandbox>,
+	pub logs:        Receiver<HostLog>,
+	restart_spec:    SpawnSpec,
+	sandbox:         Option<PreparedSandbox>,
 }
 /// Live supervised child with its sole CONTROL pump and cancellation state.
 pub struct RunningHost {
+	startup_deadline: time::Instant,
+	startup_timeout:  Duration,
 	/// Authenticated isolated child identity.
-	pub key:      HostKey,
-	child:        Child,
-	control:      ControlHandle,
-	logs:         Receiver<HostLog>,
-	pump:         task::JoinHandle<Result<(), ControlRuntimeError>>,
-	cancellation: CancellationLadder,
-	restart_spec: SpawnSpec,
-	identity:     ControlConnectionIdentity,
-	snapshot:     ControlAuthoritySnapshot,
-	sandbox:      Option<PreparedSandbox>,
+	pub key:          HostKey,
+	child:            Child,
+	control:          ControlHandle,
+	logs:             Receiver<HostLog>,
+	pump:             task::JoinHandle<Result<(), ControlRuntimeError>>,
+	cancellation:     CancellationLadder,
+	restart_spec:     SpawnSpec,
+	identity:         ControlConnectionIdentity,
+	snapshot:         ControlAuthoritySnapshot,
+	sandbox:          Option<PreparedSandbox>,
 }
 
 const fn cancellation_stops_child(outcome: &CancellationOutcome) -> bool {
@@ -145,6 +148,12 @@ const fn cancellation_stops_child(outcome: &CancellationOutcome) -> bool {
 /// Failure while driving a live child or its cancellation ladder.
 #[derive(Debug, Error)]
 pub enum RunningHostError {
+	/// Child bootstrap did not acknowledge readiness within the startup budget.
+	#[error("extension host bootstrap exceeded startup budget {timeout:?}")]
+	StartupDeadline {
+		/// Configured startup budget.
+		timeout: Duration,
+	},
 	/// CONTROL transport or protocol failure.
 	#[error(transparent)]
 	Control(#[from] ControlRuntimeError),
@@ -160,7 +169,9 @@ pub enum RunningHostError {
 }
 
 impl SpawnedHost {
-	/// Starts the sole parent reader and installs synchronous Core authority.
+	/// Starts the sole parent reader and waits for correlated child bootstrap
+	/// readiness. `startup_timeout` is measured from spawn entry, not restarted
+	/// by this wait.
 	#[tracing::instrument(
 		level = "debug",
 		name = "extension_host_handshake",
@@ -176,36 +187,55 @@ impl SpawnedHost {
 		identity: ControlConnectionIdentity,
 		authority: Arc<dyn ControlAuthority>,
 		snapshot: &ControlAuthoritySnapshot,
+		startup_timeout: Duration,
 	) -> Result<RunningHost, RunningHostError> {
-		let Self { key, mut child, control, logs, restart_spec, sandbox } = self;
+		let Self { key, mut child, control, logs, restart_spec, sandbox, startup_started } = self;
+		let startup_deadline = startup_started + startup_timeout;
 		let (runtime, handle) =
 			ControlRuntime::new(control, key.clone(), identity.clone(), authority);
 		let pump = tokio::spawn(runtime.serve());
-		if let Err(error) = handle.install_authority_snapshot(snapshot).await {
+		let readiness = match time::timeout_at(
+			startup_deadline,
+			handle.install_authority_snapshot(snapshot),
+		)
+		.await
+		{
+			Ok(result) => result.map_err(RunningHostError::Control),
+			Err(_) => Err(RunningHostError::StartupDeadline { timeout: startup_timeout }),
+		};
+		if let Err(error) = readiness {
 			pump.abort();
+			#[cfg(unix)]
+			if let Some(pid) = child.id() {
+				let _ = signal::killpg(Pid::from_raw(pid.cast_signed()), signal::Signal::SIGKILL);
+			}
 			let _ = child.start_kill();
-			let failure_kind = match &error {
-				ControlRuntimeError::Io(_) => "io",
-				ControlRuntimeError::Json(_) => "json",
-				ControlRuntimeError::Protocol(_) => "protocol",
-				ControlRuntimeError::Dispatch(_) => "dispatch",
-				ControlRuntimeError::Remote(_) => "remote",
-			};
-			tracing::warn!(
-				extension_id = %key.extension(),
-				host_generation = identity.host_generation,
-				failure_kind,
-				"extension host control handshake failed",
-			);
-			return Err(error.into());
+			let reaped = time::timeout(Duration::from_secs(2), child.wait()).await;
+			match &reaped {
+				Ok(Err(source)) => {
+					tracing::warn!(extension_id = %key.extension(), %source, "extension bootstrap child reap failed")
+				},
+				Err(_) => {
+					tracing::warn!(extension_id = %key.extension(), "extension bootstrap child reap deadline elapsed")
+				},
+				Ok(Ok(_)) => {},
+			}
+			tracing::warn!(extension_id = %key.extension(), host_generation = identity.host_generation,
+				startup_elapsed_ms = startup_started.elapsed().as_millis(),
+				cleanup_completed = matches!(reaped, Ok(Ok(_))), %error,
+				"extension host bootstrap failed");
+			return Err(error);
 		}
 		tracing::info!(
 			extension_id = %key.extension(),
 			host_generation = identity.host_generation,
 			session_generation = identity.session_generation,
+			startup_elapsed_ms = startup_started.elapsed().as_millis(),
 			"extension host control handshake completed",
 		);
 		Ok(RunningHost {
+			startup_deadline,
+			startup_timeout,
 			key,
 			child,
 			control: handle,
@@ -221,6 +251,10 @@ impl SpawnedHost {
 }
 
 impl RunningHost {
+	pub(crate) const fn startup_deadline(&self) -> time::Instant {
+		self.startup_deadline
+	}
+
 	/// Returns the cloneable host-to-child dispatch handle.
 	pub fn control(&self) -> ControlHandle {
 		self.control.clone()
@@ -267,7 +301,7 @@ impl RunningHost {
 		let cancellation = mem::take(&mut self.cancellation);
 		let spawned = spawn(spec).await?;
 		let mut replacement = spawned
-			.start_control(identity, authority, &self.snapshot)
+			.start_control(identity, authority, &self.snapshot, self.startup_timeout)
 			.await?;
 		replacement.cancellation = cancellation;
 		*self = replacement;
@@ -360,6 +394,7 @@ impl RunningHost {
 				extension_id = %self.key.extension(),
 				host_generation = self.identity.host_generation,
 				failure_kind = match error {
+					RunningHostError::StartupDeadline { .. } => "startup_deadline",
 					RunningHostError::Control(_) => "control",
 					RunningHostError::Cancellation(_) => "cancellation",
 					RunningHostError::Spawn(_) => "spawn",
@@ -518,6 +553,7 @@ fn allow_loaded_runtime_images(
 	)
 )]
 pub async fn spawn(spec: SpawnSpec) -> Result<SpawnedHost, SpawnError> {
+	let startup_started = time::Instant::now();
 	let restart_spec = spec.clone();
 	let (parent, child_control) = UnixStream::pair()?;
 	let fd = fd::AsRawFd::as_raw_fd(&child_control);
@@ -655,6 +691,7 @@ pub async fn spawn(spec: SpawnSpec) -> Result<SpawnedHost, SpawnError> {
 		"extension host spawned",
 	);
 	Ok(SpawnedHost {
+		startup_started,
 		key: spec.key,
 		child,
 		control: parent,

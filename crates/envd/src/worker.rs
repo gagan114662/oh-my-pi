@@ -1388,6 +1388,7 @@ async fn freeze_control_registry(
 	manifest: &ExtensionManifest,
 	settings: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Arc<SealedRegistryEvidence>, ExtHostError> {
+	let freeze_started = std::time::Instant::now();
 	let mut authority = python_registration_authority(
 		&HostKey::new(identity.layer.clone(), identity.tier.clone(), identity.extension.clone()),
 		&session,
@@ -1407,6 +1408,7 @@ async fn freeze_control_registry(
 		})
 		.await
 		.map_err(|error| ExtHostError::Protocol(Str::from(error.to_string())))?;
+	tracing::info!(extension_id = %identity.extension, freeze_elapsed_ms = freeze_started.elapsed().as_millis(), "extension registry freeze callback completed");
 	normalize_control_availability(manifest, &mut payload)?;
 	let evidence = seal_registry_evidence(identity, session, manifest, payload)
 		.map_err(|error| ExtHostError::Protocol(Str::from(error.to_string())))?;
@@ -1733,28 +1735,46 @@ impl ExtHostSupervisor {
 					return Err(ExtHostError::Protocol(Str::from(error.to_string())));
 				},
 			};
-			let running = spawned
-				.start_control((*identity).clone(), authority, &authority_snapshot)
+			let running = match spawned
+				.start_control(
+					(*identity).clone(),
+					authority,
+					&authority_snapshot,
+					config.spawn_timeout,
+				)
 				.await
-				.map_err(|error| ExtHostError::Protocol(Str::from(error.to_string())))?;
+			{
+				Ok(running) => running,
+				Err(
+					error @ (RunningHostError::StartupDeadline { .. }
+					| RunningHostError::Control(ControlRuntimeError::Dispatch(
+						crate::exthost::dispatch::DispatchError::HostGone,
+					))),
+				) => {
+					tracing::warn!(extension_id = %extension.key.extension(), %error,
+						"Python extension bootstrap failed; containing failure");
+					continue 'extension;
+				},
+				Err(source) => return Err(ExtHostError::ControlStartup { source }),
+			};
 			let receipt = quota_runtime
 				.receipt(config.session_id.as_str(), &extension.key)
 				.map_err(|error| ExtHostError::Protocol(Str::from(error.to_string())))?;
-			running
-				.control()
-				.install_resource_receipt(&receipt)
-				.await
-				.map_err(|error| ExtHostError::Protocol(Str::from(error.to_string())))?;
-			let evidence = match time::timeout(
-				config.spawn_timeout,
+			let evidence = match time::timeout_at(running.startup_deadline(), async {
+				running
+					.control()
+					.install_resource_receipt(&receipt)
+					.await
+					.map_err(|error| ExtHostError::Protocol(Str::from(error.to_string())))?;
 				freeze_control_registry(
 					running.control(),
 					Arc::clone(&identity),
 					config.session_id.clone(),
 					&extension.manifest,
 					&extension.settings,
-				),
-			)
+				)
+				.await
+			})
 			.await
 			{
 				Ok(Ok(evidence)) => evidence,
@@ -2501,7 +2521,7 @@ impl ExtHostSupervisor {
 	) -> Result<RunningHost, ControlHostStartError> {
 		let authority = self.control_authority(Arc::clone(&identity))?;
 		spawned
-			.start_control((*identity).clone(), authority, snapshot)
+			.start_control((*identity).clone(), authority, snapshot, Duration::from_secs(30))
 			.await
 			.map_err(Into::into)
 	}
@@ -3043,6 +3063,16 @@ pub enum ExtensionCallbackError {
 /// Extension-host startup, routing, and lifecycle failure.
 #[derive(Debug, Error)]
 pub enum ExtHostError {
+	/// CONTROL setup failed before the extension could be admitted.
+	#[error("extension host CONTROL startup failed: {source}")]
+	ControlStartup {
+		/// Typed transport, protocol or process failure.
+		#[source]
+		source: RunningHostError,
+	},
+	/// Extension startup exceeded its absolute deadline.
+	#[error("extension host startup deadline elapsed")]
+	StartupDeadline,
 	/// An authenticated extension-host contract was violated.
 	#[error("Python extension host protocol violation: {0}")]
 	Protocol(Str),
@@ -4009,19 +4039,23 @@ async fn refresh_control_generation(
 		.quota_runtime
 		.receipt(activation.session_id.as_str(), &activation.key)
 		.map_err(|error| ExtHostError::Protocol(Str::from(error.to_string())))?;
-	running
-		.control()
-		.install_resource_receipt(&receipt)
+	let evidence = time::timeout_at(running.startup_deadline(), async {
+		running
+			.control()
+			.install_resource_receipt(&receipt)
+			.await
+			.map_err(|error| ExtHostError::Protocol(Str::from(error.to_string())))?;
+		freeze_control_registry(
+			running.control(),
+			Arc::clone(&activation.identity),
+			activation.session_id.clone(),
+			&activation.manifest,
+			&activation.settings,
+		)
 		.await
-		.map_err(|error| ExtHostError::Protocol(Str::from(error.to_string())))?;
-	let evidence = freeze_control_registry(
-		running.control(),
-		Arc::clone(&activation.identity),
-		activation.session_id.clone(),
-		&activation.manifest,
-		&activation.settings,
-	)
-	.await?;
+	})
+	.await
+	.map_err(|_| ExtHostError::StartupDeadline)??;
 	if let Some(previous) = frozen_registry.lock().get(&(
 		activation.identity.layer.clone(),
 		activation.identity.tier.clone(),

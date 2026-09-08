@@ -25,7 +25,7 @@ def accept_tier(row):
         _session_generation=2,
         bootstrap_registry=stop_before_import,
     )
-    frame = SimpleNamespace(kind="AuthoritySnapshot", body={
+    frame = SimpleNamespace(kind="AuthoritySnapshot", correlation=1, body={
         "host_generation": 1,
         "session_generation": 2,
         "agent_depth": 0,
@@ -92,4 +92,65 @@ assert publication["availability"] == [{
 }]
 "#), None, None).expect("canonical CONTROL identities and availability");
     });
+}
+
+#[test]
+fn bootstrap_ready_is_emitted_only_after_registry_and_backend_installation() {
+	let engine = Engine::builder().init().expect("embedded Python boots");
+	engine.attach(|py| {
+		py.run(c_str!(r#"
+from types import SimpleNamespace
+from threading import Event, Thread
+from unittest.mock import patch
+import omp
+import omp._host as host_module
+import omp._registry as registry_module
+
+entered, release = Event(), Event()
+writes, phases, failures = [], [], []
+def bootstrap():
+    phases.append("bootstrap-entered")
+    entered.set()
+    if not release.wait(2):
+        raise AssertionError("test did not release bootstrap")
+    phases.append("registry-frozen")
+def install_backend(host):
+    phases.append("backend-installed")
+def install_transport(services, host):
+    phases.append("transport-installed")
+def write(frame):
+    assert phases == ["bootstrap-entered", "registry-frozen", "backend-installed", "transport-installed"]
+    assert host._backend_installed
+    writes.append(frame)
+host = SimpleNamespace(_backend_installed=False, _host_generation=7,
+    _session_generation=11, bootstrap_registry=bootstrap, _write=write)
+frame = SimpleNamespace(kind="AuthoritySnapshot", correlation=19, body={
+    "host_generation": 7, "session_generation": 11, "agent_depth": 0, "tiers": [],
+})
+def accept():
+    try:
+        host_module.Host._accept(host, frame)
+    except BaseException as error:
+        failures.append(error)
+with patch.object(omp, "_install_control_backend", install_backend), \
+     patch.object(type(registry_module.services), "_install_control_transport", install_transport):
+    worker = Thread(target=accept)
+    worker.start()
+    try:
+        assert entered.wait(2), "bootstrap was not reached"
+        assert not writes, "authority receipt was mistaken for readiness"
+        assert not host._backend_installed
+    finally:
+        release.set()
+        worker.join(2)
+    assert not worker.is_alive(), "bootstrap worker did not finish"
+    assert not failures, failures
+assert len(writes) == 1
+assert writes[0]["kind"] == "BootstrapReady"
+assert writes[0]["correlation"] == 19
+assert writes[0]["body"]["host_generation"] == 7
+assert writes[0]["body"]["session_generation"] == 11
+assert isinstance(writes[0]["body"]["bootstrap_ms"], int)
+"#), None, None).expect("bootstrap readiness follows completed lifecycle phases");
+	});
 }
