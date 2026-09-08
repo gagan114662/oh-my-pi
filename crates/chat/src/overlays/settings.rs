@@ -187,6 +187,7 @@ pub struct SettingRow {
 	label:       Str,
 	description: Str,
 	warning:     Option<Str>,
+	edit_error:  Option<Str>,
 	unit:        Option<Str>,
 	tab:         SettingTab,
 	group:       Str,
@@ -407,8 +408,32 @@ fn widget(spec: &VarView<'_>) -> Option<RowWidget> {
 		ValueKind::Duration => {
 			Some(RowWidget::Text { secret: spec.meta_get("ui.secret") == Some("true") })
 		},
-		ValueKind::Kv => None,
+		ValueKind::Kv => Some(RowWidget::Text { secret: spec.meta_get("ui.secret") == Some("true") }),
 	}
+}
+
+fn map_edit_error(widget: &RowWidget, value: &Value) -> Option<Str> {
+	if !matches!((widget, value), (RowWidget::Text { .. }, Value::Kv(_))) {
+		return None;
+	}
+	let faithful = omp_con::parse(&sf!("setting {value}"))
+		.ok()
+		.and_then(|statements| {
+			let [statement] = statements.as_slice() else {
+				return None;
+			};
+			let [_, map @ omp_con::Arg::Kv(_)] = statement.args.as_slice() else {
+				return None;
+			};
+			omp_con::coerce_one(map, &omp_con::TypeSpec::KV).ok()
+		})
+		.is_some_and(|parsed| parsed == *value);
+	(!faithful).then(|| {
+		Str::new_static(
+			"This map cannot be edited here without changing value types. The original value is \
+			 preserved.",
+		)
+	})
 }
 
 fn project_value(widget: &RowWidget, value: &Value) -> RowValue {
@@ -488,11 +513,18 @@ fn row(con: &Ctx, spec: &VarView<'_>) -> Option<SettingRow> {
 	} else {
 		spec.desc
 	};
+	let edit_error = map_edit_error(&widget, &value);
+	let warning = match (spec.meta_get("ui.warning"), edit_error.as_deref()) {
+		(Some(warning), Some(error)) => Some(sf!("{warning} {error}")),
+		(Some(warning), None) => Some(Str::new(warning)),
+		(None, _) => edit_error.clone(),
+	};
 	Some(SettingRow {
 		convar: Str::new(spec.name),
 		label: Str::new(label),
 		description: Str::new(description),
-		warning: spec.meta_get("ui.warning").map(Str::new),
+		warning,
+		edit_error,
 		unit: spec.meta_get("ui.unit").map(Str::new),
 		tab,
 		group: Str::new(group),
@@ -1153,11 +1185,27 @@ impl SettingsPanel {
 	}
 
 	fn command_value(row: &SettingRow, value: &RowValue) -> Result<Str, Str> {
+		if let Some(error) = &row.edit_error {
+			return Err(error.clone());
+		}
 		match value {
 			RowValue::Boolean(value) => Ok(Str::new_static(if *value { "true" } else { "false" })),
 			RowValue::Scalar(value) => Ok(value.clone()),
 			RowValue::Text(value) if row.value_kind == ValueKind::Str => {
 				Ok(Str::new(Value::Str(value.clone()).to_string()))
+			},
+			RowValue::Text(value) if row.value_kind == ValueKind::Kv => {
+				let statements = omp_con::parse(&sf!("setting {value}"))
+					.map_err(|error| sf!("Invalid map: {error}"))?;
+				let [statement] = statements.as_slice() else {
+					return Err(Str::new_static("Enter one map, such as {tool deny}."));
+				};
+				let [_, map @ omp_con::Arg::Kv(_)] = statement.args.as_slice() else {
+					return Err(Str::new_static("Enter one map, such as {tool deny}."));
+				};
+				// Render the parsed value, never interpolate editable script. The
+				// normal convar validator still checks domain-specific contents.
+				Ok(map.to_script())
 			},
 			RowValue::Text(value) => Ok(value.clone()),
 			RowValue::Multi(values) => {
@@ -2471,6 +2519,123 @@ mod tests {
 	}
 
 	#[test]
+	fn map_settings_are_editable_and_cannot_submit_extra_commands() {
+		let ctx = Ctx::new();
+		ctx.register_dynamic_var(DynamicVarSpec {
+			name:    Str::new_static("ext::coverage::map"),
+			desc:    Str::new_static("Map fixture"),
+			ty:      TypeSpec::KV,
+			flags:   VarFlags::ARCHIVE,
+			default: Value::Kv(omp_con::Kv::new()),
+			meta:    Arc::from([
+				(Str::new_static("ui.tab"), Str::new_static("interaction")),
+				(Str::new_static("ui.group"), Str::new_static("Approvals")),
+				(Str::new_static("ui.label"), Str::new_static("Tool Overrides")),
+			]),
+		})
+		.unwrap();
+		let rows = settings_rows(&ctx);
+		let row = rows
+			.iter()
+			.find(|row| row.convar == "ext::coverage::map")
+			.unwrap();
+		assert!(matches!(row.widget, RowWidget::Text { secret: false }));
+		assert_eq!(row.editable(), "{}");
+		for source in [
+			"{bash deny}",
+			"{default [provider/first provider/second]}",
+			"{}",
+			r#"{"tool; quit" "deny; quit"}"#,
+		] {
+			let command =
+				SettingsPanel::command_value(row, &RowValue::Text(Str::new(source))).unwrap();
+			let parsed = omp_con::parse(&sf!("setting {command}")).unwrap();
+			assert_eq!(parsed.len(), 1);
+			assert!(matches!(parsed[0].args.as_slice(), [_, omp_con::Arg::Kv(_)]));
+		}
+		for invalid in ["{bash deny}; quit", "{}\nquit", "[]", "{bash}", "{} extra"] {
+			assert!(
+				SettingsPanel::command_value(row, &RowValue::Text(Str::new(invalid))).is_err(),
+				"{invalid}"
+			);
+		}
+	}
+
+	fn map_fixture(ctx: &Ctx, value: Value) -> SettingRow {
+		ctx.register_dynamic_var(DynamicVarSpec {
+			name:    Str::new_static("ext::coverage::typed_map"),
+			desc:    Str::new_static("Typed map"),
+			ty:      TypeSpec::KV,
+			flags:   VarFlags::ARCHIVE,
+			default: value,
+			meta:    Arc::from([
+				(Str::new_static("ui.tab"), Str::new_static("interaction")),
+				(Str::new_static("ui.group"), Str::new_static("Approvals")),
+				(Str::new_static("ui.label"), Str::new_static("Typed Map")),
+			]),
+		})
+		.expect("map declaration");
+		settings_rows(ctx)
+			.into_iter()
+			.find(|row| row.convar == "ext::coverage::typed_map")
+			.expect("map remains visible")
+	}
+
+	#[test]
+	fn unrepresentable_nested_map_edits_leave_exact_original_types_untouched() {
+		for scalar in
+			[Value::Str(Str::new_static("true")), Value::Str(Str::new_static("42")), Value::Float(1.0)]
+		{
+			let original = Value::Kv(omp_con::Kv(vec![(
+				Str::new_static("nested"),
+				Value::List(vec![Value::Kv(omp_con::Kv(vec![(Str::new_static("value"), scalar)]))]),
+			)]));
+			let ctx = Ctx::new();
+			let row = map_fixture(&ctx, original.clone());
+			assert!(
+				row.warning
+					.as_deref()
+					.is_some_and(|warning| warning.contains("cannot be edited"))
+			);
+			let before = row.value.clone();
+			let name = row.convar.clone();
+			let mut panel = SettingsPanel::from_rows(vec![row], &UiContext::default());
+			assert!(matches!(panel.commit(0, RowValue::Text(Str::new_static("{other changed}"))),
+				PanelEvent::Notice(message) if message.contains("original value is preserved")));
+			panel.editor = Some(Editor::Text { buffer: "{other changed}".to_owned(), error: None });
+			assert!(matches!(panel.text_editor_key(0, Key::Enter), PanelEvent::Consumed));
+			assert!(matches!(&panel.editor, Some(Editor::Text { buffer, error: Some(error) })
+				if buffer == "{other changed}" && error.contains("original value is preserved")));
+			assert!(panel.pending.is_none(), "no command may be staged");
+			assert_eq!(panel.rows[0].value, before);
+			assert_eq!(ctx.get(&name), Some(original));
+		}
+	}
+
+	#[test]
+	fn representable_nested_map_roundtrips_exact_types_through_console_dispatch() {
+		let original = Value::Kv(omp_con::Kv(vec![(
+			Str::new_static("nested"),
+			Value::List(vec![
+				Value::Bool(true),
+				Value::Int(42),
+				Value::Float(1.5),
+				Value::Kv(omp_con::Kv(vec![(
+					Str::new_static("tool; quit"),
+					Value::Str(Str::new_static("deny; quit")),
+				)])),
+			]),
+		)]));
+		let ctx = Ctx::new();
+		let row = map_fixture(&ctx, original.clone());
+		assert!(row.edit_error.is_none());
+		let command = SettingsPanel::command_value(&row, &row.value).expect("faithful map");
+		ctx.run(&sf!("{} {command}", row.convar))
+			.expect("normal console dispatch");
+		assert_eq!(ctx.get(&row.convar), Some(original));
+	}
+
+	#[test]
 	fn coverage_names_a_new_advertised_group_with_no_binding() {
 		let ctx = Ctx::new();
 		let mut tabs = SETTING_TABS.to_vec();
@@ -2566,6 +2731,7 @@ mod tests {
 			label: Str::new_static(label),
 			description: sf!("Human description for {label}"),
 			warning: None,
+			edit_error: None,
 			unit: None,
 			tab,
 			group: Str::new_static(group),

@@ -78,3 +78,27 @@ fn every_product_settings_group_has_renderable_bindings_in_both_directions() {
 		"settings declarations diverge from the actual UI roster: {missing:#?}"
 	);
 }
+
+#[test]
+fn production_approval_and_fallback_maps_roundtrip_exact_values() {
+	let con = omp_con::Ctx::new();
+	for (name, source) in [
+		("sv_tools_approval", "{bash deny read allow write prompt}"),
+		("ai_retry_fallback_chains", "{default [openai/gpt-4o-mini anthropic/claude-sonnet-4]}"),
+	] {
+		con.run(&format!("{name} {source}"))
+			.expect("production map validator accepts fixture");
+		let original = con.get(name).expect("registered production setting");
+		let statements = omp_con::parse(&omp_core::sf!("setting {original}")).expect("script map");
+		let [statement] = statements.as_slice() else {
+			panic!("single statement")
+		};
+		let [_, arg @ omp_con::Arg::Kv(_)] = statement.args.as_slice() else {
+			panic!("one map")
+		};
+		assert_eq!(omp_con::coerce_one(arg, &omp_con::TypeSpec::KV).expect("typed map"), original);
+		con.run(&format!("{name} {}", arg.to_script()))
+			.expect("production validator retained");
+		assert_eq!(con.get(name), Some(original));
+	}
+}

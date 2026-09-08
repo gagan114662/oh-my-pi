@@ -71,7 +71,7 @@ pub use error::{ConError, ConResult, ConfigIoError, ConfigOperation, ParseError}
 pub use handle::{Action, CVar};
 pub use layers::{LayerId, Origin, Seed, SetReport};
 pub use repl::{Patch, Replica, Role};
-pub use script::{Arg, Statement, parse};
+pub use script::{Arg, CoerceIssue, Statement, coerce_one, parse};
 pub use spec::{
 	ActionHook, ActionSpec, ArgSpec, ChangeHook, CmdHandler, CmdSpec, Hint, RegItem, ValidateHook,
 	VarFlags, VarSpec,
