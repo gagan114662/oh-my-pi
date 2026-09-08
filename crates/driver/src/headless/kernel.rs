@@ -1602,6 +1602,7 @@ pub async fn compose_kernel(
 	ctx: Arc<omp_con::Ctx>,
 	options: KernelOptions,
 ) -> Result<(Kernel<ComposedInference>, Session, PromptSource), HeadlessError> {
+	omp_envd::capture_native_http_policy(&ctx).map_err(omp_envd::EnvdError::from)?;
 	let project_root = fs::canonicalize(project_root)?;
 	let state_dir = omp_env::project_state::directory(data_dir, &project_root)?;
 	let sessions_dir = options

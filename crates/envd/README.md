@@ -78,3 +78,41 @@ use the workspace recipes:
 
 Run joined behavior separately with `just e2e` or the exact narrower E2E
 recipe shown by `just --list`.
+
+## Native HTTP destination authority
+
+`sv_native_http_policy` uses the existing `SandboxNetworkPolicy` JSON schema.
+Its default is `{"mode":"open"}`, preserving authorized broad native HTTP.
+Command sandbox enablement and `sv_sandbox_network_mode` remain independent.
+A restricted example is:
+
+```json
+{"mode":"proxy","allow_domains":[{"domain":"api.example.com","ports":[443]}],"allow_ports":[443],"dns":"proxy_only"}
+```
+
+The host captures this policy before tool execution. Later console writes do
+not widen that running Environment. Delegated contexts also retain the captured
+parent restrictions in `sv_native_http_inherited_policies`, which scripts cannot
+write. Every policy in the inherited list must allow the destination. Domain
+ports remain paired with their domain; deny rules win. Invocation effects still
+require `env.net`, exact tokens, connection ownership, and current generations.
+
+Native HTTP runs on the session EnvServer because that host owns the invocation
+authority. The partition router sends HTTP and its cancellation to that host.
+The project daemon publishes its baseline in the authenticated `ServerHello`;
+the session host intersects it with local and inherited policy. A restricted
+session refuses a legacy owner that omits the baseline. Direct broad-owner HTTP
+remains supported. Policy is never accepted from request props or ClientHello.
+
+Restricted requests check the first destination and every redirect. Both HTTP
+and HTTPS are supported, but HTTPS-to-HTTP redirects are denied. DNS `deny`
+allows only numeric addresses; `proxy_only` and `allow` resolve through the
+trusted host. All resolved addresses must pass the shared sandbox address
+validator. The transport connects to those exact addresses with URL-hostname
+TLS verification, without re-resolution or ambient proxy routing. Connection
+pools are bounded and reused. Cross-origin credentials are stripped as before;
+a caller-supplied Host header cannot override the admitted URL authority.
+
+Cancellation and invocation settlement stop an in-flight request, including a
+pending redirect or response body. Policy changes are startup configuration;
+changing a project baseline requires rebuilding its owning composition.

@@ -1,6 +1,10 @@
 //! Capability-gated, bounded HTTP egress owned by the Environment.
 
-use std::{env, time::Duration};
+use std::{
+	env,
+	net::{IpAddr, SocketAddr},
+	time::Duration,
+};
 
 use bytes::Bytes;
 use http::{
@@ -15,7 +19,7 @@ use thiserror::Error;
 use tokio::time;
 use url::Url;
 
-use super::worker_pool::MAX_TUNNEL_BUFFER_BYTES;
+use super::{http_policy::NativeHttpScope, worker_pool::MAX_TUNNEL_BUFFER_BYTES};
 
 // Reuse the existing retained wire-buffer ceiling rather than defining a
 // second Environment response-size policy.
@@ -23,13 +27,19 @@ const MAX_REDIRECTS: u32 = 10;
 
 #[derive(Clone)]
 pub struct HttpEgressHost {
-	client: omp_http::Client,
+	#[cfg(test)]
+	pub(crate) tls_root_der: Option<Vec<u8>>,
+	client:                  omp_http::Client,
 }
 
 impl HttpEgressHost {
 	pub(crate) fn new() -> Self {
 		let client = omp_http::no_redirect_client();
-		Self { client }
+		Self {
+			client,
+			#[cfg(test)]
+			tls_root_der: None,
+		}
 	}
 
 	#[tracing::instrument(
@@ -41,6 +51,7 @@ impl HttpEgressHost {
 	pub(crate) async fn request(
 		&self,
 		request: pb::HttpRequest,
+		scope: NativeHttpScope,
 	) -> Result<pb::HttpResponse, HttpEgressError> {
 		if let Ok(url) = Url::parse(&request.url)
 			&& let Some(host) = url.host_str()
@@ -48,7 +59,13 @@ impl HttpEgressHost {
 			tracing::Span::current().record("host", host);
 		}
 		let timeout_ms = request.timeout_ms;
-		let request = self.request_once(request);
+		let request = async {
+			tokio::select! {
+				biased;
+				_ = scope.revoked.cancelled() => Err(HttpEgressError::Revoked),
+				result = self.request_once(request, &scope) => result,
+			}
+		};
 		if timeout_ms == 0 {
 			request.await
 		} else {
@@ -65,6 +82,7 @@ impl HttpEgressHost {
 	async fn request_once(
 		&self,
 		request: pb::HttpRequest,
+		scope: &NativeHttpScope,
 	) -> Result<pb::HttpResponse, HttpEgressError> {
 		if request.redirects > MAX_REDIRECTS {
 			return Err(HttpEgressError::InvalidArgument(format!(
@@ -74,12 +92,20 @@ impl HttpEgressHost {
 		let mut method = parse_method(&request.method)?;
 		let mut url = parse_url(&request.url)?;
 		let mut headers = parse_headers(&request.headers)?;
+		if scope.restricted() {
+			// The URL is the admitted authority; a caller cannot select another
+			// virtual host by supplying a different Host header.
+			headers.remove(HOST);
+		}
 		let mut body = request.body;
 		let mut followed = 0;
 
 		loop {
-			let response = self
-				.client
+			let client = self.destination_client(&url, scope).await?;
+			if scope.revoked.is_cancelled() {
+				return Err(HttpEgressError::Revoked);
+			}
+			let response = client
 				.request(method.clone(), url.as_str())
 				.headers(headers.clone())
 				.body(body.clone())
@@ -91,6 +117,9 @@ impl HttpEgressHost {
 				&& let Some(location) = redirect_location(status_code, response.headers())
 			{
 				let next_url = parse_redirect_url(&url, &location)?;
+				if scope.restricted() && url.scheme() == "https" && next_url.scheme() == "http" {
+					return Err(HttpEgressError::DestinationDenied);
+				}
 				if !same_origin(&url, &next_url) {
 					headers.remove(AUTHORIZATION);
 					headers.remove(COOKIE);
@@ -124,10 +153,84 @@ impl HttpEgressHost {
 			});
 		}
 	}
+
+	async fn destination_client(
+		&self,
+		url: &Url,
+		scope: &NativeHttpScope,
+	) -> Result<omp_http::Client, HttpEgressError> {
+		if !scope.restricted() {
+			return Ok(self.client.clone());
+		}
+		if !url.username().is_empty() || url.password().is_some() {
+			return Err(HttpEgressError::DestinationDenied);
+		}
+		let host = url.host_str().ok_or(HttpEgressError::DestinationDenied)?;
+		// URL hosts include brackets around IPv6 literals; socket resolution does not.
+		let host = host
+			.trim_start_matches('[')
+			.trim_end_matches(']')
+			.trim_end_matches('.')
+			.to_ascii_lowercase();
+		let port = url
+			.port_or_known_default()
+			.ok_or(HttpEgressError::DestinationDenied)?;
+		if scope
+			.policies
+			.iter()
+			.any(|policy| !policy.allows_destination(&host, port))
+		{
+			return Err(HttpEgressError::DestinationDenied);
+		}
+		let mut addresses: Vec<SocketAddr> = if let Ok(ip) = host.parse::<IpAddr>() {
+			vec![SocketAddr::new(ip, port)]
+		} else {
+			if scope
+				.policies
+				.iter()
+				.any(|policy| policy.mode != "open" && policy.dns == "deny")
+			{
+				return Err(HttpEgressError::DestinationDenied);
+			}
+			// proxy_only means DNS belongs to the trusted egress host. Children
+			// receive neither the resolver nor an independently resolved socket.
+			tokio::net::lookup_host((host.as_str(), port))
+				.await
+				.map_err(HttpEgressError::Resolution)?
+				.collect()
+		};
+		if addresses.is_empty()
+			|| addresses.iter().any(|address| {
+				scope
+					.policies
+					.iter()
+					.any(|policy| !policy.allows_address(address.ip()))
+			}) {
+			return Err(HttpEgressError::DestinationDenied);
+		}
+		addresses.sort_unstable();
+		addresses.dedup();
+		#[cfg(not(test))]
+		let root = None;
+		#[cfg(test)]
+		let root = self.tls_root_der.as_deref();
+		omp_http::pinned_destination_client_with_root(
+			url.host_str().ok_or(HttpEgressError::DestinationDenied)?,
+			&addresses,
+			root,
+		)
+		.map_err(HttpEgressError::transport)
+	}
 }
 
 #[derive(Debug, Error)]
 pub enum HttpEgressError {
+	#[error("HTTP egress destination is outside the authorized network scope")]
+	DestinationDenied,
+	#[error("HTTP egress authority was revoked")]
+	Revoked,
+	#[error("HTTP egress destination resolution failed")]
+	Resolution(#[source] std::io::Error),
 	#[error("invalid HTTP egress request: {0}")]
 	InvalidArgument(String),
 	#[error("HTTP egress request timed out")]
@@ -145,8 +248,8 @@ pub enum HttpEgressError {
 		#[source]
 		source:   reqwest::Error,
 	},
-	#[error("HTTP egress transport failed: {0}")]
-	Transport(String),
+	#[error("HTTP egress transport failed")]
+	Transport(#[source] reqwest::Error),
 }
 
 impl HttpEgressError {
@@ -157,9 +260,9 @@ impl HttpEgressError {
 			diagnostic.contains("socks") || diagnostic.contains("proxy")
 		};
 		if proxy_failure && let Some(variable) = configured_socks_proxy() {
-			return Self::UnsupportedSocksProxy { variable, source: error };
+			return Self::UnsupportedSocksProxy { variable, source: error.without_url() };
 		}
-		Self::Transport(diagnostic)
+		Self::Transport(error.without_url())
 	}
 }
 /// Proxy environment variables in the same precedence order used by HTTP

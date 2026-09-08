@@ -27,6 +27,11 @@ pub mod grep;
 pub mod host_info;
 pub mod host_settings;
 mod http_egress;
+mod http_policy;
+pub use http_policy::{
+	NativeHttpPolicyError, SV_NATIVE_HTTP_INHERITED_POLICIES, SV_NATIVE_HTTP_POLICY,
+	capture_native_http_policy,
+};
 mod journal_runtime;
 pub mod lsp_settings;
 mod managed_skills;
@@ -36,6 +41,7 @@ mod media_devices;
 mod media_tts;
 pub mod memory;
 pub mod model_discovery;
+mod network_policy;
 pub mod policy;
 mod presence;
 pub mod process_identity;

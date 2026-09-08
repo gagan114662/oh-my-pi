@@ -1,0 +1,108 @@
+name: Native HTTP destination authority
+
+on:
+  push:
+    branches: [fix/http-destination-143]
+  pull_request:
+    branches: [main, omp2]
+    paths:
+      - crates/envd/**
+      - crates/env/**
+      - crates/http/**
+      - crates/driver/**
+      - crates/proto/**
+      - scripts/qa/check_http_destination.py
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - justfile
+      - .github/workflows/http-destination.yml
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source revision to build; empty uses the workflow revision
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  http-destination:
+    name: Native HTTP ${{ matrix.mode }}
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [normal, mutation, baseline-parent, baseline-head]
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ matrix.mode == 'baseline-parent' && 'b59b952172f1f331c2a79a6bc22f6ea25a3e2135' || inputs.source_ref || github.sha }}
+      - name: Record checkout identity before setup
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/http-destination
+          git rev-parse HEAD > target/http-destination/source-revision.txt
+          git -C ../proof-tools rev-parse HEAD > target/http-destination/checker-revision.txt
+          git status --porcelain=v1 > target/http-destination/source-before.txt
+          shasum -a 256 ../proof-tools/scripts/qa/check_http_destination.py ../proof-tools/.github/workflows/http-destination.yml .cargo/config.toml Cargo.lock rust-toolchain.toml > target/http-destination/setup-provenance.sha256
+      - name: Install documented prerequisites
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install just cmake ninja lld@22 uv 2>&1 | tee target/http-destination/install.log
+          rustup show active-toolchain 2>&1 | tee target/http-destination/toolchain.log
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare Python and check prerequisites
+        id: setup
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          just setup-python 2>&1 | tee target/http-destination/python-setup.log
+          just doctor 2>&1 | tee target/http-destination/doctor.log
+          /opt/homebrew/opt/lld@22/bin/ld64.lld --version | tee target/http-destination/linker.log
+          df -h . | tee target/http-destination/free-space.log
+      - name: Execute source-bound proof
+        working-directory: source
+        shell: bash
+        env:
+          PROOF_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          python3 ../proof-tools/scripts/qa/check_http_destination.py "$PROOF_MODE" --proof-root ../proof-tools --output target/http-destination
+      - name: Require completed evidence
+        if: always()
+        working-directory: source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('target/http-destination/report.json')
+          if not path.exists():
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                  summary.write('\nNative HTTP evidence missing: setup or checker did not complete.\n')
+              raise SystemExit('Missing HTTP proof report')
+          report = json.loads(path.read_text())
+          if report['status'] != 'passed':
+              raise SystemExit('Incomplete or failed HTTP proof; inspect raw logs and report.json')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: http-destination-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: source/target/http-destination/
+          if-no-files-found: error

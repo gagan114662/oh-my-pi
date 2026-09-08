@@ -269,7 +269,9 @@ fn route_client_frame(
 			Some(omp_proto::env::v1::cancel_request::Target::Exec(_)) | None => (remote, None),
 		},
 		Some(client_frame::Body::Data(data)) => (route_data(data.body.as_ref()), None),
-		Some(client_frame::Body::WorkspaceUpdateCheck(_)) => (local, None),
+		Some(client_frame::Body::WorkspaceUpdateCheck(_) | client_frame::Body::HttpRequest(_)) => {
+			(local, None)
+		},
 		Some(
 			client_frame::Body::EvalReset(_)
 			| client_frame::Body::AcpBind(_)
@@ -291,7 +293,6 @@ fn route_client_frame(
 			| client_frame::Body::BlobPutCommit(_)
 			| client_frame::Body::BlobDelete(_)
 			| client_frame::Body::Retire(_)
-			| client_frame::Body::HttpRequest(_)
 			| client_frame::Body::Shutdown(_)
 			| client_frame::Body::RegisterPresence(_)
 			| client_frame::Body::ReleasePresence(_)
@@ -410,6 +411,32 @@ mod tests {
 
 	fn frame(request_id: u64, body: client_frame::Body) -> ClientFrame {
 		ClientFrame { request_id, body: Some(body), ..ClientFrame::default() }
+	}
+
+	#[test]
+	fn native_http_and_its_cancel_follow_session_authority() {
+		let request = frame(41, client_frame::Body::HttpRequest(Default::default()));
+		let (backend, invocation) = route_client_frame(
+			&request,
+			&FastHashSet::default(),
+			&FastHashMap::default(),
+			&FastHashMap::default(),
+		);
+		assert_eq!(backend, Backend::Local);
+		assert!(invocation.is_none());
+		let mut requests = FastHashMap::default();
+		requests.insert(41, backend);
+		let cancel = frame(
+			0,
+			client_frame::Body::Cancel(omp_proto::env::v1::CancelRequest {
+				target: Some(omp_proto::env::v1::cancel_request::Target::TargetRequestId(41)),
+				..Default::default()
+			}),
+		);
+		assert_eq!(
+			route_client_frame(&cancel, &FastHashSet::default(), &FastHashMap::default(), &requests).0,
+			Backend::Local
+		);
 	}
 
 	#[test]

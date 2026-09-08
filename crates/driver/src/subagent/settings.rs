@@ -569,6 +569,11 @@ pub fn child_ctx(
 	loader: &dyn CfgLoader,
 	agent: &str,
 ) -> Result<Ctx, omp_con::ConError> {
+	let mut http_floor = omp_envd::SV_NATIVE_HTTP_INHERITED_POLICIES.get(parent);
+	let parent_http_policy = omp_envd::SV_NATIVE_HTTP_POLICY.get(parent);
+	if !http_floor.contains(&parent_http_policy) {
+		http_floor.push(parent_http_policy);
+	}
 	let seed = parent.seed_child();
 	let child = Ctx::new();
 	let (dynamic_vars, values) = seed.into_parts();
@@ -578,6 +583,7 @@ pub fn child_ctx(
 	for (name, value) in values {
 		child.set_value(name.as_str(), value, omp_con::SetSource::Code)?;
 	}
+	omp_envd::SV_NATIVE_HTTP_INHERITED_POLICIES.set(&child, http_floor)?;
 	let outcome = child.exec_spawn_configs(loader, agent)?;
 	if outcome.failed > 0 {
 		tracing::warn!(
@@ -592,6 +598,34 @@ pub fn child_ctx(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn child_configuration_cannot_replace_captured_native_http_floor() {
+		let parent = Ctx::new();
+		let deny = Str::from("{\"mode\":\"deny\"}");
+		omp_envd::SV_NATIVE_HTTP_POLICY
+			.set(&parent, deny.clone())
+			.expect("owner scope");
+		omp_envd::capture_native_http_policy(&parent).expect("captured startup scope");
+		let loader = |_: &str| Ok(Some(Str::from(r#"sv_native_http_policy "{\"mode\":\"open\"}""#)));
+		let child = child_ctx(&parent, &loader, "test-agent").expect("child config");
+		assert_eq!(
+			omp_envd::SV_NATIVE_HTTP_POLICY.get(&child).as_str(),
+			"{\"mode\":\"open\"}",
+			"child cfg actually requested a wider policy"
+		);
+		assert!(
+			omp_envd::SV_NATIVE_HTTP_INHERITED_POLICIES
+				.get(&child)
+				.contains(&deny)
+		);
+		let grandchild = child_ctx(&child, &loader, "test-grandchild").expect("grandchild config");
+		assert!(
+			omp_envd::SV_NATIVE_HTTP_INHERITED_POLICIES
+				.get(&grandchild)
+				.contains(&deny)
+		);
+	}
 
 	#[test]
 	fn task_is_withheld_only_at_the_configured_recursion_ceiling() {

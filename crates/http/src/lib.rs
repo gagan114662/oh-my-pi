@@ -8,7 +8,12 @@
 //! Reqwest clients own connection pools. Callers clone one of the process-wide
 //! clients instead of constructing a pool per request or host instance.
 
-use std::{ops::Deref, sync::LazyLock};
+use std::{
+	collections::VecDeque,
+	net::SocketAddr,
+	ops::Deref,
+	sync::{LazyLock, Mutex},
+};
 
 use reqwest::{Client as ReqwestClient, ClientBuilder, redirect::Policy};
 
@@ -56,6 +61,66 @@ pub fn default_client() -> Client {
 #[inline]
 pub fn no_redirect_client() -> Client {
 	NO_REDIRECT_CLIENT.clone()
+}
+
+struct PinnedPool {
+	root_certificate: Option<Vec<u8>>,
+	host:             String,
+	addresses:        Vec<SocketAddr>,
+	client:           Client,
+}
+
+static PINNED_POOLS: Mutex<VecDeque<PinnedPool>> = Mutex::new(VecDeque::new());
+
+/// Reuses a bounded pool keyed by the exact addresses already admitted by the
+/// host. Redirects and ambient proxies are disabled: neither may resolve or
+/// choose a destination outside those addresses. TLS still authenticates the
+/// original URL hostname. The caller must validate every address before use.
+pub fn pinned_destination_client(
+	host: &str,
+	addresses: &[SocketAddr],
+) -> Result<Client, reqwest::Error> {
+	pinned_destination_client_with_root(host, addresses, None)
+}
+
+/// Reuses an admitted-destination pool with an optional host-trusted DER root.
+/// A distinct root owns a distinct pool; URL names are still verified normally.
+pub fn pinned_destination_client_with_root(
+	host: &str,
+	addresses: &[SocketAddr],
+	root_certificate: Option<&[u8]>,
+) -> Result<Client, reqwest::Error> {
+	let mut pools = PINNED_POOLS
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner);
+	if let Some(index) = pools.iter().position(|pool| {
+		pool.host == host
+			&& pool.addresses == addresses
+			&& pool.root_certificate.as_deref() == root_certificate
+	}) {
+		let pool = pools.remove(index).expect("located pool exists");
+		let client = pool.client.clone();
+		pools.push_back(pool);
+		return Ok(client);
+	}
+	let mut builder = client_builder()
+		.no_proxy()
+		.redirect(Policy::none())
+		.resolve_to_addrs(host, addresses);
+	if let Some(root) = root_certificate {
+		builder = builder.tls_certs_merge([reqwest::Certificate::from_der(root)?]);
+	}
+	let client = Client::from(builder.build()?);
+	if pools.len() == 64 {
+		pools.pop_front();
+	}
+	pools.push_back(PinnedPool {
+		root_certificate: root_certificate.map(<[u8]>::to_vec),
+		host:             host.to_owned(),
+		addresses:        addresses.to_vec(),
+		client:           client.clone(),
+	});
+	Ok(client)
 }
 
 /// Starts a client builder after installing the workspace Ring provider.

@@ -1,12 +1,14 @@
 //! Session-owned, policy-enforcing forward proxy for scoped sandbox networking.
 
+#[cfg(test)]
+use std::net::IpAddr;
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 use std::{
 	io::{self, BufRead, BufReader, Read, Write},
-	net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
+	net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
 	sync::{
 		Arc,
 		atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -21,7 +23,12 @@ use parking_lot::Mutex;
 use tempfile::TempDir;
 use url::Url;
 
-use crate::exec_settings::SandboxSettings;
+#[cfg(test)]
+use crate::network_policy::{authorized_address, domain_matches, globally_routable};
+use crate::{
+	exec_settings::SandboxSettings,
+	policy::{SandboxDomainRule, SandboxNetworkPolicy},
+};
 
 const MAX_CONNECTIONS: usize = 32;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -259,10 +266,7 @@ where
 
 #[derive(Clone)]
 struct ProxyPolicy {
-	allow:     Arc<[Str]>,
-	deny:      Arc<[Str]>,
-	ports:     Arc<[u16]>,
-	localhost: bool,
+	network:   SandboxNetworkPolicy,
 	amendment: Option<(Str, u16)>,
 	attempts:  Arc<Mutex<FastHashMap<Str, Option<(Str, u16)>>>>,
 }
@@ -274,10 +278,21 @@ impl ProxyPolicy {
 		attempts: Arc<Mutex<FastHashMap<Str, Option<(Str, u16)>>>>,
 	) -> Self {
 		Self {
-			allow: settings.allow_domains.clone().into(),
-			deny: settings.deny_domains.clone().into(),
-			ports: settings.allow_ports.clone().into(),
-			localhost: settings.allow_localhost,
+			network: SandboxNetworkPolicy {
+				allow_domains: settings
+					.allow_domains
+					.iter()
+					.map(|domain| SandboxDomainRule { domain: domain.clone(), ports: Vec::new() })
+					.collect(),
+				deny_domains: settings
+					.deny_domains
+					.iter()
+					.map(|domain| SandboxDomainRule { domain: domain.clone(), ports: Vec::new() })
+					.collect(),
+				allow_ports: settings.allow_ports.clone(),
+				allow_localhost: settings.allow_localhost,
+				..SandboxNetworkPolicy::default()
+			},
 			amendment: amendment.map(|(host, port)| (host.clone(), port)),
 			attempts,
 		}
@@ -300,15 +315,8 @@ impl ProxyPolicy {
 			});
 		if host.is_empty()
 			|| !amended
-				&& (!self.ports.contains(&port)
-					|| self
-						.deny
-						.iter()
-						.any(|rule| domain_matches(rule.as_str(), &host))
-					|| !self
-						.allow
-						.iter()
-						.any(|rule| domain_matches(rule.as_str(), &host)))
+				&& (self.network.allow_ports.is_empty()
+					|| !self.network.allows_destination(&host, port))
 		{
 			if let Some(denial) = self.attempts.lock().get_mut(token) {
 				*denial = Some((Str::from(host.as_str()), port));
@@ -319,7 +327,7 @@ impl ProxyPolicy {
 		if candidates.is_empty()
 			|| candidates
 				.iter()
-				.any(|address| !authorized_address(address.ip(), self.localhost))
+				.any(|address| !self.network.allows_address(address.ip()))
 		{
 			return Err(policy_blocked());
 		}
@@ -329,57 +337,6 @@ impl ProxyPolicy {
 
 fn policy_blocked() -> io::Error {
 	io::Error::new(io::ErrorKind::PermissionDenied, "scoped proxy policy blocked request")
-}
-
-fn domain_matches(rule: &str, host: &str) -> bool {
-	let rule = rule.trim().trim_end_matches('.');
-	if let Some(suffix) = rule.strip_prefix("*.") {
-		let suffix = suffix.to_ascii_lowercase();
-		host.len() > suffix.len()
-			&& host.ends_with(&suffix)
-			&& host.as_bytes().get(host.len() - suffix.len() - 1) == Some(&b'.')
-	} else {
-		rule.eq_ignore_ascii_case(host)
-	}
-}
-
-fn authorized_address(ip: IpAddr, allow_localhost: bool) -> bool {
-	globally_routable(ip) || allow_localhost && ip.is_loopback()
-}
-
-fn globally_routable(ip: IpAddr) -> bool {
-	match ip {
-		IpAddr::V4(value) => {
-			!(value.is_private()
-				|| value.is_loopback()
-				|| value.is_link_local()
-				|| value.is_multicast()
-				|| value.is_unspecified()
-				|| value.is_broadcast()
-				|| value.octets()[0] == 0
-				|| matches!(
-					value.octets(),
-					[100, 64..=127, _, _]
-						| [192, 0, 0, _]
-						| [192, 0, 2, _]
-						| [198, 18..=19, _, _]
-						| [198, 51, 100, _]
-						| [203, 0, 113, _]
-						| [240..=255, _, _, _]
-						| [168, 63, 129, 16]
-				))
-		},
-		IpAddr::V6(value) => {
-			if let Some(mapped) = value.to_ipv4_mapped() {
-				return globally_routable(IpAddr::V4(mapped));
-			}
-			!(value.is_loopback()
-				|| value.is_multicast()
-				|| value.is_unspecified()
-				|| value.is_unique_local()
-				|| value.is_unicast_link_local())
-		},
-	}
 }
 
 fn connect(policy: &ProxyPolicy, token: &Str, host: &str, port: u16) -> io::Result<TcpStream> {
@@ -1023,20 +980,29 @@ mod tests {
 
 	fn policy(port: u16) -> ProxyPolicy {
 		ProxyPolicy {
-			allow:     Arc::from([Str::from("127.0.0.1")]),
-			deny:      Arc::from([]),
-			ports:     Arc::from([port]),
-			localhost: true,
+			network:   SandboxNetworkPolicy {
+				allow_domains: vec![SandboxDomainRule {
+					domain: Str::from("127.0.0.1"),
+					ports:  Vec::new(),
+				}],
+				deny_domains: Vec::new(),
+				allow_ports: vec![port],
+				allow_localhost: true,
+				..SandboxNetworkPolicy::default()
+			},
 			amendment: None,
 			attempts:  test_attempts(),
 		}
 	}
 	fn host_policy(host: &str, port: u16) -> ProxyPolicy {
 		ProxyPolicy {
-			allow:     Arc::from([Str::from(host)]),
-			deny:      Arc::from([]),
-			ports:     Arc::from([port]),
-			localhost: true,
+			network:   SandboxNetworkPolicy {
+				allow_domains: vec![SandboxDomainRule { domain: Str::from(host), ports: Vec::new() }],
+				deny_domains: Vec::new(),
+				allow_ports: vec![port],
+				allow_localhost: true,
+				..SandboxNetworkPolicy::default()
+			},
 			amendment: None,
 			attempts:  test_attempts(),
 		}
@@ -1127,10 +1093,19 @@ mod tests {
 	#[test]
 	fn deny_rules_and_ports_precede_resolution() {
 		let policy = ProxyPolicy {
-			allow:     Arc::from([Str::from("example.test")]),
-			deny:      Arc::from([Str::from("example.test")]),
-			ports:     Arc::from([443]),
-			localhost: false,
+			network:   SandboxNetworkPolicy {
+				allow_domains: vec![SandboxDomainRule {
+					domain: Str::from("example.test"),
+					ports:  Vec::new(),
+				}],
+				deny_domains: vec![SandboxDomainRule {
+					domain: Str::from("example.test"),
+					ports:  Vec::new(),
+				}],
+				allow_ports: vec![443],
+				allow_localhost: false,
+				..SandboxNetworkPolicy::default()
+			},
 			amendment: None,
 			attempts:  test_attempts(),
 		};
