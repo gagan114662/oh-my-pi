@@ -72,3 +72,27 @@ theme through components.
   `crates/tui/src/components/text.rs`, `crates/tui/README.md`
 - `AGENTS.md` "TUI Rendering Doctrine"
 - 0030 (truncation as a stream transform), 0031 (the markup that carries semantics)
+
+## Built-in palette resolution and unsupported theme fields
+
+The renderer's existing dark/light palettes are catalog entries named `dark`
+and `light`; `default` contains both and follows appearance. They are compiled
+into the binary and have no filesystem source. Explicit theme paths, user
+files, and project files retain first-source precedence over these built-ins.
+The default dark convar now names `dark` instead of the unavailable `titanium`.
+This makes defaults selectable and resolvable without inventing a theme file.
+
+Theme JSON `symbols` was parsed but unused. It is now rejected as an unknown
+field, including null or empty values. Symbol presets, symbol overrides, and
+spinner frames are unsupported in theme JSON; glyph selection remains owned by
+the renderer charset/icon vocabulary. `colorBlindMode` is likewise unsupported
+and rejected by the existing strict top-level schema. Theme-file live reload
+is not established by this change. These are explicit limitations, not claims
+of parity with the old theme catalog.
+
+Issue #24 evidence is produced by the `theme_defaults` app test in
+`OMP_THEME_PROOF_DIR`: default enumeration, retained-cell color assertions,
+ANSI frames, and PNGs through the existing debug frame encoder. That encoder
+is monochrome, so the PNGs alone cannot prove colors. A real Settings →
+Appearance interaction, terminal appearance changes, resize, and clean quit
+still require live PTY proof before closing the issue.

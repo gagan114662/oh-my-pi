@@ -79,13 +79,13 @@ impl JsonTheme {
 	}
 }
 
-/// One theme file loaded into a [`ThemeCatalog`].
+/// One file-backed or built-in palette in a [`ThemeCatalog`].
 #[derive(Clone, Debug)]
 pub struct LoadedTheme {
 	/// Lookup name: the file stem of `<themes>/<name>.json`.
 	pub name:  Str,
-	/// Source file.
-	pub path:  PathBuf,
+	/// Source file, or `None` for a palette compiled into the renderer.
+	pub path:  Option<PathBuf>,
 	/// Parsed palette.
 	pub theme: Arc<JsonTheme>,
 }
@@ -122,10 +122,10 @@ pub enum ThemeLoadError {
 	},
 }
 
-/// Named themes loaded from disk, in precedence order: paths named on the
+/// Named themes, in precedence order: paths named on the
 /// command line (`--theme <file|dir>`) first, then each discovered theme
 /// directory (`<config root>/agent/themes`, `<project>/.omp/themes`). Within
-/// a name the first source wins.
+/// a name the first source wins. Built-in palettes are appended last.
 #[derive(Clone, Debug, Default)]
 pub struct ThemeCatalog {
 	themes:       Vec<LoadedTheme>,
@@ -177,6 +177,19 @@ impl ThemeCatalog {
 				}
 			}
 		}
+		let dark = Theme::for_appearance(Appearance::Dark);
+		let light = Theme::for_appearance(Appearance::Light);
+		for (name, dark, light) in
+			[("default", dark, light), ("dark", dark, dark), ("light", light, light)]
+		{
+			if catalog.get(name).is_none() {
+				catalog.themes.push(LoadedTheme {
+					name:  Str::new_static(name),
+					path:  None,
+					theme: Arc::new(JsonTheme { name: Str::new_static(name), dark, light }),
+				});
+			}
+		}
 		Ok(catalog)
 	}
 
@@ -189,10 +202,10 @@ impl ThemeCatalog {
 		}
 		self
 			.themes
-			.push(LoadedTheme { name, path, theme: Arc::new(theme) });
+			.push(LoadedTheme { name, path: Some(path), theme: Arc::new(theme) });
 	}
 
-	/// The theme filed under `name` (its file stem), when loaded.
+	/// The palette filed under `name` (a file stem or built-in identity).
 	#[must_use]
 	pub fn get(&self, name: &str) -> Option<Arc<JsonTheme>> {
 		self
@@ -282,7 +295,6 @@ struct ThemeFile {
 	dark:    ThemePatch,
 	light:   Option<ThemePatch>,
 	export:  Option<ThemeExport>,
-	symbols: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -693,6 +705,96 @@ fn relative_luminance([red, green, blue]: [u8; 3]) -> f64 {
 mod tests {
 	use super::*;
 	#[test]
+	fn built_in_catalog_resolves_without_files_and_preserves_appearance() {
+		let catalog = ThemeCatalog::load(&[], &[]).unwrap();
+		assert!(catalog.first_explicit().is_none());
+		assert!(catalog.warnings.is_empty());
+		for appearance in [Appearance::Dark, Appearance::Light] {
+			assert_eq!(
+				catalog.get("default").unwrap().for_appearance(appearance),
+				Theme::for_appearance(appearance)
+			);
+			assert_eq!(
+				catalog.get("dark").unwrap().for_appearance(appearance),
+				Theme::for_appearance(Appearance::Dark)
+			);
+			assert_eq!(
+				catalog.get("light").unwrap().for_appearance(appearance),
+				Theme::for_appearance(Appearance::Light)
+			);
+		}
+		assert!(catalog.themes().iter().all(|theme| theme.path.is_none()));
+	}
+
+	#[test]
+	fn external_defaults_win_over_builtins_in_source_order() {
+		let root = tempfile::tempdir().unwrap();
+		let explicit = root.path().join("explicit");
+		let user = root.path().join("user");
+		let project = root.path().join("project");
+		for (directory, color) in [(&explicit, "#112233"), (&user, "#445566"), (&project, "#778899")]
+		{
+			fs::create_dir(directory).unwrap();
+			fs::write(
+				directory.join("dark.json"),
+				format!(r#"{{"name":"custom","dark":{{"accent":"{color}"}}}}"#),
+			)
+			.unwrap();
+		}
+		for (paths, dirs, expected) in [
+			(
+				vec![explicit.clone()],
+				vec![user.clone(), project.clone()],
+				Color::Rgb(0x11, 0x22, 0x33),
+			),
+			(vec![], vec![user, project.clone()], Color::Rgb(0x44, 0x55, 0x66)),
+			(vec![], vec![project], Color::Rgb(0x77, 0x88, 0x99)),
+		] {
+			let catalog = ThemeCatalog::load(&paths, &dirs).unwrap();
+			assert_eq!(
+				catalog
+					.get("dark")
+					.unwrap()
+					.for_appearance(Appearance::Dark)
+					.accent,
+				expected
+			);
+			assert_eq!(
+				catalog
+					.themes()
+					.iter()
+					.filter(|theme| theme.name == "dark")
+					.count(),
+				1
+			);
+			assert!(
+				catalog
+					.themes()
+					.iter()
+					.find(|theme| theme.name == "dark")
+					.unwrap()
+					.path
+					.is_some()
+			);
+		}
+	}
+
+	#[test]
+	fn unsupported_symbols_are_rejected_instead_of_discarded() {
+		for source in [
+			r#"{"symbols":{}}"#,
+			r#"{"symbols":null}"#,
+			r#"{"symbols":{"preset":"unicode","spinnerFrames":["."]}}"#,
+		] {
+			let error = JsonTheme::parse(source).unwrap_err();
+			let ThemeError::Json(source) = error else {
+				panic!("expected schema rejection")
+			};
+			assert!(source.to_string().contains("unknown field `symbols`"), "{source}");
+		}
+	}
+
+	#[test]
 	fn selection_and_tint_backgrounds_use_panel_mix_math() {
 		let theme =
 			Theme { panel: Color::Rgb(10, 20, 30), fg: Color::Rgb(210, 220, 230), ..Theme::default() };
@@ -796,7 +898,11 @@ mod tests {
 			.iter()
 			.map(|loaded| loaded.name.as_str())
 			.collect::<Vec<_>>();
-		assert_eq!(names, ["ocean", "forest"], "explicit file shadows the discovered one");
+		assert_eq!(
+			names,
+			["ocean", "forest", "default", "dark", "light"],
+			"explicit file shadows the discovered one"
+		);
 		assert_eq!(
 			catalog
 				.get("ocean")

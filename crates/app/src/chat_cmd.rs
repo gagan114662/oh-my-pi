@@ -670,7 +670,7 @@ fn resolve_theme(
 	}
 	let (dark, light) = if automatic && explicit.is_empty() {
 		(
-			resolve_named_theme(&catalog, &omp_chat::settings::CL_THEME_DARK.get(ctx), "titanium"),
+			resolve_named_theme(&catalog, &omp_chat::settings::CL_THEME_DARK.get(ctx), "dark"),
 			resolve_named_theme(&catalog, &omp_chat::settings::CL_THEME_LIGHT.get(ctx), "light"),
 		)
 	} else {
@@ -1517,8 +1517,12 @@ mod tests {
 			Some("Plain body\n\nextra words"),
 			"unreferenced words are appended"
 		);
-		assert!(launch.theme.is_none(), "stock dark palette without --theme or cl_theme");
-		assert!(launch.light_theme.is_none(), "stock light palette without --theme or cl_theme");
+		assert_eq!(launch.theme.as_ref().unwrap().name, "dark", "resolved built-in dark palette");
+		assert_eq!(
+			launch.light_theme.as_ref().unwrap().name,
+			"light",
+			"resolved built-in light palette"
+		);
 
 		let ctx = omp_chat::HostMailbox::new()
 			.attach(omp_con::Ctx::builder())
@@ -1543,6 +1547,28 @@ mod tests {
 				_ => None,
 			});
 		assert_eq!(posted.as_deref(), Some("Fix a then run b"));
+	}
+
+	#[test]
+	fn every_default_theme_convar_resolves_without_user_files() {
+		let dir = tempfile::tempdir().unwrap();
+		let ctx = omp_con::Ctx::new();
+		let (dark, light, catalog) = resolve_theme(&ctx, &[], dir.path(), dir.path()).unwrap();
+		for name in [
+			omp_chat::settings::CL_THEME.get(&ctx),
+			omp_chat::settings::CL_THEME_DARK.get(&ctx),
+			omp_chat::settings::CL_THEME_LIGHT.get(&ctx),
+		] {
+			assert!(catalog.get(&name).is_some(), "default {name} must resolve");
+		}
+		assert_eq!(
+			dark.unwrap().for_appearance(omp_tui::Appearance::Dark),
+			omp_tui::Theme::for_appearance(omp_tui::Appearance::Dark)
+		);
+		assert_eq!(
+			light.unwrap().for_appearance(omp_tui::Appearance::Light),
+			omp_tui::Theme::for_appearance(omp_tui::Appearance::Light)
+		);
 	}
 
 	#[test]
