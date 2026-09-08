@@ -914,7 +914,19 @@ impl ApprovalRoute {
 					match result {
 						Ok(Ok(decision)) => decision,
 						Ok(Err(_)) => unreachable_decision(&ticket, "approval host became unreachable"),
-						Err(_) => timeout_decision(&ticket),
+						Err(_) => {
+							let decision = timeout_decision(&ticket);
+							// Journal the timeout as the prompt's decision, the way a
+							// host answer is, so the tree records why the call was
+							// denied instead of a bare withdrawal at the next sweep.
+							if let RouteSink::Kernel(mailbox) = &self.inner.tx {
+								let _ = mailbox.send(crate::Up::Approve {
+									id:       ticket_id.clone(),
+									decision: decision.clone(),
+								});
+							}
+							decision
+						},
 					}
 				},
 			}
