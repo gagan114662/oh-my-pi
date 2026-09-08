@@ -5,7 +5,7 @@ use std::{
 		Arc,
 		atomic::{AtomicBool, Ordering},
 	},
-	time::Instant,
+	time::{Duration, Instant},
 };
 
 use futures::StreamExt as _;
@@ -2301,7 +2301,7 @@ impl<C: Inference> Kernel<C> {
 		request_started: Instant,
 	) -> Result<DrivenInference, KernelError> {
 		let mut assistant = None;
-		let mut content_streams = FastHashMap::<u32, u32>::default();
+		let mut content_streams = ContentStreams::default();
 		let mut pending = FastHashMap::<u32, StreamingCall>::default();
 		let mut ready = Vec::<IndexedPreparedCall>::new();
 		let mut text = String::new();
@@ -2355,6 +2355,11 @@ impl<C: Inference> Kernel<C> {
 					StreamSignal::Event(Some(event)) => event?,
 					StreamSignal::Event(None) => break Ok(Fold::Ended),
 				};
+				// Anything but another delta lands the buffered text first, so the
+				// journal order stays the provider's order.
+				if !matches!(event, ChatEvent::TextDelta { .. } | ChatEvent::ThinkingDelta { .. }) {
+					content_streams.flush(session)?;
+				}
 				match event {
 					ChatEvent::Started(meta) => {
 						let model = meta
@@ -2382,20 +2387,22 @@ impl<C: Inference> Kernel<C> {
 					},
 					ChatEvent::BlockStarted { index, kind } => match kind {
 						BlockKind::Text => {
-							content_sid(session, assistant, &mut content_streams, index, "text")?;
+							content_sid(session, assistant, &mut content_streams.sids, index, "text")?;
 							self.apply_live_components(session)?;
 						},
 						BlockKind::Thinking => {
-							content_sid(session, assistant, &mut content_streams, index, "thinking")?;
+							content_sid(session, assistant, &mut content_streams.sids, index, "thinking")?;
 							self.apply_live_components(session)?;
 						},
 						BlockKind::ToolCall | BlockKind::Artifact => {},
 					},
 					ChatEvent::TextDelta { index, text: delta } => {
 						first_token.get_or_insert_with(Instant::now);
-						let sid = content_sid(session, assistant, &mut content_streams, index, "text")?;
-						session.stream_append(sid, delta.as_str())?;
-						self.apply_live_components(session)?;
+						let sid =
+							content_sid(session, assistant, &mut content_streams.sids, index, "text")?;
+						if content_streams.append(session, sid, delta.as_str())? {
+							self.apply_live_components(session)?;
+						}
 						self.events.publish(KernelEvent::TextDelta(delta.clone()));
 						text.push_str(delta.as_str());
 						if let (Some(hooks), Some(item)) = (&self.lifecycle_hooks, assistant) {
@@ -2416,9 +2423,10 @@ impl<C: Inference> Kernel<C> {
 					ChatEvent::ThinkingDelta { index, text: delta } => {
 						first_token.get_or_insert_with(Instant::now);
 						let sid =
-							content_sid(session, assistant, &mut content_streams, index, "thinking")?;
-						session.stream_append(sid, delta.as_str())?;
-						self.apply_live_components(session)?;
+							content_sid(session, assistant, &mut content_streams.sids, index, "thinking")?;
+						if content_streams.append(session, sid, delta.as_str())? {
+							self.apply_live_components(session)?;
+						}
 						if let (Some(hooks), Some(item)) = (&self.lifecycle_hooks, assistant) {
 							hooks.notify(
 								HookEventId::HookEventMessageUpdate,
@@ -2625,7 +2633,7 @@ impl<C: Inference> Kernel<C> {
 						});
 					},
 					ChatEvent::Completed(completion) => {
-						close_streams(session, &mut content_streams)?;
+						content_streams.close(session)?;
 						self.apply_live_components(session)?;
 						stop_reason = finish_reason(&completion.reason);
 						if self.runtime_flags.recover_inline_edits
@@ -2785,7 +2793,7 @@ impl<C: Inference> Kernel<C> {
 					Fold::ToolScopedAbort(reason) => Some(reason),
 					Fold::Cancelled | Fold::Ended => None,
 				};
-				close_streams(session, &mut content_streams)?;
+				content_streams.close(session)?;
 				// Placeholder results follow provider call order even when some
 				// calls completed argument streaming and others did not. They
 				// are never marked as
@@ -2822,7 +2830,7 @@ impl<C: Inference> Kernel<C> {
 				return Ok(DrivenInference::cancelled(text, usage));
 			},
 			Err(error) => {
-				if let Err(journal) = close_streams(session, &mut content_streams) {
+				if let Err(journal) = content_streams.close(session) {
 					tracing::warn!(error = ?journal, "failed to close reveal streams after a stream error");
 				}
 				for (_, streaming) in pending.drain() {
@@ -2884,7 +2892,7 @@ impl<C: Inference> Kernel<C> {
 			},
 		}
 		if !completed {
-			close_streams(session, &mut content_streams)?;
+			content_streams.close(session)?;
 			self.apply_live_components(session)?;
 			session.assistant_end("stream_closed")?;
 			self.apply_live_components(session)?;
@@ -3886,14 +3894,70 @@ fn record_provider_tool_index(
 	Ok(())
 }
 
-fn close_streams(
-	session: &mut Session,
-	streams: &mut FastHashMap<u32, u32>,
-) -> Result<(), SessionError> {
-	for (_, sid) in streams.drain() {
-		session.stream_close(sid)?;
+/// Deltas become one `stream@1` entry per window or byte budget instead of
+/// one fsync'd frame per token (#106): a months-long session's journal
+/// grows with flushes, not with output tokens. The buffer lands before any
+/// other event, on close, on error and on cancel, so the committed prefix
+/// a crash can lose is at most one window.
+const COALESCE_WINDOW: Duration = Duration::from_millis(250);
+const COALESCE_BYTES: usize = 4096;
+
+#[derive(Default)]
+struct ContentStreams {
+	sids:    FastHashMap<u32, u32>,
+	pending: Option<PendingDelta>,
+}
+
+struct PendingDelta {
+	sid:   u32,
+	text:  String,
+	since: Instant,
+}
+
+impl ContentStreams {
+	/// Buffers `delta` for `sid`; returns whether a journal entry landed.
+	fn append(
+		&mut self,
+		session: &mut Session,
+		sid: u32,
+		delta: &str,
+	) -> Result<bool, SessionError> {
+		if self
+			.pending
+			.as_ref()
+			.is_some_and(|pending| pending.sid != sid)
+		{
+			self.flush(session)?;
+		}
+		let pending = self.pending.get_or_insert_with(|| PendingDelta {
+			sid,
+			text: String::new(),
+			since: Instant::now(),
+		});
+		pending.text.push_str(delta);
+		if pending.text.len() >= COALESCE_BYTES || pending.since.elapsed() >= COALESCE_WINDOW {
+			self.flush(session)?;
+			return Ok(true);
+		}
+		Ok(false)
 	}
-	Ok(())
+
+	fn flush(&mut self, session: &mut Session) -> Result<(), SessionError> {
+		if let Some(pending) = self.pending.take()
+			&& !pending.text.is_empty()
+		{
+			session.stream_append(pending.sid, pending.text.as_str())?;
+		}
+		Ok(())
+	}
+
+	fn close(&mut self, session: &mut Session) -> Result<(), SessionError> {
+		self.flush(session)?;
+		for (_, sid) in self.sids.drain() {
+			session.stream_close(sid)?;
+		}
+		Ok(())
+	}
 }
 
 pub(crate) fn current_turn(session: &Session) -> Result<Handle, KernelError> {
