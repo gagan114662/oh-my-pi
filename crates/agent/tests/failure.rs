@@ -170,7 +170,7 @@ async fn handshake_failure_is_journaled_as_an_error_notice_before_the_error_retu
 	let mut session = fresh_session(&journal_path);
 
 	let error = kernel
-		.run_turn(&mut session, input("hi"), RunControl::default())
+		.run_turn(&mut session, input("hi"), RunControl::new(Default::default(), None))
 		.await
 		.expect_err("handshake failure surfaces");
 	assert!(matches!(error, KernelError::Inference(_)));
@@ -207,7 +207,7 @@ async fn mid_stream_failure_closes_the_assistant_with_error_and_journals_the_cau
 	let mut session = fresh_session(&journal_path);
 
 	let error = kernel
-		.run_turn(&mut session, input("hi"), RunControl::default())
+		.run_turn(&mut session, input("hi"), RunControl::new(Default::default(), None))
 		.await
 		.expect_err("stream failure surfaces");
 	assert!(matches!(error, KernelError::Inference(_)));
@@ -247,7 +247,7 @@ async fn exhausted_harmony_retry_journals_typed_evidence_and_replays_identically
 	let mut session = fresh_session(&journal_path);
 
 	kernel
-		.run_turn(&mut session, input("hi"), RunControl::default())
+		.run_turn(&mut session, input("hi"), RunControl::new(Default::default(), None))
 		.await
 		.expect_err("exhausted Harmony leak surfaces");
 
@@ -363,7 +363,7 @@ async fn director_before_inference_failure_is_journaled_before_the_assistant_ope
 		.expect("director engages");
 
 	let error = kernel
-		.run_turn(&mut session, input("hi"), RunControl::default())
+		.run_turn(&mut session, input("hi"), RunControl::new(Default::default(), None))
 		.await
 		.expect_err("director failure surfaces");
 	assert!(matches!(error, KernelError::Director(DirectorError::ExtensionCallback)), "{error}");
@@ -385,7 +385,7 @@ async fn prompt_projection_failure_is_journaled_with_its_source_chain() {
 	let mut session = fresh_session(&journal_path);
 
 	let error = kernel
-		.run_turn(&mut session, input("hi"), RunControl::default())
+		.run_turn(&mut session, input("hi"), RunControl::new(Default::default(), None))
 		.await
 		.expect_err("prompt failure surfaces");
 	assert!(matches!(error, KernelError::Prompt(_)), "{error}");

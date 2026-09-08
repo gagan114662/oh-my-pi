@@ -348,7 +348,7 @@ async fn send_lands_in_child_steering_and_inbox_reads_it() {
 		.run_turn(
 			&mut child,
 			TurnInput { text: Str::new_static("work"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("child turn");

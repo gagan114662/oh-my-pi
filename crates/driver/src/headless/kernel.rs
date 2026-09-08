@@ -2017,13 +2017,13 @@ pub async fn compose_kernel(
 			})
 			.unwrap_or(500),
 		turn_max_wall:            ctx
-			.get("sv_turn_max_wall_minutes")
+			.get("sv_turn_max_wall_hours")
 			.and_then(|value| match value {
 				omp_con::Value::Int(value) => u64::try_from(value).ok(),
 				_ => None,
 			})
-			.map_or(Some(Duration::from_secs(6 * 60 * 60)), |minutes| {
-				(minutes > 0).then(|| Duration::from_secs(minutes.saturating_mul(60)))
+			.map_or(Some(Duration::from_secs(6 * 60 * 60)), |hours| {
+				(hours > 0).then(|| Duration::from_secs(hours.saturating_mul(60 * 60)))
 			}),
 		loop_guard_limit:         ctx
 			.get("sv_tools_loop_guard_limit")

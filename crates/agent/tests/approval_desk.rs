@@ -210,7 +210,7 @@ async fn run(
 		harness.kernel.run_turn(
 			&mut harness.session,
 			TurnInput { text: sf!("go"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		),
 	)
 	.await

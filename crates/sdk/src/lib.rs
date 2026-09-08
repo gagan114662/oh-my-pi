@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use omp_agent::{Inference, Kernel, KernelError, RunControl, TurnInput, TurnOutcome, Up};
+use omp_agent::{Inference, Kernel, KernelError, TurnInput, TurnOutcome, Up};
 use omp_core::Str;
 use omp_dom::{Event, Snapshot};
 use omp_session::{ComponentRegistry, Session, SessionError};
@@ -75,7 +75,7 @@ impl<C: Inference> Sdk<C> {
 			.run_turn(
 				&mut self.session,
 				TurnInput { text: text.into(), attachments: Vec::new() },
-				RunControl::default(),
+				self.kernel.turn_control(),
 			)
 			.await?)
 	}

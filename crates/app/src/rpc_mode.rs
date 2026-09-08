@@ -15,7 +15,7 @@ use std::{
 
 use miette::{IntoDiagnostic as _, miette};
 use omp_agent::{
-	Inference, Kernel, KernelError, KernelEvent, RunControl, TurnInput, TurnOutcome, TurnStop, Up,
+	Inference, Kernel, KernelError, KernelEvent, TurnInput, TurnOutcome, TurnStop, Up,
 };
 use omp_core::Str;
 use omp_dom::{
@@ -1273,12 +1273,12 @@ where
 		let result = match input {
 			RpcTurnInput::Plain(input) => {
 				kernel
-					.run_turn(&mut session, input, RunControl::default())
+					.run_turn(&mut session, input, kernel.turn_control())
 					.await
 			},
 			RpcTurnInput::Skill(prompt) => {
 				kernel
-					.run_skill_turn(&mut session, prompt, RunControl::default())
+					.run_skill_turn(&mut session, prompt, kernel.turn_control())
 					.await
 			},
 		};

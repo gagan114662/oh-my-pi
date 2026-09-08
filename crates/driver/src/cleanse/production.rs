@@ -114,7 +114,7 @@ impl ProductionCleanseHost {
 			.run_turn(
 				&mut session,
 				omp_agent::TurnInput { text: prompt, attachments: Vec::new() },
-				omp_agent::RunControl::new(cancel.clone(), None),
+				kernel.bound_turn_control(omp_agent::RunControl::new(cancel.clone(), None)),
 			)
 			.await?;
 		Ok(outcome.assistant_text)

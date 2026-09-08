@@ -209,17 +209,19 @@ pub struct TurnOutcome {
 	pub tokens_out:     u64,
 }
 
-/// Caller-owned cancellation and optional deadline for one turn.
+/// Caller-owned cancellation and limits for one turn. Production callers use
+/// [`Kernel::turn_control`] or [`Kernel::bound_turn_control`] to inherit host
+/// limits.
 #[derive(Clone, Debug)]
 pub struct RunControl {
 	cancellation:          CancellationToken,
 	deadline:              Option<Instant>,
 	max_requests:          Option<u32>,
 	request_budget_notice: bool,
-	/// Set when the kernel filled the missing deadline from its runtime flags,
+	/// Set when the host runtime flags supply the effective deadline,
 	/// so crossing it is journaled as `turn-limit`.
 	kernel_deadline:       bool,
-	/// Set when the kernel filled the missing request budget, so its notices
+	/// Set when the host supplies the effective request budget, so its notices
 	/// are named `turn-limit` rather than the caller's `request-budget`.
 	kernel_request_cap:    bool,
 }
@@ -242,11 +244,13 @@ impl RunControl {
 	#[must_use]
 	pub const fn with_request_budget(mut self, max_requests: u32) -> Self {
 		self.max_requests = Some(max_requests);
+		self.kernel_request_cap = false;
 		self
 	}
 
 	/// Controls whether reaching the soft request budget grants one wrap-up
-	/// request carrying a durable notice.
+	/// request carrying a durable notice. Host request caps are hard limits
+	/// and never grant an additional request.
 	#[must_use]
 	pub const fn with_request_budget_notice(mut self, enabled: bool) -> Self {
 		self.request_budget_notice = enabled;
@@ -257,7 +261,11 @@ impl RunControl {
 	#[must_use]
 	pub fn permits_request(&self, started: u32, notice_sent: bool) -> bool {
 		self.max_requests.is_none_or(|maximum| {
-			started < maximum || (self.request_budget_notice && started == maximum && !notice_sent)
+			started < maximum
+				|| (!self.kernel_request_cap
+					&& self.request_budget_notice
+					&& started == maximum
+					&& !notice_sent)
 		})
 	}
 
@@ -267,17 +275,22 @@ impl RunControl {
 			&& self.max_requests.is_some_and(|maximum| started == maximum)
 	}
 
-	/// Fills a missing deadline or request budget from the kernel's runtime
-	/// flags; a caller-set bound is never loosened.
+	/// Intersects caller limits with the host's configured limits. A caller
+	/// cannot extend the host deadline or increase its request allowance.
 	#[must_use]
 	pub(crate) fn bounded_by(mut self, flags: &RuntimeFlags) -> Self {
-		if self.deadline.is_none()
-			&& let Some(wall) = flags.turn_max_wall
-		{
-			self.deadline = Some(Instant::now() + wall);
-			self.kernel_deadline = true;
+		if let Some(wall) = flags.turn_max_wall {
+			let maximum = Instant::now() + wall;
+			if self.deadline.is_none_or(|deadline| deadline > maximum) {
+				self.deadline = Some(maximum);
+				self.kernel_deadline = true;
+			}
 		}
-		if self.max_requests.is_none() && flags.turn_max_requests > 0 {
+		if flags.turn_max_requests > 0
+			&& self
+				.max_requests
+				.is_none_or(|maximum| maximum >= flags.turn_max_requests)
+		{
 			self.max_requests = Some(flags.turn_max_requests);
 			self.kernel_request_cap = true;
 		}
@@ -320,12 +333,6 @@ impl RunControl {
 		} else {
 			self.cancellation.cancelled().await;
 		}
-	}
-}
-
-impl Default for RunControl {
-	fn default() -> Self {
-		Self::new(CancellationToken::new(), None)
 	}
 }
 
@@ -707,6 +714,21 @@ impl<C> Kernel<C> {
 	pub const fn with_runtime_flags(mut self, flags: RuntimeFlags) -> Self {
 		self.runtime_flags = flags;
 		self
+	}
+
+	/// Creates fresh turn limits from the effective runtime convars installed
+	/// by host composition. Each new turn receives its own wall-clock budget.
+	#[must_use]
+	pub fn turn_control(&self) -> RunControl {
+		self.bound_turn_control(RunControl::new(CancellationToken::new(), None))
+	}
+
+	/// Preserves caller cancellation while applying the stricter of caller
+	/// limits and the effective runtime convars. The run boundary rechecks
+	/// these limits so subsequent caller overrides cannot widen the host cap.
+	#[must_use]
+	pub fn bound_turn_control(&self, control: RunControl) -> RunControl {
+		control.bounded_by(&self.runtime_flags)
 	}
 
 	/// Installs the host approval policy consulted before every native
@@ -3417,7 +3439,7 @@ impl<C: Inference> Kernel<C> {
 		method: &'static str,
 	) -> Result<bool, KernelError> {
 		self
-			.compact_with(session, focus, method, RunControl::default())
+			.compact_with(session, focus, method, self.turn_control())
 			.await
 	}
 
@@ -4567,5 +4589,90 @@ pub(crate) const fn cancelled_outcome() -> TurnOutcome {
 		assistant_text: Str::new_static(""),
 		tokens_in:      0,
 		tokens_out:     0,
+	}
+}
+
+#[cfg(test)]
+mod run_control_bounds_tests {
+	use super::{CancellationToken, Duration, Instant, RunControl, RuntimeFlags};
+
+	#[test]
+	fn host_limits_override_larger_caller_limits() {
+		let start = Instant::now();
+		let flags = RuntimeFlags {
+			turn_max_requests: 3,
+			turn_max_wall: Some(Duration::from_secs(1)),
+			..RuntimeFlags::default()
+		};
+		let control =
+			RunControl::new(CancellationToken::new(), Some(start + Duration::from_secs(30)))
+				.with_request_budget(900)
+				.bounded_by(&flags);
+		assert_eq!(control.max_requests, Some(3));
+		assert!(control.deadline.unwrap() < start + Duration::from_secs(30));
+		assert!(control.kernel_deadline);
+		assert_eq!(control.request_budget_notice_name(), "turn-limit");
+		assert!(!control.permits_request(4, true));
+	}
+
+	#[test]
+	fn host_request_500_is_allowed_but_501_is_never_started() {
+		let flags = RuntimeFlags::default();
+		let host = RunControl::new(CancellationToken::new(), None).bounded_by(&flags);
+		assert!(host.permits_request(499, false));
+		assert!(!host.permits_request(500, false));
+		assert!(!host.permits_request(500, true));
+		let tighter = RunControl::new(CancellationToken::new(), None)
+			.with_request_budget(499)
+			.bounded_by(&flags);
+		assert!(tighter.permits_request(499, false), "caller wrap-up fits within host cap");
+		assert!(!tighter.permits_request(500, true));
+		let equal = RunControl::new(CancellationToken::new(), None)
+			.with_request_budget(500)
+			.bounded_by(&flags);
+		assert!(!equal.permits_request(500, false), "equal soft cap cannot buy a 501st request");
+	}
+
+	#[test]
+	fn smaller_caller_bounds_and_cancellation_survive_host_limits() {
+		let token = CancellationToken::new();
+		let deadline = Instant::now() + Duration::from_millis(10);
+		let control = RunControl::new(token.clone(), Some(deadline))
+			.with_request_budget(2)
+			.bounded_by(&RuntimeFlags::default());
+		assert_eq!(control.deadline, Some(deadline));
+		assert_eq!(control.max_requests, Some(2));
+		assert!(!control.kernel_deadline);
+		assert_eq!(control.request_budget_notice_name(), "request-budget");
+		token.cancel();
+		assert!(control.is_expired());
+	}
+
+	#[test]
+	fn relaxing_a_factory_control_is_clamped_again_at_the_run_boundary() {
+		let flags = RuntimeFlags { turn_max_requests: 3, ..RuntimeFlags::default() };
+		let control = RunControl::new(CancellationToken::new(), None).bounded_by(&flags);
+		let deadline = control.deadline;
+		let relaxed = control.clone().with_request_budget(100).bounded_by(&flags);
+		assert_eq!(relaxed.max_requests, Some(3));
+		assert_eq!(relaxed.deadline, deadline);
+		assert_eq!(relaxed.request_budget_notice_name(), "turn-limit");
+		let tightened = control.with_request_budget(1).bounded_by(&flags);
+		assert_eq!(tightened.max_requests, Some(1));
+		assert_eq!(tightened.request_budget_notice_name(), "request-budget");
+	}
+
+	#[test]
+	fn explicitly_disabled_host_limits_do_not_erase_caller_bounds() {
+		let deadline = Instant::now() + Duration::from_secs(1);
+		let control = RunControl::new(CancellationToken::new(), Some(deadline))
+			.with_request_budget(2)
+			.bounded_by(&RuntimeFlags {
+				turn_max_requests: 0,
+				turn_max_wall: None,
+				..RuntimeFlags::default()
+			});
+		assert_eq!(control.max_requests, Some(2));
+		assert_eq!(control.deadline, Some(deadline));
 	}
 }

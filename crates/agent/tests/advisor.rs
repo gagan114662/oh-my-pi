@@ -223,7 +223,7 @@ async fn blocker_review_continues_and_reaches_the_main_model() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("do the work"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn completes");
@@ -303,7 +303,7 @@ async fn sync_backlog_reviews_before_the_next_primary_request() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("continue"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn completes");
@@ -335,7 +335,7 @@ async fn missing_advisor_role_is_journaled_as_unhealthy_without_failing_the_prim
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("finish anyway"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("primary turn completes");

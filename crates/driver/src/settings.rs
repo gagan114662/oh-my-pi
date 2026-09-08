@@ -47,15 +47,15 @@ omp_con::var! {
 			"legacy.path": "turn.maxRequests",
 		},
 	};
-	/// Wall-clock minutes one turn may run before it settles with a `turn-limit` notice; 0 leaves
+	/// Wall-clock hours one turn may run before it settles with a `turn-limit` notice; 0 leaves
 	/// turns unbounded. Callers with their own deadline are not loosened.
-	pub static SV_TURN_MAX_WALL_MINUTES = sv_turn_max_wall_minutes: u32 {
-		default: 360,
+	pub static SV_TURN_MAX_WALL_HOURS = sv_turn_max_wall_hours: u32 {
+		default: 6,
 		min: 0,
-		max: 10_080,
+		max: 168,
 		flags: archive,
 		meta: {
-			"legacy.path": "turn.maxWallMinutes",
+			"legacy.path": "turn.maxWallHours",
 		},
 	};
 	/// Enables skill commands.

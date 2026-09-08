@@ -1,5 +1,5 @@
 //! Turns are bounded by default and dead loops are refused (#124): the
-//! kernel fills a missing request budget and deadline from its runtime
+//! kernel intersects caller request budgets and deadlines with its runtime
 //! flags, journals a `turn-limit` notice when one is crossed, refuses the
 //! next identical tool round after `loop_guard_limit` identical executions,
 //! and settles the turn after as many refusals.
@@ -91,7 +91,7 @@ async fn identical_tool_rounds_are_refused_at_the_limit_and_the_turn_settles_at_
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("loop"), RunControl::default())
+		.run_turn(&mut session, input("loop"), RunControl::new(Default::default(), None))
 		.await
 		.expect("the guard settles the turn instead of failing it");
 	assert_eq!(outcome.stop, TurnStop::Completed);
@@ -125,7 +125,7 @@ async fn changing_arguments_or_results_is_progress_and_is_never_refused() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("paginate"), RunControl::default())
+		.run_turn(&mut session, input("paginate"), RunControl::new(Default::default(), None))
 		.await
 		.expect("distinct calls complete normally");
 	assert_eq!(outcome.stop, TurnStop::Completed);
@@ -157,22 +157,18 @@ async fn kernel_request_cap_settles_a_turn_with_a_turn_limit_notice() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("forever"), RunControl::default())
+		.run_turn(&mut session, input("forever"), RunControl::new(Default::default(), None))
 		.await
 		.expect("the cap settles the turn");
 	assert_eq!(outcome.stop, TurnStop::Completed);
-	// The budget grants one wrap-up request carrying the notice.
-	assert_eq!(requests.lock().len(), 5, "cap of 4 plus the noticed wrap-up request");
+	// The host cap counts every provider request; no extra wrap-up is sent.
+	assert_eq!(requests.lock().len(), 4, "the fourth provider request exhausts the host cap");
 	let limits = notices(&session, "turn-limit");
-	assert_eq!(limits.len(), 2, "one soft warning and one terminal cap notice: {limits:?}");
+	assert_eq!(limits.len(), 1, "one terminal cap notice without another request: {limits:?}");
 	assert!(limits.iter().all(|(kind, _)| kind.as_str() == "warn"), "{limits:?}");
 	assert_eq!(
 		limits[0].1.as_str(),
-		"Soft request budget reached; use this final request to yield a concise result."
-	);
-	assert_eq!(
-		limits[1].1.as_str(),
-		"Turn request cap reached after 5 provider requests; the turn stops here"
+		"Turn request cap reached after 4 provider requests; the turn stops here"
 	);
 	assert!(
 		notices(&session, "request-budget").is_empty(),
@@ -201,7 +197,7 @@ async fn caller_request_budget_is_not_loosened_by_the_kernel_default() {
 	});
 	let mut session = fresh_session(&journal_path);
 
-	let control = RunControl::default().with_request_budget(2);
+	let control = RunControl::new(Default::default(), None).with_request_budget(2);
 	kernel
 		.run_turn(&mut session, input("forever"), control)
 		.await
@@ -241,7 +237,7 @@ async fn kernel_wall_clock_cap_ends_a_turn_whose_tool_hangs() {
 
 	let started = std::time::Instant::now();
 	let outcome = kernel
-		.run_turn(&mut session, input("hang"), RunControl::default())
+		.run_turn(&mut session, input("hang"), RunControl::new(Default::default(), None))
 		.await
 		.expect("the deadline cancels the turn cleanly");
 	assert_eq!(outcome.stop, TurnStop::Cancelled);
@@ -250,4 +246,38 @@ async fn kernel_wall_clock_cap_ends_a_turn_whose_tool_hangs() {
 	let limits = notices(&session, "turn-limit");
 	assert_eq!(limits.len(), 1, "{limits:?}");
 	assert!(limits[0].1.contains("wall-clock cap"), "{}", limits[0].1);
+}
+
+#[tokio::test]
+async fn larger_caller_budget_cannot_escape_the_composed_host_cap() {
+	let directory = tempfile::tempdir().expect("temporary directory");
+	let journal_path = directory.path().join("caller-override.oms");
+	let scripts =
+		(0..20).map(|round| tool_script("step", "echo", serde_json::json!({"page": round})));
+	let (inference, requests) = ScriptedInference::new(scripts);
+	let mut kernel = Kernel::new(
+		inference,
+		registry([spec("echo", 1, "page")]),
+		policy(directory.path()),
+		StaticPrompt(Str::new_static("test system")),
+	)
+	.with_runtime_flags(RuntimeFlags {
+		turn_max_requests: 2,
+		loop_guard_limit: 0,
+		..RuntimeFlags::default()
+	});
+	let mut session = fresh_session(&journal_path);
+	// Try to widen a host-derived control after the factory returns it.
+	let control = kernel
+		.turn_control()
+		.with_request_budget(900)
+		.with_request_budget_notice(false);
+	let outcome = kernel
+		.run_turn(&mut session, input("continue"), control)
+		.await
+		.unwrap();
+	assert_eq!(outcome.stop, TurnStop::Completed);
+	assert_eq!(requests.lock().len(), 2, "the caller cannot raise the host request cap");
+	assert_eq!(notices(&session, "turn-limit").len(), 1);
+	assert!(notices(&session, "request-budget").is_empty());
 }

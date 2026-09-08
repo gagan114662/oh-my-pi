@@ -323,7 +323,7 @@ async fn lifecycle_tool_call_transform_reaches_executor_and_observations_are_com
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("capture"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -434,7 +434,7 @@ async fn lifecycle_and_native_approval_share_one_durable_ticket_and_replay() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("capture"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -499,7 +499,7 @@ async fn lifecycle_approval_timeout_denies_before_execution_and_replays() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("capture"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -626,7 +626,7 @@ async fn lifecycle_tool_call_denial_skips_executor_and_journals_abort() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("capture"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");

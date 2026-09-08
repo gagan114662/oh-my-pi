@@ -153,7 +153,7 @@ async fn run_inner(args: PrintArgs, piped_input: Option<Str>) -> miette::Result<
 		let (result, exit_signal) = {
 			let deadline = launch.max_time.map(|duration| Instant::now() + duration);
 			let cancellation = CancellationToken::new();
-			let control = RunControl::new(cancellation.clone(), deadline);
+			let control = kernel.bound_turn_control(RunControl::new(cancellation.clone(), deadline));
 			let turn = kernel.run_turn(&mut session, prompt, control);
 			tokio::pin!(turn);
 			let signal = crate::chat_cmd::process_signal();

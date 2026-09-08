@@ -46,7 +46,7 @@ async fn automatic_compaction_flag_controls_director_engagement() {
 			.run_turn(
 				&mut session,
 				TurnInput { text: sf!("run"), attachments: Vec::new() },
-				RunControl::default(),
+				RunControl::new(Default::default(), None),
 			)
 			.await
 			.expect("turn");
@@ -90,7 +90,7 @@ async fn autolearn_flag_and_minimum_schedule_exactly_one_learn_call() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("run"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -126,7 +126,7 @@ async fn disabled_autolearn_never_schedules_learn_after_the_same_tool_count() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("run"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -163,7 +163,7 @@ async fn inline_recovery(flags_enabled: bool, family: &str, text: &str) -> (usiz
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("run"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -227,7 +227,7 @@ async fn goal_tool_roster_follows_the_durable_engagement_state() {
 			.run_turn(
 				&mut session,
 				TurnInput { text: sf!("run"), attachments: Vec::new() },
-				RunControl::default(),
+				RunControl::new(Default::default(), None),
 			)
 			.await
 			.expect("turn");
@@ -262,7 +262,7 @@ async fn disabled_goal_is_removed_before_inference_while_enabled_goal_remains() 
 			.run_turn(
 				&mut session,
 				TurnInput { text: sf!("run"), attachments: Vec::new() },
-				RunControl::default(),
+				RunControl::new(Default::default(), None),
 			)
 			.await
 			.expect("turn");

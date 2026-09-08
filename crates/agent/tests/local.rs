@@ -37,7 +37,7 @@ async fn local_run_journals_one_tool_turn_without_inference() {
 				input:   Str::new_static("echo hi"),
 				exclude: false,
 			},
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("local run completes");
@@ -138,7 +138,7 @@ async fn excluded_local_run_is_hidden_from_the_thread() {
 				input:   Str::new_static("echo hi"),
 				exclude: true,
 			},
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("local run completes");
