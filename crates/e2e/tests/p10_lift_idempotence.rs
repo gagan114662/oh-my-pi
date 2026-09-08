@@ -215,6 +215,7 @@ async fn p10_edit_lift_is_idempotent_and_dispatches_at_the_live_revision() -> Re
 		let mut session = create_session(&path)?;
 		session.begin_turn()?;
 		session.user("historical edit", Vec::new())?;
+		session.assistant_start("test-model", "test-provider", "test-route")?;
 		let call = session.call(
 			"edit",
 			revision,
@@ -223,6 +224,7 @@ async fn p10_edit_lift_is_idempotent_and_dispatches_at_the_live_revision() -> Re
 			Some(serde_json::value::RawValue::from_string(String::from_utf8(args.to_vec())?)?),
 			None,
 		)?;
+		session.assistant_end("tool_calls")?;
 		session.fail(call, serde_json::value::to_raw_value(&verdict)?)?;
 		let snapshot = session.dom().snapshot();
 		drop(session);
