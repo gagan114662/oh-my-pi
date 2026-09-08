@@ -681,7 +681,14 @@ fn wait_snapshot(
 	let mut error = None;
 	loop {
 		match debug.snapshot() {
-			Ok(snapshot) if ready(&snapshot) => return snapshot,
+			// `text` is the published paint and `frame` a separate host query.
+			// A resize or rebuild leaves the paint empty until the next render
+			// while the frame already carries the new tree, so no checkpoint
+			// is reached on frame content alone: every caller asserts the
+			// published surface afterwards.
+			Ok(snapshot) if !snapshot.text.trim().is_empty() && ready(&snapshot) => {
+				return snapshot;
+			},
 			Ok(snapshot) => last = Some(snapshot),
 			Err(problem) => error = Some(problem),
 		}
@@ -1050,7 +1057,8 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	debug.keys("'clear-only P7 draft'");
 	let draft =
 		wait_snapshot(&mut debug, &raw_capture, "draft entered during foreground tool", |snapshot| {
-			snapshot.combined().contains("clear-only P7 draft")
+			// The draft must be in the published paint, not only in the host frame.
+			snapshot.text.contains("clear-only P7 draft")
 				&& slow_shell_record(&journal(&session_path)).1.is_none()
 		});
 	assert_surface(&draft, "draft before clearing");
