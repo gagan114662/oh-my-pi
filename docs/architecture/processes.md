@@ -206,3 +206,38 @@ Likewise, `omp-rpc` owns transport, negotiation, health, framing, TLS, UDS, and 
 | Schema compiler | `crates/proto/build.rs` |
 | Environment schema | `crates/proto/proto/omp/env/v1/env.proto` |
 | Tool-host schema | `crates/proto/proto/omp/toolhost/v1/toolhost.proto` |
+
+### Extension bootstrap readiness
+
+The private same-binary CONTROL startup sends a correlated `AuthoritySnapshot`.
+The child replies `BootstrapReady` only after declaration import/freeze and
+CONTROL backend installation. The parent checks the correlation and both
+host/session generations against the identity bound to that descriptor. Missing,
+unsolicited, stale or malformed readiness cannot admit the extension. Older
+children without this acknowledgment fail closed; parent and bundled Python must
+be built together. This is an internal protocol cutover, not a compatibility
+fallback.
+
+The configured startup budget (30 seconds by default) is an absolute deadline
+from spawn entry. Readiness, resource receipt delivery and initial FREEZE share
+that deadline, including on replacement generations. The existing FREEZE event
+budget remains 10 seconds and begins only after readiness; it cannot extend the
+remaining startup budget. Bootstrap failure kills the owned process group and
+allows up to two additional seconds for cleanup, reporting whether reaping
+completed. Extension failure is contained before tool admission. Timing logs
+include bootstrap duration, total startup elapsed time and FREEZE duration, with
+identities rather than snapshot or callback contents.
+
+The motivating hosted failure was `same_worker_invocation_id_on_two_connections_cancels_only_its_owner`
+in run 34252868640: FREEZE expired, the extension was excluded, then worker A
+received `NotFound`. The cancellation ownership path had not executed. The old
+parent treated writing its authority frame as handshake completion even though
+Python bootstrapped synchronously before reading FREEZE. That source-level race
+is established; the hosted log did not record where the ten seconds were spent.
+
+Paused-clock CONTROL regressions cover readiness held for 20 seconds, exhaustion
+of the unchanged 30-second deadline, and stale-generation rejection. A Python
+CONTROL regression holds bootstrap behind a gate and requires the acknowledgment
+to follow registry and backend installation. The original cancellation-owner test
+is unchanged. These new runtime checks remain pending compilation/execution;
+formatting and source inspection do not establish that the hosted failure is fixed.

@@ -2613,7 +2613,30 @@ fn append_dispatch_result_chunk(
 	Ok(())
 }
 
+struct BootstrapPending {
+	id:    u64,
+	ready: flume::Sender<()>,
+}
+
+struct BootstrapGuard {
+	shared: Arc<ControlShared>,
+	id:     u64,
+}
+
+impl Drop for BootstrapGuard {
+	fn drop(&mut self) {
+		let mut pending = self.shared.bootstrap.lock();
+		if pending
+			.as_ref()
+			.is_some_and(|pending| pending.id == self.id)
+		{
+			pending.take();
+		}
+	}
+}
+
 struct ControlShared {
+	bootstrap:         Mutex<Option<BootstrapPending>>,
 	writer:            AsyncMutex<OwnedWriteHalf>,
 	identity:          Arc<ControlConnectionIdentity>,
 	authority:         Arc<dyn ControlAuthority>,
@@ -2756,6 +2779,7 @@ pub enum ControlRuntimeError {
 // task is aborted or a malformed frame returns early, not only on clean EOF.
 impl Drop for ControlRuntime {
 	fn drop(&mut self) {
+		self.shared.bootstrap.lock().take();
 		self.shared.router.lock().disconnect();
 		self.shared.invocations.lock().clear();
 		self.shared.dispatch_by_id.lock().clear();
@@ -2778,6 +2802,7 @@ impl ControlRuntime {
 		let generation = identity.host_generation;
 		let (reader, writer) = stream.into_split();
 		let shared = Arc::new(ControlShared {
+			bootstrap: Mutex::new(None),
 			writer: AsyncMutex::new(writer),
 			identity: Arc::new(identity),
 			authority,
@@ -2799,6 +2824,7 @@ impl ControlRuntime {
 				return Ok(());
 			};
 			match frame.kind.as_str() {
+				"BootstrapReady" => self.accept_bootstrap_ready(frame)?,
 				"Request" => self.accept_request(frame).await?,
 				"CancelRequest" => self.accept_request_cancel(frame)?,
 				"DispatchProgress" => self.accept_dispatch_progress(frame)?,
@@ -2840,6 +2866,42 @@ impl ControlRuntime {
 				},
 			}
 		}
+	}
+
+	fn accept_bootstrap_ready(&self, frame: JsonControlFrame) -> Result<(), ControlRuntimeError> {
+		let mut pending = self.shared.bootstrap.lock();
+		let expected = pending.as_ref().ok_or_else(|| {
+			ControlProtocolError::new(
+				"unexpected_bootstrap_ready",
+				"readiness has no pending authority snapshot",
+			)
+		})?;
+		if frame.correlation != Some(expected.id)
+			|| frame.body.get("host_generation").and_then(Value::as_u64)
+				!= Some(self.shared.identity.host_generation)
+			|| frame.body.get("session_generation").and_then(Value::as_u64)
+				!= Some(self.shared.identity.session_generation)
+		{
+			return Err(
+				ControlProtocolError::new(
+					"invalid_bootstrap_ready",
+					"readiness correlation or authenticated generation differs",
+				)
+				.into(),
+			);
+		}
+		let elapsed = frame
+			.body
+			.get("bootstrap_ms")
+			.and_then(Value::as_u64)
+			.ok_or_else(|| ControlProtocolError::malformed("readiness omitted bootstrap duration"))?;
+		tracing::info!(extension_id = %self.shared.identity.extension,
+			host_generation = self.shared.identity.host_generation, bootstrap_ms = elapsed,
+			"extension host bootstrap acknowledged");
+		if let Some(pending) = pending.take() {
+			let _ = pending.ready.send(());
+		}
+		Ok(())
 	}
 
 	async fn accept_request(&self, frame: JsonControlFrame) -> Result<(), ControlRuntimeError> {
@@ -3193,7 +3255,8 @@ impl ControlEffectKind {
 }
 
 impl ControlHandle {
-	/// Installs a Core-issued synchronous authority snapshot in the child.
+	/// Installs a Core-issued authority snapshot and waits for correlated
+	/// bootstrap readiness. The caller owns the absolute startup deadline.
 	///
 	/// The child rejects any snapshot whose host or session generation differs
 	/// from the descriptor's authenticated connection identity.
@@ -3245,12 +3308,39 @@ impl ControlHandle {
 					.collect(),
 			),
 		);
+		let id = self.shared.next_dispatch_id.fetch_add(1, Ordering::Relaxed);
+		if id == 0 {
+			return Err(
+				ControlProtocolError::new(
+					"correlation_exhausted",
+					"CONTROL correlation space exhausted",
+				)
+				.into(),
+			);
+		}
+		let (tx, rx) = flume::bounded(1);
+		{
+			let mut pending = self.shared.bootstrap.lock();
+			if pending.is_some() {
+				return Err(
+					ControlProtocolError::new(
+						"duplicate_bootstrap",
+						"authority installation is already pending",
+					)
+					.into(),
+				);
+			}
+			*pending = Some(BootstrapPending { id, ready: tx });
+		}
+		let _guard = BootstrapGuard { shared: Arc::clone(&self.shared), id };
 		write_json_control_frame(&self.shared, JsonControlFrame {
 			kind: String::from("AuthoritySnapshot"),
-			correlation: None,
+			correlation: Some(id),
 			body,
 		})
-		.await
+		.await?;
+		rx.recv_async().await.map_err(|_| DispatchError::HostGone)?;
+		Ok(())
 	}
 
 	/// Pushes the current daemon-owned quota receipt into the child cache.
@@ -3753,6 +3843,97 @@ mod convar_tests {
 	) -> Arc<dyn ControlAuthority> {
 		let convars = factory.bind(identity).expect("bind convar authority");
 		Arc::new(CompositeControlAuthority::new([Arc::clone(&convars)], convars))
+	}
+
+	async fn bootstrap_readiness_exchange(acknowledge: bool, stale_generation: bool) {
+		use tokio::{io::AsyncWriteExt as _, time};
+
+		use super::*;
+		let identity = identity();
+		let factory = ConvarControlFactory::new(Arc::new(Ctx::new()));
+		let authority = routed_authority(&factory, Arc::clone(&identity));
+		let (parent, child) = UnixStream::pair().expect("CONTROL pair");
+		let (runtime, handle) = ControlRuntime::new(
+			parent,
+			HostKey::new("project", "trusted", "dev.example.demo"),
+			(*identity).clone(),
+			authority,
+		);
+		let pump = tokio::spawn(runtime.serve());
+		let observer = handle.clone();
+		let deadline = time::Instant::now() + std::time::Duration::from_secs(30);
+		let startup = tokio::spawn(async move {
+			time::timeout_at(
+				deadline,
+				handle.install_authority_snapshot(&ControlAuthoritySnapshot::default()),
+			)
+			.await
+		});
+		let (mut reader, mut writer) = child.into_split();
+		let snapshot = read_json_control_frame(&mut reader)
+			.await
+			.expect("snapshot frame")
+			.expect("snapshot");
+		assert_eq!(snapshot.kind, "AuthoritySnapshot");
+		assert!(snapshot.correlation.is_some_and(|id| id > 0));
+		// Bootstrap can use the existing startup budget without starting the
+		// separate ten-second registry callback deadline. No wall-clock sleep.
+		time::advance(std::time::Duration::from_secs(20)).await;
+		assert!(!startup.is_finished(), "writing authority is not child readiness");
+		if acknowledge {
+			let body = serde_json::to_vec(&json!({"kind": "BootstrapReady",
+			"correlation": snapshot.correlation, "body": {
+				"host_generation": if stale_generation { 2 } else { 1 },
+				"session_generation": 1, "bootstrap_ms": 20000,
+			}}))
+			.expect("ready JSON");
+			writer
+				.write_all(&(u32::try_from(body.len()).expect("frame length")).to_be_bytes())
+				.await
+				.expect("ready size");
+			writer.write_all(&body).await.expect("ready frame");
+			if stale_generation {
+				assert!(pump.await.expect("pump task").is_err(), "stale readiness must close CONTROL");
+				assert!(matches!(
+					startup.await.expect("startup task"),
+					Ok(Err(ControlRuntimeError::Dispatch(DispatchError::HostGone)))
+				));
+			} else {
+				startup
+					.await
+					.expect("startup task")
+					.expect("startup deadline")
+					.expect("authenticated ready");
+				assert_eq!(deadline - time::Instant::now(), std::time::Duration::from_secs(10));
+				pump.abort();
+			}
+		} else {
+			time::advance(std::time::Duration::from_secs(10)).await;
+			assert!(
+				startup.await.expect("startup task").is_err(),
+				"missing readiness cannot reset the thirty-second deadline"
+			);
+			pump.abort();
+		}
+		assert!(
+			observer.shared.bootstrap.lock().is_none(),
+			"completed or cancelled readiness must release its pending correlation"
+		);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn bootstrap_waits_for_authenticated_readiness_after_authority_write() {
+		bootstrap_readiness_exchange(true, false).await;
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn blocked_bootstrap_exhausts_the_original_absolute_startup_budget() {
+		bootstrap_readiness_exchange(false, false).await;
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn stale_bootstrap_readiness_cannot_release_startup() {
+		bootstrap_readiness_exchange(true, true).await;
 	}
 
 	enum RuntimeStop {
