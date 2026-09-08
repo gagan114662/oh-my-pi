@@ -57,9 +57,57 @@ use tokio::{process::Command, time};
 use tower::Service;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+const JOURNAL_TIMEOUT: Duration = Duration::from_secs(3);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const PREFIX: &str = "durable streamed prefix";
 const LOST_SUFFIX: &str = " suffix that must not appear";
+
+// Written even during a failed proof: missing/unfinished phases must never
+// become zero-duration successes in the published evidence.
+struct P6Timings {
+	data:   Value,
+	active: Option<(&'static str, Instant)>,
+}
+
+impl P6Timings {
+	fn new() -> Self {
+		Self { data: json!({"completed": false, "journal": null, "resume": null}), active: None }
+	}
+
+	fn begin(&mut self, phase: &'static str, bound: Duration) {
+		assert!(self.active.is_none(), "timing phases cannot overlap");
+		self.data[phase] = json!({"bound_ms": bound.as_secs_f64() * 1000.0, "completed": false});
+		self.active = Some((phase, Instant::now()));
+	}
+
+	fn end(&mut self, completed: bool) {
+		let (phase, started) = self.active.take().expect("active timing phase");
+		self.data[phase]["elapsed_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
+		self.data[phase]["completed"] = json!(completed);
+	}
+}
+
+impl Drop for P6Timings {
+	fn drop(&mut self) {
+		if thread::panicking() {
+			self.data["completed"] = json!(false);
+		}
+		if self.active.is_some() {
+			self.end(false);
+		}
+		println!("P6 timings: {}", self.data);
+		if let Some(path) = std::env::var_os("OMP_P6_LATENCY_PATH") {
+			let result = fs::write(path, serde_json::to_vec_pretty(&self.data).expect("timing JSON"));
+			if thread::panicking() {
+				if let Err(error) = result {
+					eprintln!("could not retain failed P6 timings: {error}");
+				}
+			} else {
+				result.expect("publish P6 timings");
+			}
+		}
+	}
+}
 
 #[derive(Clone)]
 struct CrashRoute {
@@ -388,6 +436,7 @@ fn wait_for_resumed_frame(path: &Path, process: &mut OwnedProcess) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
+	let mut timings = P6Timings::new();
 	install_omp_binary_env().expect("install real OMP binary");
 	let scratch = tempfile::tempdir().expect("P6 scratch");
 	let project = scratch.path().join("project");
@@ -419,7 +468,8 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 		.await
 		.expect("prefix timeout")
 		.expect("prefix gate remains open");
-	within("stream prefix reaches journal", Duration::from_secs(3), async {
+	timings.begin("journal", JOURNAL_TIMEOUT);
+	let journal_result = within("stream prefix reaches journal", JOURNAL_TIMEOUT, async {
 		loop {
 			if fs::read_to_string(&session).is_ok_and(|journal| journal.contains(PREFIX)) {
 				break;
@@ -427,8 +477,9 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 			time::sleep(Duration::from_millis(5)).await;
 		}
 	})
-	.await
-	.expect("journal prefix timeout");
+	.await;
+	timings.end(journal_result.is_ok());
+	journal_result.expect("journal prefix timeout");
 	let group = crashed.process.process_group().expect("OMP process group");
 	signal::killpg(Pid::from_raw(group), Some(signal::Signal::SIGKILL))
 		.expect("crash OMP process group");
@@ -452,6 +503,7 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 	assert!(!journal.contains("event: msg.assistant.end@1"));
 	assert!(!journal.contains("event: turn.receipt@1"));
 
+	timings.begin("resume", READY_TIMEOUT);
 	let mut resumed = spawn_chat(
 		&binary,
 		&project,
@@ -464,6 +516,7 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 		true,
 	);
 	let frame = wait_for_resumed_frame(&resume_debug, &mut resumed.process);
+	timings.end(true);
 	assert!(!frame.contains(LOST_SUFFIX), "resumed host displayed an uncommitted suffix\n{frame}");
 	debug_request(&resume_debug, &json!({ "op": "keys", "keys": "ctrl+c ctrl+c" }))
 		.expect("quit resumed chat through its real input path");
@@ -474,6 +527,7 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 		.expect("resumed OMP exits");
 	assert!(status.success(), "resumed OMP did not exit cleanly: {status}");
 	println!("resumed terminal drained {} bytes", resumed.drain.finish());
+	timings.data["completed"] = json!(true);
 }
 
 #[test]

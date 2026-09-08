@@ -320,6 +320,7 @@ jobs:
     env:
       TEST_INVENTORY_DIR: target/test-inventory/${{ github.run_id }}-${{ github.run_attempt }}
       OMP_OUTPUT_PROOF_DIR: target/output-proof/${{ github.run_id }}-${{ github.run_attempt }}
+      OMP_P6_PROOF_DIR: ${{ github.workspace }}/target/p6-proof/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
 
@@ -394,7 +395,10 @@ jobs:
         run: cargo nextest run -p omp-e2e --tests --no-run --locked
 
       - name: Run acceptance proofs P1-P6
+        env:
+          OMP_P6_LATENCY_PATH: ${{ env.OMP_P6_PROOF_DIR }}/normal.json
         run: |
+          mkdir -p "$OMP_P6_PROOF_DIR"
           python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p1-p6 -- -p omp-e2e --locked \
             --test p1_doc_race \
             --test p2_cancel_matrix \
@@ -402,6 +406,26 @@ jobs:
             --test p4_schema_isolation \
             --test p5_prefix_stability \
             --test p6_crash_resume
+
+      - name: Run P6 under disk pressure
+        run: |
+          python3 scripts/p6-latency-test.py
+          python3 scripts/p6-latency.py contended --output "$OMP_P6_PROOF_DIR" -- \
+            python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p6-contended -- \
+            -p omp-e2e --locked --test p6_crash_resume
+
+      - name: Report P6 timing margins
+        if: always()
+        run: python3 scripts/p6-latency.py report --output "$OMP_P6_PROOF_DIR"
+
+      - name: Upload P6 timing evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: p6-latency-macos-arm64
+          path: ${{ env.OMP_P6_PROOF_DIR }}
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Run acceptance proofs P9-P10 and tool sources
         run: |
