@@ -39,7 +39,7 @@ def execute(arm):
     output = OUT / arm
     output.mkdir(parents=True, exist_ok=False)
     env = dict(os.environ, OMP_SETTINGS_ROSTER_EVIDENCE_DIR=str(output))
-    command = ['cargo', 'nextest', 'run', '--locked', '--profile', 'ci', '--no-fail-fast',
+    command = ['just', '--command', 'cargo', 'nextest', 'run', '--locked', '--profile', 'ci', '--no-fail-fast',
                '-p', 'omp-app', '--test', 'settings_roster']
     with (output / 'run.log').open('w') as log:
         result = subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)

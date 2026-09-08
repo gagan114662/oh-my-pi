@@ -84,9 +84,9 @@ jobs:
           set -uo pipefail
           failed=0
           for package in omp-app omp-chat; do
-            cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/settings-roster/$package-tests.log"
+            just --command cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/settings-roster/$package-tests.log"
             tests=("${PIPESTATUS[@]}")
-            cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/settings-roster/$package-docs.log"
+            just --command cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/settings-roster/$package-docs.log"
             docs=("${PIPESTATUS[@]}")
             printf '%s-tests,%s,%s\n' "$package" "${tests[0]}" "${tests[1]}" >> target/settings-roster/exits.csv || failed=1
             printf '%s-docs,%s,%s\n' "$package" "${docs[0]}" "${docs[1]}" >> target/settings-roster/exits.csv || failed=1
