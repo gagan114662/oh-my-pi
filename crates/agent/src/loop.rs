@@ -216,9 +216,12 @@ pub struct RunControl {
 	deadline:              Option<Instant>,
 	max_requests:          Option<u32>,
 	request_budget_notice: bool,
-	/// Set when the kernel filled a missing bound from its runtime flags, so
-	/// crossing it is journaled as `turn-limit` rather than a caller budget.
-	kernel_bounded:        bool,
+	/// Set when the kernel filled the missing deadline from its runtime flags,
+	/// so crossing it is journaled as `turn-limit`.
+	kernel_deadline:       bool,
+	/// Set when the kernel filled the missing request budget, so its notices
+	/// are named `turn-limit` rather than the caller's `request-budget`.
+	kernel_request_cap:    bool,
 }
 
 impl RunControl {
@@ -230,7 +233,8 @@ impl RunControl {
 			deadline,
 			max_requests: None,
 			request_budget_notice: true,
-			kernel_bounded: false,
+			kernel_deadline: false,
+			kernel_request_cap: false,
 		}
 	}
 
@@ -271,13 +275,23 @@ impl RunControl {
 			&& let Some(wall) = flags.turn_max_wall
 		{
 			self.deadline = Some(Instant::now() + wall);
-			self.kernel_bounded = true;
+			self.kernel_deadline = true;
 		}
 		if self.max_requests.is_none() && flags.turn_max_requests > 0 {
 			self.max_requests = Some(flags.turn_max_requests);
-			self.kernel_bounded = true;
+			self.kernel_request_cap = true;
 		}
 		self
+	}
+
+	/// Name of the notices the request budget journals: the kernel's own cap
+	/// is a `turn-limit`, a caller's budget stays `request-budget`.
+	pub(crate) const fn request_budget_notice_name(&self) -> &'static str {
+		if self.kernel_request_cap {
+			"turn-limit"
+		} else {
+			"request-budget"
+		}
 	}
 
 	/// Whether the deadline, if any, has passed.
@@ -1344,7 +1358,7 @@ impl<C: Inference> Kernel<C> {
 
 		'rounds: loop {
 			if control.is_expired() || turn_cancel.is_turn_cancelled() {
-				if control.kernel_bounded && control.deadline_expired() {
+				if control.kernel_deadline && control.deadline_expired() {
 					append_turn_limit_notice(
 						session,
 						turn,
@@ -1401,7 +1415,7 @@ impl<C: Inference> Kernel<C> {
 				DrivenInference::replayed(calls)
 			} else {
 				if !control.permits_request(requests_started, request_budget_notice_sent) {
-					if control.kernel_bounded {
+					if control.kernel_request_cap {
 						append_turn_limit_notice(
 							session,
 							turn,
@@ -1429,7 +1443,7 @@ impl<C: Inference> Kernel<C> {
 						session,
 						turn,
 						Str::new_static("warn"),
-						Some(Str::new_static("request-budget")),
+						Some(Str::new_static(control.request_budget_notice_name())),
 						Str::new_static(
 							"Soft request budget reached; use this final request to yield a concise \
 							 result.",
