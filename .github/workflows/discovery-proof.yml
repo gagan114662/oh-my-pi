@@ -1,0 +1,49 @@
+name: Foreign provider discovery
+
+on:
+  push:
+    branches: [fix/discovery-integration-27]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discovery:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record source and install prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/discovery-proof
+          git rev-parse HEAD > target/discovery-proof/source-revision.txt
+          git status --porcelain=v1 > target/discovery-proof/source-status.txt
+          brew install just cmake ninja lld@22 uv zstd
+          rustup show active-toolchain
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare Python and check prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          just setup-python 2>&1 | tee target/discovery-proof/setup.log
+          just doctor 2>&1 | tee target/discovery-proof/doctor.log
+      - name: Full package tests, provider inventory and real removal control
+        run: python3 scripts/discovery-proof/prove.py
+      - name: Report missing proof
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -f target/discovery-proof/summary.md ]; then
+            echo 'Foreign provider proof did not reach its summary. Inspect retained setup and test logs; this is not a pass.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Retain source-bound evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: foreign-provider-discovery
+          path: target/discovery-proof/
+          if-no-files-found: error

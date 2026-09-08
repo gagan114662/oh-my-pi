@@ -1400,6 +1400,7 @@ mod tests {
 			expect("agents", home.join(".agent/skills"), SkillLevel::User),
 			expect("agents", home.join(".agents/skills"), SkillLevel::User),
 			expect("codex", nested.join(".codex/skills"), SkillLevel::Project),
+			expect("opencode", home.join(".config/opencode/skills"), SkillLevel::User),
 			expect("opencode", nested.join(".opencode/skills"), SkillLevel::Project),
 			expect("custom", PathBuf::from("/opt/skills"), SkillLevel::User),
 			expect("omp-managed", config.join("agent/managed-skills"), SkillLevel::User),
