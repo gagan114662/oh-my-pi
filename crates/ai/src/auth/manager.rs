@@ -1892,7 +1892,7 @@ fn auth_transient() -> Error {
 	Error::new(
 		ErrorKind::Authentication,
 		ErrorPhase::Authentication,
-		RetryAction::SameRoute { after: Duration::from_secs(5) },
+		RetryAction::SameRoute { after: time::Duration::from_secs(5) },
 		ExecutionReceipt::default(),
 	)
 }
@@ -2030,10 +2030,10 @@ fn oauth_manager_error(error: OAuthCredentialManagerError) -> Error {
 		OAuthCredentialManagerError::Refresh(refresh) => match refresh.kind {
 			// Coordination lost a race or a lease; the credential itself was
 			// not rejected.
-			crate::account::refresh::RefreshErrorKind::LeaseLost
-			| crate::account::refresh::RefreshErrorKind::CoordinationExhausted
-			| crate::account::refresh::RefreshErrorKind::LeaderCancelled
-			| crate::account::refresh::RefreshErrorKind::Store(_) => auth_transient(),
+			crate::account::RefreshErrorKind::LeaseLost
+			| crate::account::RefreshErrorKind::CoordinationExhausted
+			| crate::account::RefreshErrorKind::LeaderCancelled
+			| crate::account::RefreshErrorKind::Store(_) => auth_transient(),
 			_ => auth_unavailable(),
 		},
 		OAuthCredentialManagerError::Expired => Error::new(
@@ -2618,15 +2618,15 @@ mod refresh_classification_tests {
 	#[test]
 	fn a_lost_refresh_lease_is_retryable_but_a_stale_generation_is_not() {
 		let lost = oauth_manager_error(OAuthCredentialManagerError::Refresh(Box::new(
-			crate::account::refresh::RefreshError {
-				kind:    crate::account::refresh::RefreshErrorKind::LeaseLost,
+			crate::account::RefreshError {
+				kind:    crate::account::RefreshErrorKind::LeaseLost,
 				receipt: Box::default(),
 			},
 		)));
 		assert!(matches!(lost.action, RetryAction::SameRoute { .. }), "{:?}", lost.action);
 		let stale = oauth_manager_error(OAuthCredentialManagerError::Refresh(Box::new(
-			crate::account::refresh::RefreshError {
-				kind:    crate::account::refresh::RefreshErrorKind::StaleGeneration { actual: 7 },
+			crate::account::RefreshError {
+				kind:    crate::account::RefreshErrorKind::StaleGeneration { actual: 7 },
 				receipt: Box::default(),
 			},
 		)));
