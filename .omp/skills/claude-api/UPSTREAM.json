@@ -1,0 +1,427 @@
+{
+  "repository": "https://github.com/anthropics/skills",
+  "revision": "41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f",
+  "subtree": "skills/claude-api",
+  "files": [
+    {
+      "path": "LICENSE.txt",
+      "git_blob": "4f881c52d1f72f4cfb720e339e2d35c3058d01a9",
+      "sha256": "bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362",
+      "bytes": 11345
+    },
+    {
+      "path": "SKILL.md",
+      "git_blob": "1346a5c0871dae4522ad95e67685d6e3a2c8ba53",
+      "sha256": "001abd67b06d9aa18f7f7c1a221200a51394f2cfb45cb583f4931bf77fd4b70f",
+      "bytes": 85701
+    },
+    {
+      "path": "csharp/claude-api/README.md",
+      "git_blob": "4b04b5089c5341403bd25c13fb9b919ce39276f4",
+      "sha256": "87deed4e878a7b5c573a216944846e82e3cb3a53973f2d44fb70f80ac06f1388",
+      "bytes": 18417
+    },
+    {
+      "path": "csharp/claude-api/batches.md",
+      "git_blob": "3b4003ce6cac49019196b29f57291d884788702b",
+      "sha256": "6918e951d5a100b0e7dddf6e5e7c5ffa3ad4d45604a12534b833fd0e6ccda9d1",
+      "bytes": 411
+    },
+    {
+      "path": "csharp/claude-api/files-api.md",
+      "git_blob": "46f85ca24528c5605d95c6a39bc44aafab1d58e5",
+      "sha256": "766ccf5dca9ef3caba8cefeddde10f6d171a7bd2ff4c97689462fad2d0d18e4b",
+      "bytes": 900
+    },
+    {
+      "path": "csharp/claude-api/streaming.md",
+      "git_blob": "be16108e5a0a5ac761723164d5e1fd45fa0229a9",
+      "sha256": "9b382189c6d2a8f31534188bc9533539e8fbf895781f727b955b3b7f01e65005",
+      "bytes": 789
+    },
+    {
+      "path": "csharp/claude-api/tool-use.md",
+      "git_blob": "e6cc63751e9eefe6bf6ee0ca5f263aa040a74ad4",
+      "sha256": "d8ae6d64d6cc91395959b799bc441870034e3da45875fe5dc2b5a14e6669da3a",
+      "bytes": 6002
+    },
+    {
+      "path": "curl/examples.md",
+      "git_blob": "f38b88e5b0194e1218491d57bfdaba25d4106a88",
+      "sha256": "f7c66602635a881db3cb7d9c771be9413cd405c262a41d770bf8b25422ce0df1",
+      "bytes": 9193
+    },
+    {
+      "path": "curl/managed-agents.md",
+      "git_blob": "8f52314b6408c4df23811f1afe523049c44fa3d4",
+      "sha256": "e1fe01c98f270e08544b200d660c25fc6efb9b7caf3c321b29bab02d2ed01dc5",
+      "bytes": 8749
+    },
+    {
+      "path": "go/claude-api/README.md",
+      "git_blob": "2267a7d178e92a0d2c08cb26fed1ff22fb3710f8",
+      "sha256": "54e6ee16e037258d0f341df2c38b07e32096f78bdc440f5559eafd360ceaf8d6",
+      "bytes": 7760
+    },
+    {
+      "path": "go/claude-api/files-api.md",
+      "git_blob": "b62f163fcf38c823812ec4181ad2ee75e0c3c2e7",
+      "sha256": "7bf67ece5e4d18b1fb07085a55b680420cc7bd4de94a1fb2bb73cb23f39c20f0",
+      "bytes": 936
+    },
+    {
+      "path": "go/claude-api/streaming.md",
+      "git_blob": "72e44cb07c3af8f217a1945484895170a9353edb",
+      "sha256": "c0bd4253dd0994b07d76e7358df6b163050f775268111a853369684a18c8d00c",
+      "bytes": 1037
+    },
+    {
+      "path": "go/claude-api/tool-use.md",
+      "git_blob": "e9a301cff19b0f3bdfb01e1691aa352a0a3ba6fb",
+      "sha256": "d71df68e6ac84f7919f2e2ec15efd211e3f98fb11db6661d6b6b167abdd2cdfc",
+      "bytes": 8416
+    },
+    {
+      "path": "go/managed-agents/README.md",
+      "git_blob": "a8e2c9658eff1388ae7e4289854f2b7bb546589d",
+      "sha256": "908ef55a20c6a8de2ffd7d21aa0700c6eb89dc4dca5f96985d04d3c6e2f55307",
+      "bytes": 18937
+    },
+    {
+      "path": "java/claude-api/README.md",
+      "git_blob": "87a90086544cf47096caf474e876ffefdfa8b32b",
+      "sha256": "a58f4a016915e5e084f62c403e45867a2ce71af5e225ef7920d4319d78e9387f",
+      "bytes": 11308
+    },
+    {
+      "path": "java/claude-api/files-api.md",
+      "git_blob": "e824fc3c8b0d280274dac380e3ccd9dd1817f094",
+      "sha256": "1c792f3421de32f42a56235327f87807a5579340726bba677ec13e05f9b493c7",
+      "bytes": 1198
+    },
+    {
+      "path": "java/claude-api/streaming.md",
+      "git_blob": "fb09ab98104222855e77a1a9fd583ae4d0e9713c",
+      "sha256": "f3347630f70832796713fe954ef0efcd863406bb47618de3f405c41966596983",
+      "bytes": 659
+    },
+    {
+      "path": "java/claude-api/tool-use.md",
+      "git_blob": "d5df6a16ceec0b5d368ad1baad42e4ec943977fe",
+      "sha256": "049802442b48ba336aa85e1b71f4c603cab72b5d93d560fbb78dda66d4579df5",
+      "bytes": 9521
+    },
+    {
+      "path": "java/managed-agents/README.md",
+      "git_blob": "ff1f11598e6cfad59a385e01e552218c599d278e",
+      "sha256": "7b6a6d205b06c59674bdccc340aff772a3ce38cea1c12b0d0608abcc536d77ec",
+      "bytes": 16942
+    },
+    {
+      "path": "php/claude-api/README.md",
+      "git_blob": "8d8f7d5ca448675b0aac175fa3b81d25d40c7559",
+      "sha256": "0449be03728dfc8e0b236cc0c263f319c1997629c0b1bcbe8586e28d98d2de96",
+      "bytes": 6113
+    },
+    {
+      "path": "php/claude-api/batches.md",
+      "git_blob": "d42350d25c3ffaa77c57076e547693090257819b",
+      "sha256": "5f575dd2fa1c4d89ea097d3d0885ab367356e38ba5b8643b7ed4b366e1953fc6",
+      "bytes": 445
+    },
+    {
+      "path": "php/claude-api/files-api.md",
+      "git_blob": "26bd142dcdb34b63d7158409fac0e89f08745695",
+      "sha256": "0715a0d4cce88fd885f57bd33b4654071a9068d5f8a892143b062c78fe51afc9",
+      "bytes": 476
+    },
+    {
+      "path": "php/claude-api/streaming.md",
+      "git_blob": "86577eae41caa7758771f5dcf4f3441a855a025e",
+      "sha256": "0414d8c99283b3fe526ab0971cacad09af815b6da92eee2355b051393bf3f985",
+      "bytes": 680
+    },
+    {
+      "path": "php/claude-api/tool-use.md",
+      "git_blob": "55c5f3ebc02813a71fabae62b31a2b2e8c0fcd45",
+      "sha256": "34abece0444f3e04276e2936173232e2bc8c5630bdffd3f2179e8e1f6732b5ae",
+      "bytes": 8081
+    },
+    {
+      "path": "php/managed-agents/README.md",
+      "git_blob": "13e8969cfc8776dce283497519626e4e4d4fa50b",
+      "sha256": "347ee6bdcc6846b931ef9e730c20d007e4edbebfe7a26b071da642a16eeffda6",
+      "bytes": 13511
+    },
+    {
+      "path": "python/claude-api/README.md",
+      "git_blob": "c65289f5b74eb853699e3f46441122d7db7735fb",
+      "sha256": "55bd142e7d22bc7dfb1e37287f37b4a15bd8b5dc920775b8aab65a6d21654e6d",
+      "bytes": 19875
+    },
+    {
+      "path": "python/claude-api/batches.md",
+      "git_blob": "313eec0696ad62755f1e69a00d3304ffd81c8be1",
+      "sha256": "e08591b12c75a7ed8e06b3aba551043ffd8ed696179c265b2129265deb81054a",
+      "bytes": 5582
+    },
+    {
+      "path": "python/claude-api/files-api.md",
+      "git_blob": "1ec884d4c724e854936add2a7c4e82cd6d0d249f",
+      "sha256": "d3d8486cdf84cd7a73234dc258adcc75cffa78b43fcccd446ea771f72ef455f7",
+      "bytes": 4493
+    },
+    {
+      "path": "python/claude-api/sdk-upgrade.md",
+      "git_blob": "94acc244a0c7ec4f89f66c2ea6ccdd3a7d1a444e",
+      "sha256": "27f749d01b938c5802db7abcb8ea49b13b58b3272aedd068a5f5c525da833e4b",
+      "bytes": 28716
+    },
+    {
+      "path": "python/claude-api/streaming.md",
+      "git_blob": "2f2070ff1d546d11c495b8b8499a154218554b6e",
+      "sha256": "00a1c046e8e8de1119f6921335e97d5653075862a8e03b649eae2d26febedb6f",
+      "bytes": 6531
+    },
+    {
+      "path": "python/claude-api/tool-use.md",
+      "git_blob": "9aac895d12c79f4fc641f710103317dce7ef9c51",
+      "sha256": "0d710fdab90e2e4999d91b2e87937a762fce8f040deda9528d991f850f09f95a",
+      "bytes": 19264
+    },
+    {
+      "path": "python/managed-agents/README.md",
+      "git_blob": "825dd5fc1a1e3cf951280af1002e86ef2368201b",
+      "sha256": "f8d73686938429140b885823feab4c1ac10c256574de330b89c3c120923a7702",
+      "bytes": 10341
+    },
+    {
+      "path": "ruby/claude-api/README.md",
+      "git_blob": "0349b0ca049161155ff096c7b87192e1d18df04a",
+      "sha256": "77acd5f82553426b1c7669f80104b6e41999c1f96b1007103e8291df1bf2ee24",
+      "bytes": 4471
+    },
+    {
+      "path": "ruby/claude-api/streaming.md",
+      "git_blob": "fa23fe384722cf8206fa1773e249c4eafafca931",
+      "sha256": "a2c667b3dc160b3aacb9468c83b7a0a7523db3876e2abe2770abc163552f0334",
+      "bytes": 233
+    },
+    {
+      "path": "ruby/claude-api/tool-use.md",
+      "git_blob": "d23af793c22818ee8af73d6d67594f82a8a49b7e",
+      "sha256": "a545009aa563e9966b4f923eacb2af612df3c63af7f07bbe40def84b10282e38",
+      "bytes": 1061
+    },
+    {
+      "path": "ruby/managed-agents/README.md",
+      "git_blob": "e21d77f1fb514222c854099738a0283cb134f0ff",
+      "sha256": "2318b5c33862eb5d27fef1a00018eb4464d3e2764a40e64b374bcd2f86b6e5ac",
+      "bytes": 10450
+    },
+    {
+      "path": "shared/admin-api.md",
+      "git_blob": "66a15a74b0010e894de6a82a1835d7fe8feaa3d2",
+      "sha256": "50d79d03f3a4ccae038efb5b9805d9d21838486c601f2dfb7b212585c308ef64",
+      "bytes": 11604
+    },
+    {
+      "path": "shared/agent-design.md",
+      "git_blob": "517cec6b2a5529296b999916f43533425d30effb",
+      "sha256": "9960728faf6976a2ddfceed02ed72af122d3b2558af573a9a0ea207b3adec2bc",
+      "bytes": 8736
+    },
+    {
+      "path": "shared/anthropic-cli.md",
+      "git_blob": "1f2fa363853f77eda07a385f272f22cb3be665da",
+      "sha256": "5ba2ebdda4b101bb890c6ee0f2384a81ec78b666de6ce3f37a690e12cf8fc941",
+      "bytes": 16128
+    },
+    {
+      "path": "shared/claude-platform-on-aws.md",
+      "git_blob": "124b22d046b2f65a08ef1e4decce1ee5c4abbc49",
+      "sha256": "d3ce9bc6ea5d9b9b6e9ec4f8aa8e28493a2a198a433c2297b377cbb84f86ad9d",
+      "bytes": 4412
+    },
+    {
+      "path": "shared/cost-optimization.md",
+      "git_blob": "01d3a8324f65a1869cb64313bb6caf9d97979b14",
+      "sha256": "b007478601b2bdabef41793ce2727ea4281544b64a443b04ac15fabfdbe58c2a",
+      "bytes": 44959
+    },
+    {
+      "path": "shared/error-codes.md",
+      "git_blob": "2b594358fbbf47158cd5cf4b542f10859e8e902f",
+      "sha256": "1bfe197bcf264c8b86c1815cf5ee367bdbfa80ba0ac20041713ffdfa504491c8",
+      "bytes": 15474
+    },
+    {
+      "path": "shared/live-sources.md",
+      "git_blob": "918dec589f91d06ca0478a607f012899a5eaa34e",
+      "sha256": "c2c6b9c517d36f2101bf8a7bf8718cb7ae2f274c59ae36c2207a3aa10281a69b",
+      "bytes": 22226
+    },
+    {
+      "path": "shared/managed-agents-api-reference.md",
+      "git_blob": "6f7a5e95ba6677af79a8725b8c858acca8a9728e",
+      "sha256": "abb04671f430a4542012d8d25bc8b3932704142302a1eeb4c4d7a33d46314595",
+      "bytes": 33958
+    },
+    {
+      "path": "shared/managed-agents-client-patterns.md",
+      "git_blob": "96fd91624e0fce2e0e60a9588758f71ab5107ad4",
+      "sha256": "38a7de63f40a365ebc30c9e42bd7e4295f4d43b4ac2acb8f36e37d6e9d1b4854",
+      "bytes": 11286
+    },
+    {
+      "path": "shared/managed-agents-core.md",
+      "git_blob": "d352371f82ec18d4e1794f8980ee5e57f96803c9",
+      "sha256": "f375cdf6ec7e7106540408e0f788279ee84bf304af3d0ef2a13d13470a407e0f",
+      "bytes": 32573
+    },
+    {
+      "path": "shared/managed-agents-environments.md",
+      "git_blob": "1c86e8e95ffaa7249f061601fa2813c46a9cb855",
+      "sha256": "faa3bb1a55a8bfc308d7884329ed2ed9fa2b9f64f39696bb51aeb3c69b86b264",
+      "bytes": 12653
+    },
+    {
+      "path": "shared/managed-agents-events.md",
+      "git_blob": "7465288a6565a9b04f627b40d6d05ffe80dfcefe",
+      "sha256": "e57d755a28830fc3684d0a4bdc4d6347038790a43e2540ebc77f6c8b88137716",
+      "bytes": 24645
+    },
+    {
+      "path": "shared/managed-agents-memory.md",
+      "git_blob": "28e119b6f3f98ebd9114cf8b5987b16ba6111083",
+      "sha256": "9f14213db20c1fcd1547e7c4882f9adde50b7b3f602b29684e5d851bf06d370a",
+      "bytes": 11154
+    },
+    {
+      "path": "shared/managed-agents-multiagent.md",
+      "git_blob": "2c0d8fbc051416bbeb442b87038a31fee367722c",
+      "sha256": "0e8ad0f10ad2fda9602bd381778bd3ea7674307d0bccc52cb7c9611fb6504ad8",
+      "bytes": 25549
+    },
+    {
+      "path": "shared/managed-agents-onboarding.md",
+      "git_blob": "9b5f99464b4e99938a53d5a0ad44775ca90a744f",
+      "sha256": "d6f0fae12e1ec04e5a96863f928f9b62d09ab860c2653d13a62b6b282d832682",
+      "bytes": 10454
+    },
+    {
+      "path": "shared/managed-agents-outcomes.md",
+      "git_blob": "e06b4fd4395f353a7e17c25c968bc4424e90401a",
+      "sha256": "742b89e66d22dcb605c89a667aa5572ce768a6b81448f624a1f73efa2cedfca2",
+      "bytes": 7244
+    },
+    {
+      "path": "shared/managed-agents-overview.md",
+      "git_blob": "7df7844128f281c342f12342ad2d57ba5583406a",
+      "sha256": "a250fd240dbddc63c5821612051f4a40fbc7fd40dbb6091299b708d0c594f89b",
+      "bytes": 13165
+    },
+    {
+      "path": "shared/managed-agents-scheduled-deployments.md",
+      "git_blob": "9b42736fef1e95e2a36e8f32d38f7a499ba78c06",
+      "sha256": "65312565b26ce16176c63185f9b392f0a93ffc4ef46180a5eff32ca3678a47d3",
+      "bytes": 8734
+    },
+    {
+      "path": "shared/managed-agents-self-hosted-sandboxes.md",
+      "git_blob": "a4f280f2619872ef2830e8744f2a1fd3003d4a16",
+      "sha256": "3228ab72afbe3ab1a0ac0f5a41995e1764c947cf17ce22a858b41b67262b71ee",
+      "bytes": 27847
+    },
+    {
+      "path": "shared/managed-agents-tools.md",
+      "git_blob": "fdb52de9d3b49f5446e0f4d4c51ad5e507efab6d",
+      "sha256": "183a7d899a00f051aa2a6337c6e825ea0db00ee5b35913f1c425679796727748",
+      "bytes": 29792
+    },
+    {
+      "path": "shared/managed-agents-webhooks.md",
+      "git_blob": "25f0592cdf26bed177b36e9e2579dea9676357fd",
+      "sha256": "38746f77a3ee971f9b1f7d47cec9e753131bf271fd795aed5c3da1764c9a6ac1",
+      "bytes": 11321
+    },
+    {
+      "path": "shared/model-migration.md",
+      "git_blob": "577773ee89091c385e7f79b8d46ae1adab9f48f3",
+      "sha256": "646531ed152701c571771d38306b1d6ac358270a7ca8763b39a9e694916b08c9",
+      "bytes": 244863
+    },
+    {
+      "path": "shared/models.md",
+      "git_blob": "cc124164de744b1b8be1310fedd4940f0fbd1666",
+      "sha256": "247f3f7adb64943c70a78643e2d6ebc48baa8da3d5369e1329153bd9dbc952f0",
+      "bytes": 13936
+    },
+    {
+      "path": "shared/platform-availability.md",
+      "git_blob": "794543737db746a0a621a863f17afe9b4942ef95",
+      "sha256": "b11e6ef8162daeb15ce12dff4187f5e28055bb7cef47f2b104f2b806a873d8aa",
+      "bytes": 5537
+    },
+    {
+      "path": "shared/prompt-audit.md",
+      "git_blob": "7f8a35be8dda2ccd60e1523368fcc17895e65d28",
+      "sha256": "571b08c181a8f3f0906a99045ff0bca88ca728d5a2d01afabb620b270c8048a2",
+      "bytes": 34966
+    },
+    {
+      "path": "shared/prompt-caching.md",
+      "git_blob": "f54601d9c4a84f7e7c5f5600e6d7ee860246eca7",
+      "sha256": "07d3ee1266f2825adc1413c4e561b1a09ba9304617f4057f782b0c87a72640fd",
+      "bytes": 31084
+    },
+    {
+      "path": "shared/token-counting.md",
+      "git_blob": "550ecda9fdda001207ab4361713f501c27483e68",
+      "sha256": "b8be5d38127a79b35c0d79d3e4f1309abcdb6b15ea6917c991c14a7bb2a7d9dc",
+      "bytes": 1597
+    },
+    {
+      "path": "shared/tool-use-concepts.md",
+      "git_blob": "3127e0b6d502b7d0676396b85260e2569d7ea626",
+      "sha256": "0c5db4fa5a0b60f0e47e473b7735bf94c62b35c6d345f2cfed06409deb9b8f2e",
+      "bytes": 35290
+    },
+    {
+      "path": "typescript/claude-api/README.md",
+      "git_blob": "230e935b80e8dc7dc57b4a92a892d3d0d0930dec",
+      "sha256": "a77f594d6aa535c481e4fbc69fbd0394d693e913b143efb902eb65a8b1866af1",
+      "bytes": 15131
+    },
+    {
+      "path": "typescript/claude-api/batches.md",
+      "git_blob": "3447852ac1677533c6b79962f0a02934e083c1e4",
+      "sha256": "2489eb1d61c0a731b503b0a176383d72234b51064295a3c8c066f2708cab466e",
+      "bytes": 2590
+    },
+    {
+      "path": "typescript/claude-api/files-api.md",
+      "git_blob": "be661ccf1e71dcfd9a62b343c847daeaef138ffd",
+      "sha256": "2b19e3c499cb11243fbc13158e838f7a51ecad6e2542ecc6783e9d2605ee8249",
+      "bytes": 2382
+    },
+    {
+      "path": "typescript/claude-api/streaming.md",
+      "git_blob": "c4aacc6890e4a6c92e2858a590bdd197f60e3c21",
+      "sha256": "cd26b613d1198a602e47e43fd84e873c8d722afbc872a864621256a13f082d65",
+      "bytes": 5825
+    },
+    {
+      "path": "typescript/claude-api/tool-use.md",
+      "git_blob": "5c8c8f1c6440c27ea1aa76c1ac8357e35cec7aa0",
+      "sha256": "442c3562e6d8d835dcc634657b3eba450b275fde35b8503d49f37ad945b41fec",
+      "bytes": 18877
+    },
+    {
+      "path": "typescript/managed-agents/README.md",
+      "git_blob": "825659b94fdba468ab025fbc348357a7ae9f3c7d",
+      "sha256": "dfb701b1d49f2dec91464b1e6ab9bd5bcd0786736144711f7079464cff0a5a18",
+      "bytes": 9828
+    }
+  ]
+}

@@ -1264,6 +1264,63 @@ mod tests {
 	}
 
 	#[test]
+	fn vendored_claude_reference_discovers_expands_and_reports_missing_assets() {
+		let tree = tempfile::tempdir().expect("isolated project");
+		let project = tree.path().join("project");
+		let home = tree.path().join("home");
+		let root = project.join(".omp/skills/claude-api");
+		fs::create_dir_all(root.join("upstream/shared")).expect("skill directory");
+		fs::create_dir_all(project.join(".git")).expect("repository boundary");
+		fs::write(root.join("SKILL.md"), include_str!("../../../../.omp/skills/claude-api/SKILL.md"))
+			.expect("real wrapper");
+		let reference = root.join("upstream/shared/token-counting.md");
+		fs::write(
+			&reference,
+			include_str!("../../../../.omp/skills/claude-api/upstream/shared/token-counting.md"),
+		)
+		.expect("real upstream reference");
+		let policy = SkillPolicy::default();
+		let active = discover(&sources(&project, &home, &home.join("config"), &policy), &policy);
+		assert!(active.warnings.is_empty(), "{:?}", active.warnings);
+		let skill = active.get("claude-api").expect("native project skill");
+		assert_eq!(skill.provider, "native");
+		assert!(
+			active.prompt_facts().is_empty(),
+			"explicit reference must not replace provider defaults automatically"
+		);
+		let prompt = active
+			.prompt("claude-api", &[Str::new_static(
+				"Audit Rust Anthropic streaming and token accounting",
+			)])
+			.expect("native explicit invocation");
+		assert!(prompt.prompt_body.contains("subscription only"));
+		assert!(
+			prompt
+				.prompt_body
+				.contains("upstream/shared/token-counting.md")
+		);
+		assert!(
+			prompt
+				.prompt_body
+				.contains("Audit Rust Anthropic streaming and token accounting")
+		);
+		let resolver = SkillResolver { skills: Arc::new(active), lines: LineOffsetCache::default() };
+		assert_eq!(
+			resolver
+				.target("claude-api/upstream/shared/token-counting.md")
+				.expect("contained reference")
+				.1,
+			fs::canonicalize(&reference).expect("reference path")
+		);
+		fs::remove_file(&reference).expect("simulate incomplete installation");
+		let error = resolver
+			.target("claude-api/upstream/shared/token-counting.md")
+			.expect_err("missing references must fail");
+		assert!(error.to_string().contains("File not found:"));
+		assert!(error.to_string().contains("token-counting.md"));
+	}
+
+	#[test]
 	fn skill_command_prompt_preserves_source_args_and_exact_model_body() {
 		let tree = tempfile::tempdir().unwrap();
 		let root = tree.path().join("skills");
