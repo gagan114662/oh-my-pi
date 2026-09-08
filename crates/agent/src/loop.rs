@@ -1,3 +1,4 @@
+use std::time::Duration;
 //! Journal-first agent turn kernel.
 
 use std::{
