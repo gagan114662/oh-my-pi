@@ -139,6 +139,16 @@ impl omp_agent::Inference for StalledInference {
 	}
 }
 
+fn durable_append_texts(path: &std::path::Path) -> Vec<String> {
+	journal_entries(path)
+		.into_iter()
+		.filter(|entry| entry.kind.name.as_str() == "stream")
+		.map(|entry| serde_json::from_str::<omp_journal::data::Stream>(&entry.data).unwrap())
+		.filter(|entry| entry.op == omp_journal::data::StreamOp::Append)
+		.map(|entry| entry.text.expect("append carries text").to_string())
+		.collect()
+}
+
 async fn stalled_prefix_is_durable_before_release(cancel: bool) {
 	use std::{
 		sync::{
@@ -184,7 +194,11 @@ async fn stalled_prefix_is_durable_before_release(cancel: bool) {
 		.await
 		.expect("idle stream flushes within the bound without another provider event");
 		assert!(!String::from_utf8_lossy(&prefix).contains("released suffix"));
-		assert_eq!(stream_appends(&path), 1, "exactly the buffered prefix was committed");
+		assert_eq!(
+			durable_append_texts(&path),
+			["stalled durable prefix"],
+			"exactly the buffered prefix was committed"
+		);
 		if cancel {
 			cancellation.cancel();
 		} else {
@@ -207,7 +221,11 @@ async fn stalled_prefix_is_durable_before_release(cancel: bool) {
 		assert!(!String::from_utf8_lossy(&std::fs::read(&path).unwrap()).contains("released suffix"));
 	} else {
 		assert_eq!(outcome.assistant_text.as_str(), "stalled durable prefix released suffix");
-		assert_eq!(stream_appends(&path), 2, "suffix closes as a separate entry");
+		assert_eq!(
+			durable_append_texts(&path),
+			["stalled durable prefix", " released suffix"],
+			"suffix closes as a separate entry"
+		);
 	}
 }
 
