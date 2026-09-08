@@ -28,9 +28,23 @@ cell activation times. The run handle does not expose the watchdog's timed-out
 flag; it has not been added solely for this test. The unchanged terminal assertion
 reports an observed `Timeout` if the problem persists.
 
-Production cancellation reason precedence is unchanged. In particular, the
-watchdog can set `timed_out` after a cancellation request if interruption is slow;
-this patch neither claims that behavior caused the failure nor proves it correct.
-Rust formatting and whitespace checks are the only local validation so far. The
-original test must run with this setup, followed by complete affected tests and
-doctests when build resources are available.
+The initial warmup change left cancellation precedence unchanged. Subsequent
+run `34259539503` still observed `Timeout` after an earlier explicit cancellation.
+The production fix in `6aca9cbb8ead79a0ed04b6fdc0f6b26d2f147d9d` records the
+first stop reason atomically: later deadline escalation cannot rename an earlier
+cancellation, and a later cancellation cannot rename an earlier timeout.
+
+Run `34263239637` used the same frozen fixture on that fix and parent
+`fc17d7cd4282a043fcbe733aeac68b98b705ce95`. The parent source differed only by
+insertion of the fixture. It failed with exactly `left: Timeout, right: Cancelled`
+after 2.413 seconds. The head passed both real two-second deadline orderings in
+4.531 seconds. Durations come from the individual JUnit cases, excluding builds;
+neither result was a build failure or external timeout. The frozen fixture hash
+was `0a359e185a7d14f13ba584318dce497457e257f819b7580f1c481f3665ba5790`.
+
+The head job nevertheless failed its full tools suite: 737 tests passed and the
+new local-tail test failed on an outdated expected line count. The con suite
+passed 46 tests, and both doctest commands passed. The tail expectation is fixed
+separately in `0d1ecce1c78f485cb24001e0c4d12d113a6f8753`; that later change was
+not part of the frozen head tested here. This proves the focused stop-order
+behavior, not a green combined gate or every cancellation lifecycle path.
