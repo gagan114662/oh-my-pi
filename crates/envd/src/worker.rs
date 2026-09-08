@@ -3816,11 +3816,15 @@ async fn run_control_supervisor(
 					let _ = progress.await;
 					let was_cancelled = task_cancelled.lock().remove(&id);
 					if was_cancelled {
+						let effects_unknown = !matches!(
+							result,
+							Err(ControlRuntimeError::Dispatch(DispatchError::Cancelled))
+						);
 						let _ = invocation.events.send(ExtHostEvent::Aborted(ExtHostAbort {
-							call_id:         invocation.call.invocation_id,
-							kind:            ExtHostAbortKind::Cancelled,
-							reason:          sf!("extension invocation cancelled"),
-							effects_unknown: true,
+							call_id: invocation.call.invocation_id,
+							kind: ExtHostAbortKind::Cancelled,
+							reason: sf!("extension invocation cancelled"),
+							effects_unknown,
 						}));
 					} else {
 						match result {

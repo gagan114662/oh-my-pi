@@ -3416,8 +3416,23 @@ impl ControlHandle {
 			.ok_or_else(|| ControlProtocolError::malformed("dispatch response has no result").into())
 	}
 
-	/// Sends stage one of the documented cancellation ladder.
+	/// Removes a callback which has not entered the child, or sends stage one
+	/// of the cancellation ladder for an already dispatched callback.
 	pub async fn cancel(&self, invocation: &str) -> Result<(), ControlRuntimeError> {
+		if let Some(id) = self.last_frame(invocation) {
+			let queued = self
+				.shared
+				.router
+				.lock()
+				.cancel_queued(self.shared.identity.extension.as_str(), id)?;
+			if queued {
+				self.shared.invocations.lock().remove(invocation);
+				self.shared.dispatch_by_id.lock().remove(&id);
+				self.shared.dispatch_progress.lock().remove(&id);
+				self.shared.dispatch_chunks.lock().remove(&id);
+				return Ok(());
+			}
+		}
 		if !self.shared.invocations.lock().contains_key(invocation) {
 			return Err(
 				ControlProtocolError::new(
@@ -3741,6 +3756,7 @@ mod convar_tests {
 	}
 
 	enum RuntimeStop {
+		CancelQueued,
 		Abort,
 		Malformed,
 		Eof,
@@ -3824,7 +3840,26 @@ mod convar_tests {
 		assert!(handle.is_live("running"));
 		assert!(handle.is_live("queued"));
 
+		let queued_error = if matches!(stop, RuntimeStop::CancelQueued) {
+			DispatchError::Cancelled
+		} else {
+			DispatchError::HostGone
+		};
 		match stop {
+			RuntimeStop::CancelQueued => {
+				handle
+					.cancel("queued")
+					.await
+					.expect("cancel queued callback");
+				assert!(handle.is_live("running"), "other callback remains active");
+				assert!(!handle.is_live("queued"), "queued authority is removed immediately");
+				let error = reader
+					.try_read(&mut [0_u8; 1])
+					.expect_err("no child cancellation frame");
+				assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+				pump.abort();
+				assert!(pump.await.expect_err("test cleanup").is_cancelled());
+			},
 			RuntimeStop::Abort => {
 				pump.abort();
 				assert!(pump.await.expect_err("aborted pump").is_cancelled());
@@ -3850,16 +3885,19 @@ mod convar_tests {
 					.expect("clean EOF");
 			},
 		}
-		for result in [
-			time::timeout(Duration::from_secs(1), running)
-				.await
-				.expect("running call settled"),
-			time::timeout(Duration::from_secs(1), queued)
-				.await
-				.expect("queued call settled"),
-		] {
-			assert!(matches!(result, Err(ControlRuntimeError::Dispatch(DispatchError::HostGone))));
-		}
+		let running_result = time::timeout(Duration::from_secs(1), running)
+			.await
+			.expect("running call settled");
+		assert!(matches!(
+			running_result,
+			Err(ControlRuntimeError::Dispatch(DispatchError::HostGone))
+		));
+		let queued_result = time::timeout(Duration::from_secs(1), queued)
+			.await
+			.expect("queued call settled");
+		assert!(
+			matches!(queued_result, Err(ControlRuntimeError::Dispatch(error)) if error == queued_error)
+		);
 		assert!(!handle.is_live("running"));
 		assert!(!handle.is_live("queued"));
 		assert!(
@@ -3880,6 +3918,11 @@ mod convar_tests {
 			.await
 			.expect("stale handle rejects dispatch promptly");
 		assert!(matches!(late, Err(ControlRuntimeError::Dispatch(DispatchError::HostGone))));
+	}
+
+	#[tokio::test]
+	async fn queued_control_cancellation_does_not_reach_child_or_stop_running_call() {
+		assert_runtime_stop_settles_calls(RuntimeStop::CancelQueued).await;
 	}
 
 	#[tokio::test]
