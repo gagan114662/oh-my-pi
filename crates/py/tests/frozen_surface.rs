@@ -1478,6 +1478,11 @@ for suffix in ("-0", "raw:-0", "-18446744073709551616", "conflicts:-2"):
         raise AssertionError(f"invalid tail accepted: {suffix}")
 assert omp.artifacts._select_lines("one\ntwo\nthree", "raw:-2") == "two\nthree"
 assert omp.artifacts._select_lines("", "-2") == ""
+for selector, expected in (("raw:-2", "two\n"), ("-2:raw", "two\n"), ("raw:-1", ""), ("raw:-60", "one\ntwo\n")):
+    assert omp.artifacts._select_lines("one\ntwo\n", selector) == expected
+assert omp.artifacts._select_lines("", "raw:-2") == ""
+assert omp.artifacts._select_lines("one\r\ntwo\r\n", "raw:-2") == "two\r\n"
+
 
 
 # Turn inference selection: thinking patches and scope-backed route/effort.

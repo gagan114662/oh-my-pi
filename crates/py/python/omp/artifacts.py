@@ -413,6 +413,9 @@ def _select_lines(text: str, selector: str | None) -> str:
         return "".join(selected)
     if not parsed.ranges and parsed.tail is None:
         return text
+    if parsed.raw and parsed.tail is not None:
+        # Raw read ranges address the terminal empty line after a newline too.
+        return "\n".join(text.split("\n")[-parsed.tail :])
     lines = text.splitlines(keepends=True)
     ranges = parsed.ranges
     if parsed.tail is not None:
