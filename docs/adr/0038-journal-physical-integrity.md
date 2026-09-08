@@ -144,6 +144,27 @@ by settlement/reopen; a decoder regression preserves absent historical family.
 These additions have been formatted and source-reviewed only. Hosted runtime
 execution and explicit legacy migration remain pending.
 
+### Browser operation evidence
+
+The leaf preserves a fresh JUnit report after each complete app, journal,
+session and agent run, and separately runs the complete P10 target plus
+paired e2e doctests. The summary requires exactly one passing, non-skipped
+named testcase for rewind, branch pruning, blob GC, compaction, import and
+lift. Missing, duplicate, malformed, retried or failed case evidence fails the
+summary even if a package command reports success. Raw JUnit, logs and hashes
+of the operation test sources remain in the artifact; skipped counts are
+reported. Compaction and actual blob collection share the Session fixture,
+which checks orphan removal, retained summary/frame bytes, unchanged journal
+seal and replay state. These additions still need hosted execution.
+
+The CLI corruption fixture now records a call and terminal result via Session,
+then a successor entry. It edits one byte within that middle `tool.result@1`
+payload; the evidence checker verifies the declared kind, causal call link,
+frame bounds, exact mutation offset and the verifier/Session refusal results.
+This is an explicitly deterministic fixture, not evidence that a provider or
+external tool executed. Existing legacy/torn/empty and expected-tip refusal
+checks remain in place.
+
 ## References
 
 - [0003](0003-one-authoritative-session-tree.md): session authority and fold
