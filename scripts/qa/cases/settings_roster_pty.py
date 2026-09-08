@@ -25,7 +25,7 @@ import pyte
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness import MODELS_TOML, OMP_BINARY, MockModel
-from pty_debug import request as debug_request, kill_and_reap, launch, termios_mode
+from pty_debug import request as debug_request, kill_and_reap, launch, termios_mode, termios_restore_reference
 
 
 def process_command(pid):
@@ -152,7 +152,9 @@ def main():
 
         try:
             master, slave = pty.openpty()
-            before = termios.tcgetattr(slave)
+            original_attributes = termios.tcgetattr(slave)
+            before = termios_mode(original_attributes)
+            expected_restored = termios_restore_reference(original_attributes)
             fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 140, 0, 0))
             env['OMP_TTY'] = os.ttyname(slave)
             with (output / 'stdout.log').open('wb') as stdout, (output / 'stderr.log').open('wb') as stderr:
@@ -222,10 +224,10 @@ def main():
                     deadline = time.monotonic() + 10
                     while process.poll() is None and time.monotonic() < deadline:
                         drain()
-                    mode_before, mode_after = termios_mode(before), termios_mode(termios.tcgetattr(slave))
-                    restored = process.poll() == 0 and mode_after == mode_before
-                    rows.append(('quit', json.dumps({'exit': process.poll(), 'termios_before': mode_before,
-                                                     'termios_after': mode_after}), restored))
+                    after = termios_mode(termios.tcgetattr(slave))
+                    restored = process.poll() == 0 and after == expected_restored
+                    rows.append(('quit', json.dumps({'exit': process.poll(), 'termios_before': before,
+                                                     'termios_reference_expected': expected_restored, 'termios_after': after}), restored))
                     if not restored:
                         failures.append('clean quit or termios restoration failed')
                 except Exception as error:

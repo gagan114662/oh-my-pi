@@ -884,6 +884,9 @@ omp_con::var! {
 		validate: validate_retry_chains,
 		flags: archive,
 		meta: {
+			"ui.tab": "model",
+			"ui.group": "Retry & Fallback",
+			"ui.label": "Retry Fallback Chains",
 			"legacy.path": "retry.fallbackChains",
 			"legacy.path": "retry.fallback_chains",
 		},

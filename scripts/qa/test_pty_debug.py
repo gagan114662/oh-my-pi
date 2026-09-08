@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from pty_debug import read_reply, kill_and_reap, launch, termios_mode
+from pty_debug import read_reply, kill_and_reap, launch, termios_mode, termios_restore_reference
 
 
 class PtyDebugTests(unittest.TestCase):
@@ -95,17 +95,24 @@ class PtyDebugTests(unittest.TestCase):
         'original = termios.tcgetattr(fd)\n'
         'tty.setraw(fd)\n'
         'if sys.argv[2] == "restore":\n'
-        '    termios.tcsetattr(fd, termios.TCSANOW, original)\n'
+        '    termios.tcsetattr(fd, termios.TCSAFLUSH, original)\n'
+        '    if sys.argv[3] != "none":\n'
+        '        faulty = termios.tcgetattr(fd)\n'
+        '        field = 0 if sys.argv[3] == "IGNCR" else 3\n'
+        '        faulty[field] ^= getattr(termios, sys.argv[3])\n'
+        '        termios.tcsetattr(fd, termios.TCSAFLUSH, faulty)\n'
         'os.write(fd, b"done\\r\\n")\n'
         'os._exit(0)\n'
     )
 
-    def _run_raw_child(self, restore):
+    def _run_raw_child(self, restore, fault="none"):
         master, slave = pty.openpty()
         received = bytearray()
+        child = None
         try:
-            before = termios.tcgetattr(slave)
-            child = launch([sys.executable, '-c', self.RAW_CHILD, os.ttyname(slave), 'restore' if restore else 'leave'],
+            original = termios.tcgetattr(slave)
+            expected_restored = termios_restore_reference(original)
+            child = launch([sys.executable, '-c', self.RAW_CHILD, os.ttyname(slave), 'restore' if restore else 'leave', fault],
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             record = None
             deadline = time.monotonic() + 10
@@ -121,9 +128,13 @@ class PtyDebugTests(unittest.TestCase):
             # The driver's own slave descriptor must still answer after the
             # child exits: a revoked slave (session leader + controlling tty
             # on macOS) would raise ENOTTY here and hide the real answer.
-            after = termios.tcgetattr(slave)
-            return termios_mode(before), termios_mode(after), bytes(received)
+            after = termios_mode(termios.tcgetattr(slave))
+            return expected_restored, after, bytes(received)
         finally:
+            if child is not None:
+                if child.poll() is None:
+                    kill_and_reap(child, master, received.extend)
+                child.stderr.close()
             os.close(master)
             os.close(slave)
 
@@ -138,6 +149,55 @@ class PtyDebugTests(unittest.TestCase):
         before, after, received = self._run_raw_child(restore=True)
         self.assertIn(b'done', received)
         self.assertEqual(before, after)
+
+    def test_partial_restoration_faults_differ_from_same_kernel_reference(self):
+        for field in ['IGNCR', 'ECHONL']:
+            with self.subTest(field=field):
+                before, after, received = self._run_raw_child(restore=True, fault=field)
+                self.assertIn(b'done', received)
+                self.assertNotEqual(before, after)
+
+    def test_reference_never_changes_the_observed_terminal(self):
+        master, slave = pty.openpty()
+        try:
+            original = termios.tcgetattr(slave)
+            with patch('termios.tcflush', side_effect=AssertionError('no observation-time flush')):
+                expected = termios_restore_reference(original)
+            self.assertEqual(termios.tcgetattr(slave), original)
+            self.assertEqual(set(expected), set(termios_mode(original)))
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_restoration_oracle_detects_each_flag_speed_and_control_character(self):
+        master, slave = pty.openpty()
+        try:
+            original = termios.tcgetattr(slave)
+            expected = termios_mode(original)
+            # Pure one-field corruptions isolate the oracle from device-specific
+            # coercion of unsupported termios settings. Actual raw/restore child
+            # tests independently exercise tcsetattr and post-exit observation.
+            for field in range(6):
+                bits = range(64) if field < 4 else [0]
+                for bit in bits:
+                    changed = list(original)
+                    changed[field] ^= 1 << bit
+                    with self.subTest(field=field, bit=bit):
+                        self.assertNotEqual(termios_mode(changed), expected)
+            for index, value in enumerate(original[6]):
+                changed = list(original)
+                changed[6] = list(original[6])
+                numeric = value if isinstance(value, int) else value[0]
+                changed[6][index] = numeric ^ 1
+                with self.subTest(control_character=index):
+                    self.assertNotEqual(termios_mode(changed), expected)
+            # Equivalent Python encodings of control bytes remain equivalent.
+            equivalent = list(original)
+            equivalent[6] = [value if isinstance(value, int) else value[0] for value in original[6]]
+            self.assertEqual(termios_mode(equivalent), expected)
+        finally:
+            os.close(master)
+            os.close(slave)
 
     def test_launch_creates_a_signalable_process_group(self):
         child = launch(['sleep', '60'])

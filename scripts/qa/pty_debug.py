@@ -2,6 +2,7 @@
 import errno
 import json
 import os
+import pty
 import select
 import signal
 import socket
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import termios
 import time
+import tty
 
 
 def consume_pty(master, consume):
@@ -98,20 +100,21 @@ def launch(args, **kwargs):
 
 
 def termios_mode(attributes):
-    """The terminal-mode bits an application must restore before it exits.
+    """Lossless JSON representation of every tcgetattr field.
 
-    Exact ``tcgetattr`` equality is not portable: the kernel toggles unrelated
-    bits (for example the local-flag high bits on macOS) across open/close.
-    Canonical input, echo, signal generation, extended input, output
-    post-processing, CR translation, flow control and the VMIN/VTIME pair are
-    what a raw-mode application changes and must put back.
+    Only normalize Python's byte/int representation of control characters;
+    never mask flags, speeds, or control characters out of the restore oracle.
+    Named bits below are redundant diagnostics, not the compared subset.
     """
-    iflag, oflag, _cflag, lflag, _ispeed, _ospeed, cc = attributes
+    iflag, oflag, cflag, lflag, ispeed, ospeed, cc = attributes
 
     def control(value):
         return value if isinstance(value, int) else (value[0] if value else 0)
 
     return {
+        'iflag': iflag, 'oflag': oflag, 'cflag': cflag, 'lflag': lflag,
+        'ispeed': ispeed, 'ospeed': ospeed,
+        'cc': [control(value) for value in cc],
         'ICANON': bool(lflag & termios.ICANON),
         'ECHO': bool(lflag & termios.ECHO),
         'ISIG': bool(lflag & termios.ISIG),
@@ -122,3 +125,21 @@ def termios_mode(attributes):
         'VMIN': control(cc[termios.VMIN]),
         'VTIME': control(cc[termios.VTIME]),
     }
+
+
+def termios_restore_reference(original):
+    """Expected post-restore attributes from an independent same-kernel PTY.
+
+    Darwin can set PENDIN when restoring canonical input with TCSANOW. Observe that transition independently before
+    launching the application. Never mask flags or mutate the application's
+    terminal after exit. The reference uses the product's TCSAFLUSH restore mode.
+    """
+    master, slave = pty.openpty()
+    try:
+        termios.tcsetattr(slave, termios.TCSANOW, original)
+        tty.setraw(slave, termios.TCSANOW)
+        termios.tcsetattr(slave, termios.TCSAFLUSH, original)
+        return termios_mode(termios.tcgetattr(slave))
+    finally:
+        os.close(master)
+        os.close(slave)

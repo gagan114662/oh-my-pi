@@ -28,12 +28,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Structural proof, production build and the real PTY walk stay on macOS.
-  # The complete omp-app/omp-chat suites run in the Linux job below: on the
-  # macOS runners the unrelated envd/extension-host integration tests miss their
-  # 10 s deadlines under load (runs 34252868640, 34260551557), which is noise
-  # for this invariant, and the Check workflow already runs the same suites on
-  # Linux per push.
+  # macOS keeps the original complete affected suites and real PTY proof.
+  # Linux is additional coverage; it does not excuse or replace macOS failures.
   settings-roster:
     runs-on: macos-15
     timeout-minutes: 180
@@ -91,6 +87,25 @@ jobs:
           codes=("${PIPESTATUS[@]}")
           printf 'pty,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/settings-roster/exits.csv || exit 1
           [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Complete affected app and chat tests and doctests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          failed=0
+          for package in omp-app omp-chat; do
+            just --command cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/settings-roster/$package-tests.log"
+            tests=("${PIPESTATUS[@]}")
+            just --command cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/settings-roster/$package-docs.log"
+            docs=("${PIPESTATUS[@]}")
+            printf '%s-tests,%s,%s\n' "$package" "${tests[0]}" "${tests[1]}" >> target/settings-roster/exits.csv || failed=1
+            printf '%s-docs,%s,%s\n' "$package" "${docs[0]}" "${docs[1]}" >> target/settings-roster/exits.csv || failed=1
+            for code in "${tests[@]}" "${docs[@]}"; do
+              if [ "$code" -ne 0 ]; then failed=1; fi
+            done
+          done
+          exit "$failed"
       - name: Publish structural proof and missing checks
         if: always()
         shell: bash
@@ -102,8 +117,8 @@ jobs:
           root.mkdir(parents=True, exist_ok=True)
           exits = root / 'exits.csv'
           observed = {row[0]: row[1:] for row in csv.reader(exits.open())} if exits.exists() else {}
-          required = ('invariant', 'build', 'pty')
-          lines = ['## Settings roster checks', '', 'Complete omp-app/omp-chat suites and doctests: see the `settings-roster-tests` job summary.', '', '| Check | Command/log exits | Complete |', '|---|---|---|']
+          required = ('invariant', 'build', 'pty', 'omp-app-tests', 'omp-app-docs', 'omp-chat-tests', 'omp-chat-docs')
+          lines = ['## Settings roster checks', '', 'Complete macOS suites are required below; Linux provides additional coverage in settings-roster-tests.', '', '| Check | Command/log exits | Complete |', '|---|---|---|']
           failed = False
           for name in required:
               values = observed.get(name)
@@ -179,7 +194,7 @@ jobs:
           mkdir -p target/settings-roster-tests
           failed=0
           for package in omp-app omp-chat; do
-            cargo nextest run --locked --profile ci --no-fail-fast -p "$package" 2>&1 | tee "target/settings-roster-tests/$package-tests.log"
+            cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/settings-roster-tests/$package-tests.log"
             tests=("${PIPESTATUS[@]}")
             cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/settings-roster-tests/$package-docs.log"
             docs=("${PIPESTATUS[@]}")

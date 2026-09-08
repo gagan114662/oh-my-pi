@@ -112,13 +112,14 @@ panels were visible in the current product.
 | Providers / Timeouts | Heading had no bindings. `ai_provider_timeout_seconds`, `ai_provider_stream_idle_seconds` and `ai_provider_call_timeout_seconds` exist but no code reads them, so binding them would satisfy the invariant with a no-op control; the heading goes until a consumer exists. |
 | Providers / Privacy | Reserved provider-privacy heading had no bindings. This does not introduce a privacy policy/control. |
 
-Two `Kv` convars carried `ui.tab`/`ui.group`/`ui.label` that the row projector
-has never been able to render (`widget` returns `None` for `Kv`):
-`sv_tools_approval` (Interaction / Approvals) and `ai_retry_fallback_chains`
-(Model / Retry & Fallback). The audit surfaces them as unrenderable, so that
-dead metadata is removed. Both remain console-only (`sv_tools_approval …`,
-`ai_retry_fallback_chains …` and `/approvals` help) until a `Kv` widget exists;
-the panel never showed them before this change.
+The UI metadata for `sv_tools_approval` (Interaction / Approvals) and
+`ai_retry_fallback_chains` (Model / Retry & Fallback) is retained. Consolidation
+includes the typed map-editor work (`65a5ed9e2d`, `510d200025`): representable maps
+are editable, and values the console cannot round-trip exactly remain visible
+with an explicit editing error and their original typed value preserved. Do not
+hide these rows to satisfy the roster invariant. This settings branch depends on
+that already-integrated editor; its older standalone parent cannot render those
+maps and is not independently acceptance-complete.
 
 Cross-session continuity (#35) also remains unresolved; removing unused settings
 declarations is not evidence for memory capabilities. A future feature can add a
@@ -165,3 +166,26 @@ include raw ANSI, browser-readable HTML frames, VT cell JSON, source/checker/
 binary hashes, and a stage table. These are terminal observations, not a native
 pixel screenshot. Writing this checker is not evidence of a passing run; the
 hosted leaf must produce all normal, mutation, PTY and full-suite artifacts.
+
+
+The follow-up to `9bd1737c78` restores the original macOS full `omp-app` and
+`omp-chat` all-target suites and paired doctests under the unchanged 180-minute
+job limit. The additional Linux job also uses `--all-targets` under its existing
+90-minute limit. Moving tests between platforms does not resolve a failure; no
+failure is classified as noise or waived by this change.
+
+The earlier nine-field terminal comparison is superseded. The PTY helper now
+records every flag word, both speeds and every control character. Before launch,
+a separate reference PTY performs setraw followed by restoration of the original
+attributes through the same kernel. This independently establishes the expected
+post-restore state. A diagnostic probe found Darwin sets PENDIN after a
+TCSANOW restoration; the product instead restores with TCSAFLUSH, so both the
+reference and positive child fixture use that actual operation. The actual
+application terminal is only observed after exit; the checker never flushes or
+changes it to obtain a pass. Raw original, reference expected, and actual after
+snapshots are retained, and every field of actual versus expected must match.
+Tests inject individual flag/field/control-character changes, and actual child
+processes that leave raw mode or only alter IGNCR/ECHONL must fail restoration.
+The process-group launch fix remains, so the observer's slave descriptor stays
+valid after the child exits. Production PTY and restored full Rust-suite evidence
+must be rerun; helper checks alone are not settings acceptance.
