@@ -1790,6 +1790,18 @@ fn every_sparse_wire_profile_has_a_stable_distinct_content_id() {
 #[test]
 fn catalog_references_and_advertised_capabilities_are_internally_complete() {
 	let compiled = compile_frozen_oracle();
+	// The catalog is immutable during this check. Hash every policy once,
+	// then preserve the same existence checks for every provider and model.
+	let wire_ids: BTreeSet<_> = compiled
+		.wire_policies
+		.iter()
+		.map(|policy| policy.content_id())
+		.collect();
+	let thinking_ids: BTreeSet<_> = compiled
+		.thinking_policies
+		.iter()
+		.map(|policy| policy.content_id())
+		.collect();
 	for provider in &compiled.providers {
 		for route_id in &provider.routes {
 			let route = compiled
@@ -1802,10 +1814,7 @@ fn catalog_references_and_advertised_capabilities_are_internally_complete() {
 		assert!(!provider.name.as_str().is_empty(), "{} has no display name", provider.id);
 		assert!(!provider.auth.is_empty(), "{} has no authentication contract", provider.id);
 		assert!(
-			compiled
-				.wire_policies
-				.iter()
-				.any(|policy| policy.content_id() == provider.wire_policy),
+			wire_ids.contains(&provider.wire_policy),
 			"{} provider wire policy is missing",
 			provider.id
 		);
@@ -1934,19 +1943,9 @@ fn catalog_references_and_advertised_capabilities_are_internally_complete() {
 			);
 			assert!(!wire_model.as_str().is_empty(), "{} has an empty wire model", model.key);
 		}
-		assert!(
-			compiled
-				.wire_policies
-				.iter()
-				.any(|policy| policy.content_id() == model.wire_policy)
-		);
+		assert!(wire_ids.contains(&model.wire_policy));
 		if let Some(thinking) = &model.thinking {
-			assert!(
-				compiled
-					.thinking_policies
-					.iter()
-					.any(|policy| policy.content_id() == *thinking)
-			);
+			assert!(thinking_ids.contains(thinking));
 		}
 		let capabilities = &model.capabilities;
 		assert_eq!(
