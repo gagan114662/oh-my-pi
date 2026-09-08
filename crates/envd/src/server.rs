@@ -9538,20 +9538,24 @@ fn spawn_worker_invocation(
 					break;
 				},
 				Some(ExtHostEvent::Complete(complete)) => {
-					let (json, details_blob, is_error) =
-						match projected_worker_completion_json(&blobs, &complete, output_request) {
-							Ok(completion) => completion,
-							Err(reason) => {
-								send_abort_verdict(
-									&responses,
-									request_id,
-									&invocation_id,
-									omp_tool::Abort::EffectsUnknown { reason },
-								)
-								.await;
-								break;
-							},
-						};
+					let (json, details_blob, is_error) = match projected_worker_completion_json(
+						&blobs,
+						&complete,
+						output_request,
+						retention_session.as_deref(),
+					) {
+						Ok(completion) => completion,
+						Err(reason) => {
+							send_abort_verdict(
+								&responses,
+								request_id,
+								&invocation_id,
+								omp_tool::Abort::EffectsUnknown { reason },
+							)
+							.await;
+							break;
+						},
+					};
 					if let Some(details) = details_blob.as_ref() {
 						let hash: [u8; 32] = match details.hash.as_ref().try_into() {
 							Ok(hash) => hash,
@@ -10875,8 +10879,16 @@ fn projected_worker_completion_json(
 	blobs: &BlobHost,
 	complete: &ExtHostCompletion,
 	request: omp_tool::OutputRequest,
+	retention_session: Option<&str>,
 ) -> Result<(Bytes, Option<thread_pb::Blob>, bool), Str> {
-	let (mut json, details_blob, is_error) = worker_completion_json(complete)?;
+	let (mut json, mut details_blob, is_error) = worker_completion_json(complete)?;
+	if details_blob.is_none() {
+		details_blob = Some(
+			blobs
+				.put_verdict_bytes(retention_session, complete.call_id.as_str(), &json)
+				.map_err(|_| sf!("worker outcome could not be durably retained"))?,
+		);
+	}
 	let inline_limit = match request {
 		omp_tool::OutputRequest::Bounded => DEFAULT_RESULT_PROJECTION_BYTES,
 		omp_tool::OutputRequest::Complete => COMPLETE_RESULT_PROJECTION_BYTES,
@@ -12285,6 +12297,45 @@ mod tests {
 	};
 
 	const TEST_DAP_SESSION_ID: [u8; 16] = [0x2a; 16];
+	#[test]
+	fn small_worker_outcomes_retain_the_canonical_envelope() {
+		let scratch = tempfile::tempdir().expect("verdict store");
+		let blobs = BlobHost::open(scratch.path()).expect("open blobs");
+		for (kind, call_id) in
+			[(ExtHostOutcomeKind::Ok, "small-ok"), (ExtHostOutcomeKind::Faulted, "small-fault")]
+		{
+			let complete = ExtHostCompletion {
+				call_id: Str::new_static(call_id),
+				kind,
+				parts: Vec::new(),
+				details_json: Some(Bytes::from_static(br#"{"message":"saved"}"#)),
+				details_blob: None,
+				args_issue: None,
+				useless: false,
+				terminate: false,
+			};
+			let expected = worker_completion_json(&complete)
+				.expect("canonical outcome")
+				.0;
+			let (inline, artifact, is_error) = projected_worker_completion_json(
+				&blobs,
+				&complete,
+				omp_tool::OutputRequest::Bounded,
+				Some("session"),
+			)
+			.expect("project and retain");
+			assert_eq!(inline, expected);
+			assert_eq!(is_error, kind != ExtHostOutcomeKind::Ok);
+			let artifact = artifact.expect("small outcomes retain an artifact too");
+			assert!(artifact.inline.is_empty());
+			assert_eq!(artifact.mime, "application/json");
+			let hash = artifact.hash.as_ref().try_into().expect("artifact hash");
+			let stored = blobs
+				.get(BlobId { hash, size: artifact.size })
+				.expect("read retained outcome");
+			assert_eq!(stored, expected);
+		}
+	}
 
 	#[tokio::test]
 	async fn late_diagnostics_batch_by_path_in_arrival_order() {
