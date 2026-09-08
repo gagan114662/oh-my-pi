@@ -164,8 +164,16 @@ async fn kernel_request_cap_settles_a_turn_with_a_turn_limit_notice() {
 	// The budget grants one wrap-up request carrying the notice.
 	assert_eq!(requests.lock().len(), 5, "cap of 4 plus the noticed wrap-up request");
 	let limits = notices(&session, "turn-limit");
-	assert_eq!(limits.len(), 1, "{limits:?}");
-	assert!(limits[0].1.contains("request cap"), "{}", limits[0].1);
+	assert_eq!(limits.len(), 2, "one soft warning and one terminal cap notice: {limits:?}");
+	assert!(limits.iter().all(|(kind, _)| kind.as_str() == "warn"), "{limits:?}");
+	assert_eq!(
+		limits[0].1.as_str(),
+		"Soft request budget reached; use this final request to yield a concise result."
+	);
+	assert_eq!(
+		limits[1].1.as_str(),
+		"Turn request cap reached after 5 provider requests; the turn stops here"
+	);
 	assert!(
 		notices(&session, "request-budget").is_empty(),
 		"the kernel bound is not a subagent budget"
@@ -200,7 +208,14 @@ async fn caller_request_budget_is_not_loosened_by_the_kernel_default() {
 		.expect("the caller budget settles the turn");
 	assert_eq!(requests.lock().len(), 3, "caller budget of 2 plus its wrap-up request");
 	assert!(notices(&session, "turn-limit").is_empty());
-	assert_eq!(notices(&session, "request-budget").len(), 1);
+	let limits = notices(&session, "request-budget");
+	assert_eq!(limits.len(), 2, "one soft warning and one exhaustion notice: {limits:?}");
+	assert!(limits.iter().all(|(kind, _)| kind.as_str() == "warn"), "{limits:?}");
+	assert_eq!(
+		limits[0].1.as_str(),
+		"Soft request budget reached; use this final request to yield a concise result."
+	);
+	assert_eq!(limits[1].1.as_str(), "Subagent request budget exhausted before another inference");
 }
 
 #[tokio::test]
