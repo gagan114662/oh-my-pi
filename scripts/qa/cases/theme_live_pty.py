@@ -13,8 +13,6 @@ import os
 from pathlib import Path
 import pty
 import select
-import signal
-import socket
 import struct
 import subprocess
 import sys
@@ -26,12 +24,14 @@ import pyte
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness import MODELS_TOML, OMP_BINARY, MockModel
+from pty_debug import request as debug_request, kill_and_reap
 
 
 def main():
     output = Path(os.environ['OMP_THEME_PROOF_DIR']) / 'live-pty'
     output.mkdir(parents=True, exist_ok=True)
     rows, failures, raw = [], [], bytearray()
+    cleanup = []
     screen = pyte.Screen(100, 30)
     stream = pyte.ByteStream(screen)
     process = None
@@ -49,6 +49,10 @@ def main():
                    XDG_STATE_HOME=str(root / 'state'), TERM='xterm-256color', COLORTERM='truecolor',
                    OMP_TUI_DEBUG=str(debug))
 
+        def consume(chunk):
+            raw.extend(chunk)
+            stream.feed(chunk)
+
         def drain(seconds=0.2):
             deadline = time.monotonic() + seconds
             while time.monotonic() < deadline:
@@ -59,19 +63,10 @@ def main():
                         break
                     if not chunk:
                         break
-                    raw.extend(chunk)
-                    stream.feed(chunk)
+                    consume(chunk)
 
         def request(op):
-            with socket.socket(socket.AF_UNIX) as connection:
-                connection.settimeout(2)
-                connection.connect(str(debug))
-                connection.sendall(json.dumps({'op': op}).encode() + b'\n')
-                with connection.makefile('rb') as reader:
-                    response = json.loads(reader.readline())
-            if response.get('ok') is not True:
-                raise AssertionError(response)
-            return response
+            return debug_request(debug, op, master, consume)
 
         def capture(name):
             drain()
@@ -207,18 +202,33 @@ def main():
                     failures.append(f'cleanup proof: {error}')
                 finally:
                     if process.poll() is None:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        process.wait(timeout=5)
+                        record = kill_and_reap(process, master, consume)
+                        cleanup.append(record)
+                        if not record['reaped']:
+                            failures.append(f'process reap failed: {record.get("error", "unknown")}')
+            if not any(stage == 'resize' and passed for stage, _, passed in rows):
+                failures.append('resize was not verified')
+            if not any(stage == 'quit' and passed for stage, _, passed in rows):
+                failures.append('clean quit was not verified')
+            # Close bounded resources before writing the report, recording errors
+            # instead of replacing the original UI failure with a cleanup exception.
+            for fd in (master, slave):
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError as error:
+                        failures.append(f'PTY close failed: {error}')
+            try:
+                mock.close()
+            except Exception as error:
+                failures.append(f'mock close failed: {error}')
+            (output / 'cleanup.json').write_text(json.dumps(cleanup, indent=2))
             (output / 'terminal.ansi').write_bytes(raw)
             (output / 'requests.json').write_text(json.dumps(mock.captures, indent=2))
             (output / 'result.json').write_text(json.dumps({'rows': rows, 'failures': failures}, indent=2))
             (output / 'summary.md').write_text('## Real PTY theme demo\n\n| Stage | Observed | Pass |\n|---|---|---|\n' +
                 ''.join(f'| {stage} | {html.escape(detail).replace("|", "&#124;")} | {passed} |\n' for stage, detail, passed in rows) +
                 '\n' + '\n'.join('FAIL: ' + f for f in failures) + '\n\nHTML and JSON contain VT-emulated terminal colors; raw ANSI is retained.\n')
-            for fd in (master, slave):
-                if fd is not None:
-                    os.close(fd)
-            mock.close()
     if failures:
         raise SystemExit('\n'.join(failures))
 
