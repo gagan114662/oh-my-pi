@@ -4483,7 +4483,7 @@ mod terminal_settlement_tests {
 			.expect("later tail");
 		let mut kernel = Kernel::new(
 			NeverInference,
-			Registry::new(),
+			Arc::new(Registry::new()),
 			crate::DispatchPolicy::new(
 				omp_journal::blob::BlobStore::open(directory.path().join("blobs")).expect("blobs"),
 			),
