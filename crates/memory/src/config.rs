@@ -209,6 +209,10 @@ pub struct MnemopiSettings {
 	/// Maximum transient working-row age in hours.
 	#[serde(default = "default_working_memory_ttl_hours")]
 	pub working_memory_ttl_hours: u64,
+	/// Byte budget for the episodic tier; the oldest episodes are evicted at
+	/// consolidation once it is exceeded. Zero leaves the tier unbounded.
+	#[serde(default = "default_episodic_budget_bytes")]
+	pub episodic_budget_bytes:    u64,
 	/// User-turn interval for periodic retention.
 	#[serde(default = "default_retain_turns")]
 	pub retain_every_n_turns:     usize,
@@ -247,6 +251,10 @@ const fn default_retain_turns() -> usize {
 const fn default_working_memory_limit() -> usize {
 	1000
 }
+const fn default_episodic_budget_bytes() -> u64 {
+	256 * 1024 * 1024
+}
+
 const fn default_working_memory_ttl_hours() -> u64 {
 	24
 }
@@ -282,6 +290,7 @@ impl Default for MnemopiSettings {
 			proactive_linking:        false,
 			working_memory_limit:     default_working_memory_limit(),
 			working_memory_ttl_hours: default_working_memory_ttl_hours(),
+			episodic_budget_bytes:    default_episodic_budget_bytes(),
 			retain_every_n_turns:     default_retain_turns(),
 			recall_limit:             default_recall_limit(),
 			recall_context_turns:     default_recall_context_turns(),

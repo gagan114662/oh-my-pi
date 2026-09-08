@@ -65,6 +65,18 @@ omp_con::var! {
 			"legacy.path": "turn.maxWallHours",
 		},
 	};
+	/// Longest an approval prompt waits for a human before it is decided by its default (deny
+	/// unless the prompt says otherwise); 0 waits until answered. A shorter timeout set by the
+	/// prompt itself still wins.
+	pub static SV_APPROVAL_PROMPT_TIMEOUT_SECONDS = sv_approval_prompt_timeout_seconds: u32 {
+		default: 600,
+		min: 0,
+		max: 86_400,
+		flags: archive,
+		meta: {
+			"legacy.path": "approval.promptTimeoutSeconds",
+		},
+	};
 	/// Enables skill commands.
 	pub static SV_SKILLS_ENABLE_SKILL_COMMANDS = sv_skills_enable_skill_commands: bool {
 		default: true,

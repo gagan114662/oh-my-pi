@@ -156,7 +156,9 @@ async fn run_inner(args: PrintArgs, piped_input: Option<Str>) -> miette::Result<
 			let control = kernel.bound_turn_control(RunControl::new(cancellation.clone(), deadline));
 			let turn = kernel.run_turn(&mut session, prompt, control);
 			tokio::pin!(turn);
-			let signal = crate::chat_cmd::process_signal();
+			// Print mode is the unattended surface: a hangup must not cancel the
+			// turn (#125); interrupt, terminate and quit still do.
+			let signal = crate::chat_cmd::process_signal_headless();
 			tokio::pin!(signal);
 			let mut exit_signal = None;
 			let mut signal_active = true;
