@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 PIN = {
     'version': '1.8.0',
     'url': 'https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar',
-    'sha256': 'b658b4e504fdf0b721caf7066320f6b6fe5805f4dd2f717d0e47baba4097205e',
-    'release_asset': 544648411,
+    'sha256': '4c7bb1f6b050d56c197ee9ddd6e57fe521eae175f5043c9fb98b169f7b2d5407',
+    'release_asset': 551007111,
 }
 ADR = 'docs/adr/0034/'
 PAIRS = {
@@ -62,7 +62,8 @@ def acquire(path, download):
         with urllib.request.urlopen(PIN['url'], timeout=30) as source:
             data = source.read(16 * 1024 * 1024)
         if hashlib.sha256(data).hexdigest() != PIN['sha256']:
-            raise ValueError('Downloaded TLC SHA-256 differs from the official release asset digest.')
+            raise ValueError('Downloaded TLC SHA-256 differs from the pinned release asset digest: '
+                             + hashlib.sha256(data).hexdigest() + f' ({len(data)} bytes).')
         path.write_bytes(data)
     if sha(path) != PIN['sha256']:
         raise ValueError('TLC SHA-256 mismatch; refusing to execute jar.')

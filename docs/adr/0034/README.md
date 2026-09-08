@@ -5,11 +5,11 @@ inventory. It requires Python 3 and Java 17+. The first run downloads the
 4.5 MB official `tla2tools.jar`; every run verifies SHA-256 before executing it:
 
 ```
-b658b4e504fdf0b721caf7066320f6b6fe5805f4dd2f717d0e47baba4097205e
+4c7bb1f6b050d56c197ee9ddd6e57fe521eae175f5043c9fb98b169f7b2d5407
 ```
 
 Provenance: [TLA+ v1.8.0 release](https://github.com/tlaplus/tlaplus/releases/tag/v1.8.0),
-asset ID `544648411`. The pinned hash matches the release asset's API digest.
+asset ID `551007111`. The pinned hash matches the release asset's API digest.
 Use `--jar /path/to/tla2tools.jar` for an already downloaded copy. A checksum
 mismatch fails; the runner never silently uses a different installed TLC.
 
@@ -100,3 +100,12 @@ replacing those four identifiers with `Naturals`' exported `Nat` fixes semantic
 analysis without changing any transition, invariant or property. The first
 small Bridges runs then completed; full larger-model and hosted acceptance
 must be recorded independently.
+
+The previous pin (asset `544648411`, digest beginning `b658b4e5`) failed before
+model execution in run 34259557265. On 2026-09-08 the official v1.8.0 release
+API listed replacement asset `551007111`, 4,487,756 bytes, with the full digest
+above; an independent download matched that digest. The previous asset API
+returned 404. Updating this explicit pin does not establish a model-check pass:
+all variants and the negative control must run against the new bytes. Future
+checksum mismatches still fail closed; the runner never learns a new pin from
+the downloaded content.
