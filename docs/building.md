@@ -31,13 +31,21 @@ Silicon linker detection, old CMake, wrong toolchain, and missing/stale Python
 inputs. These tests are diagnostics proofs; they do not substitute for issue
 #39's recorded clean-host build/failure demonstration.
 
-## Feature graph work still required
+## Package feature isolation
 
-Workspace feature unification remains enabled. `omp-app` and `omp-chat` import
-realtime APIs, so removing their realtime feature would break real behavior.
-Root serde already enables `derive` and `rc`; hmac and sha2 use their default
-features. The historical package-unification errors must be reproduced against
-the current lockfile before making a targeted feature fix. No claim is made
-that package-isolated compilation works, or that Opus is absent from unrelated
-package builds. Completing #39 requires that feature-graph proof and a clean
-host run with uploaded logs and readable CI summary, in addition to the doctor.
+Feature unification is scoped to the selected packages. `just check-pkg` and
+`just test-pkg` therefore use the selected package's dependency features instead
+of inheriting every application feature. Whole-workspace commands still build
+the full selected workspace. This can produce separate cached dependency
+artifacts for different package selections; it avoids compiling audio C code
+for unrelated package builds.
+
+`omp-app` and `omp-chat` retain their realtime APIs and dependencies. Root serde
+explicitly enables `derive` and `rc`; hmac and sha2 retain their default features.
+The previously reported `omp-secrets` and `omp-catalog` package-isolation
+typecheck errors did not reproduce with the current lockfile.
+
+Dependency-tree and isolated typecheck results do not establish a clean-host
+build or a passing test sweep. Completing #39 still requires the recorded
+clean-host demonstration, full affected tests and doctests, and hosted evidence
+that unrelated package builds exclude audio C dependencies.

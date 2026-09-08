@@ -1,0 +1,100 @@
+name: Package feature isolation
+
+on:
+  push:
+    branches: [fix/build-feature-isolation-20260908]
+  pull_request:
+    branches: [main, omp2]
+    paths:
+      - .cargo/config.toml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**/Cargo.toml
+      - scripts/check-feature-isolation.py
+      - .github/workflows/build-isolation.yml
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source revision to test (empty tests the workflow revision)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  isolated:
+    name: Isolated packages and retained application voice
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Install documented prerequisites
+        working-directory: source
+        run: |
+          brew install just cmake ninja lld@22 uv
+          rustup show active-toolchain
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare embedded Python and diagnose prerequisites
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/feature-isolation
+          just setup-python 2>&1 | tee target/feature-isolation/python-setup.log
+          just doctor 2>&1 | tee target/feature-isolation/doctor.log
+          df -h . | tee target/feature-isolation/free-space.txt
+          rustc --version --verbose | tee target/feature-isolation/toolchain.txt
+          /opt/homebrew/opt/lld@22/bin/ld64.lld --version | tee target/feature-isolation/linker.txt
+      - name: Assert package graphs
+        working-directory: source
+        run: python3 ../proof-tools/scripts/check-feature-isolation.py --root . --output target/feature-isolation/graphs
+      - name: Check and test each package independently
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          suite_status=0
+          for package in omp-core omp-dom omp-journal omp-session omp-con omp-secrets omp-catalog; do
+            cargo check --locked -p "$package" --lib 2>&1 | tee "target/feature-isolation/$package-check.log"
+            check_status=("${PIPESTATUS[@]}")
+            cargo nextest run --locked --profile ci --no-fail-fast -p "$package" 2>&1 | tee "target/feature-isolation/$package-tests.log"
+            test_status=("${PIPESTATUS[@]}")
+            cargo test --locked --doc -p "$package" 2>&1 | tee "target/feature-isolation/$package-doctests.log"
+            doc_status=("${PIPESTATUS[@]}")
+            printf '%s check=%s tests=%s doctests=%s log_writes=%s,%s,%s\n' "$package" "${check_status[0]}" "${test_status[0]}" "${doc_status[0]}" "${check_status[1]}" "${test_status[1]}" "${doc_status[1]}" >> target/feature-isolation/exits.txt || suite_status=1
+            for code in "${check_status[@]}" "${test_status[@]}" "${doc_status[@]}"; do
+              if [ "$code" -ne 0 ]; then suite_status=1; fi
+            done
+          done
+          exit "$suite_status"
+      - name: Publish observed results
+        if: always()
+        working-directory: source
+        shell: bash
+        run: |
+          {
+            echo '### Isolated check, complete package tests, and doctests'
+            echo 'Fresh runner checkout with documented prerequisites installed; no Cargo build cache restored.'
+            echo 'This run does not replace the full workspace/E2E acceptance gates.'
+            echo '```text'
+            git rev-parse HEAD
+            if [ -f target/feature-isolation/exits.txt ]; then cat target/feature-isolation/exits.txt; else echo 'Package execution evidence missing'; fi
+            grep -hE 'Summary|test result:' target/feature-isolation/*-tests.log target/feature-isolation/*-doctests.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test -f target/feature-isolation/exits.txt
+      - name: Retain source-bound evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: package-feature-isolation
+          path: source/target/feature-isolation/
+          if-no-files-found: error
