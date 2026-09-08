@@ -1,6 +1,8 @@
 name: Default theme evidence
 
 on:
+  push:
+    branches: [fix/theme-defaults-24]
   pull_request:
     branches: [main, omp2]
     paths:

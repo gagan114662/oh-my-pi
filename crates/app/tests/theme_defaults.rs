@@ -15,17 +15,29 @@ fn default_convars_resolve_and_paint_named_palettes() {
 	let catalog = ThemeCatalog::load(&[], &[]).unwrap();
 	let ctx = omp_con::Ctx::new();
 	let mut rows = Vec::new();
+	let mut failures = Vec::new();
 	for (convar, name) in [
 		("cl_theme", CL_THEME.get(&ctx)),
 		("cl_theme_dark", CL_THEME_DARK.get(&ctx)),
 		("cl_theme_light", CL_THEME_LIGHT.get(&ctx)),
 	] {
-		let palette = catalog.get(&name).expect("every default theme resolves");
+		let palette = catalog.get(&name);
 		for (appearance_name, appearance) in
 			[("dark", Appearance::Dark), ("light", Appearance::Light)]
 		{
+			let Some(palette) = &palette else {
+				let reason = format!("default {convar}={name} does not resolve; rendering skipped");
+				failures.push(reason.clone());
+				rows.push(serde_json::json!({
+					"convar": convar, "name": name.as_str(), "source": "missing",
+					"appearance": appearance_name, "resolved": false, "passed": false,
+					"accent": null, "painted_accent": null,
+					"frame_ansi": null, "frame_png": null, "render_status": reason,
+				}));
+				continue;
+			};
 			let context = UiContext { appearance, ..UiContext::default() }
-				.with_palette(Some(Arc::clone(&palette)));
+				.with_palette(Some(Arc::clone(palette)));
 			let expected = context.theme.accent;
 			let ui = Ui::from_root(
 				TextLeaf::new()
@@ -34,37 +46,59 @@ fn default_convars_resolve_and_paint_named_palettes() {
 				40,
 				context,
 			);
-			assert_eq!(
-				ui.frame().cell(0, 0).style.fg,
-				expected,
-				"semantic accent reaches rendered cells"
-			);
+			let painted = ui.frame().cell(0, 0).style.fg;
+			let color_matches = painted == expected;
+			if !color_matches {
+				failures.push(format!(
+					"{convar}/{appearance_name}: expected accent {expected:?}, painted {painted:?}"
+				));
+			}
 			let stem = format!("{convar}-{appearance_name}");
 			fs::write(output.join(format!("{stem}.ansi")), omp_tui::frame_ansi(ui.frame())).unwrap();
-			fs::write(output.join(format!("{stem}.png")), omp_tui::frame_png(ui.frame()).unwrap())
-				.unwrap();
+			let (png_path, render_status) = match omp_tui::frame_png(ui.frame()) {
+				Ok(png) => {
+					let path = format!("{stem}.png");
+					fs::write(output.join(&path), png).unwrap();
+					(Some(path), "rendered".to_owned())
+				},
+				Err(error) => {
+					let reason = format!("PNG rendering failed: {error}");
+					failures.push(format!("{convar}/{appearance_name}: {reason}"));
+					(None, reason)
+				},
+			};
+			let passed = color_matches && png_path.is_some();
 			rows.push(serde_json::json!({
 				"convar": convar, "name": name.as_str(), "source": "built-in",
-				"appearance": appearance_name, "resolved": true,
-				"accent": format!("{expected:?}"), "painted_accent": format!("{:?}", ui.frame().cell(0, 0).style.fg),
-				"frame_ansi": format!("{stem}.ansi"), "frame_png": format!("{stem}.png"),
+				"appearance": appearance_name, "resolved": true, "passed": passed,
+				"accent": format!("{expected:?}"), "painted_accent": format!("{painted:?}"),
+				"frame_ansi": format!("{stem}.ansi"), "frame_png": png_path, "render_status": render_status,
 			}));
 		}
 	}
 	fs::write(output.join("themes.json"), serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
 	let mut table = String::from(
-		"| Convar | Default | Source | Appearance | Resolved | Painted accent |\n| --- | --- | --- \
-		 | --- | --- | --- |\n",
+		"| Convar | Default | Source | Appearance | Resolved | Expected accent | Painted accent | \
+		 Render | Result |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
 	);
 	for row in &rows {
 		use std::fmt::Write as _;
 		writeln!(
 			table,
-			"| {} | {} | built-in | {} | yes | {} |",
+			"| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
 			row["convar"].as_str().unwrap(),
 			row["name"].as_str().unwrap(),
+			row["source"].as_str().unwrap(),
 			row["appearance"].as_str().unwrap(),
-			row["painted_accent"].as_str().unwrap()
+			row["resolved"].as_bool().unwrap(),
+			row["accent"].as_str().unwrap_or("not available"),
+			row["painted_accent"].as_str().unwrap_or("not rendered"),
+			row["render_status"].as_str().unwrap(),
+			if row["passed"] == true {
+				"PASS"
+			} else {
+				"FAIL"
+			},
 		)
 		.unwrap();
 	}
@@ -74,6 +108,7 @@ fn default_convars_resolve_and_paint_named_palettes() {
 		 render, not a live Settings/PTY interaction proof.\n",
 	);
 	fs::write(output.join("summary.md"), table).unwrap();
+	assert!(failures.is_empty(), "theme acceptance failures: {failures:#?}");
 }
 
 #[test]
