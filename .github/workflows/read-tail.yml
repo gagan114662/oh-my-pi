@@ -93,6 +93,7 @@ jobs:
         shell: bash
         run: |
           set +e
+          set +e
           set -uo pipefail
           just build 2>&1 | tee target/read-tail/build.log
           codes=("${PIPESTATUS[@]}")
@@ -107,6 +108,7 @@ jobs:
           OMP_READ_TAIL_EVIDENCE_DIR: ${{ github.workspace }}/source/target/read-tail/qa
         run: |
           set +e
+          set +e
           set -uo pipefail
           python3 scripts/qa/cases/test_read_tail.py -v 2>&1 | tee target/read-tail/qa.log
           codes=("${PIPESTATUS[@]}")
@@ -119,6 +121,7 @@ jobs:
         working-directory: source
         shell: bash
         run: |
+          set +e
           set +e
           set -uo pipefail
           suite_status=0
@@ -229,6 +232,7 @@ jobs:
         id: build
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           cargo nextest list --locked --profile ci -p omp-driver -p omp-envd -p omp-py -p omp-tools --list-type binaries-only --message-format json > target/read-tail-linux/binaries.json 2> target/read-tail-linux/build.log
           status=$?
@@ -289,6 +293,7 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           cargo nextest run --locked --profile ci --no-fail-fast -p omp-tools 2>&1 | tee target/read-tail-linux/tools-tests.log
           tests=("${PIPESTATUS[@]}")

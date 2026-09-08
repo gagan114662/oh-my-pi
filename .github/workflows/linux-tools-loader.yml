@@ -50,6 +50,7 @@ jobs:
       - name: Prepare the source's embedded Python
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           crates/py/scripts/fetch-python.sh 2>&1 | tee target/read-tail-linux/python-setup.log
           codes=("${PIPESTATUS[@]}")
@@ -59,6 +60,7 @@ jobs:
         id: build
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           overrides=()
           if [ "$DIAGNOSTIC_BACKEND" = tools-llvm ]; then
