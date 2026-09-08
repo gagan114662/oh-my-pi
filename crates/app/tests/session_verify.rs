@@ -2,7 +2,7 @@
 use std::{
 	fs,
 	path::Path,
-	process::{Command, ExitStatus, Stdio},
+	process::{Child, Command, ExitStatus, Stdio},
 	thread,
 	time::{Duration, Instant},
 };
@@ -47,7 +47,61 @@ fn verification_cli_requires_path_and_valid_independent_tip() {
 	assert!(args.json);
 }
 
-fn execute(path: &Path, extra: &[&str]) -> (ExitStatus, String, String) {
+struct OwnedVerifier {
+	child:  Child,
+	reaped: bool,
+}
+
+impl OwnedVerifier {
+	fn poll_until(&mut self, deadline: Instant) -> std::io::Result<Option<ExitStatus>> {
+		loop {
+			if let Some(status) = self.child.try_wait()? {
+				self.reaped = true;
+				return Ok(Some(status));
+			}
+			if Instant::now() >= deadline {
+				return Ok(None);
+			}
+			thread::sleep(Duration::from_millis(20));
+		}
+	}
+
+	fn stop(&mut self) -> std::io::Result<()> {
+		if self.reaped {
+			return Ok(());
+		}
+		let kill = self.child.kill();
+		if self
+			.poll_until(Instant::now() + Duration::from_secs(5))?
+			.is_some()
+		{
+			return Ok(());
+		}
+		kill?;
+		Err(std::io::Error::new(
+			std::io::ErrorKind::TimedOut,
+			"verifier did not reap within five seconds after kill",
+		))
+	}
+}
+
+impl Drop for OwnedVerifier {
+	fn drop(&mut self) {
+		if let Err(error) = self.stop() {
+			eprintln!("verifier cleanup failed: {error}");
+		}
+	}
+}
+
+fn evidence(stage: &str, name: &str, bytes: &[u8]) {
+	if let Some(root) = std::env::var_os("OMP_JOURNAL_PROOF_DIR") {
+		let directory = std::path::PathBuf::from(root).join(stage);
+		fs::create_dir_all(&directory).expect("proof directory");
+		fs::write(directory.join(name), bytes).expect("proof artifact");
+	}
+}
+
+fn execute(path: &Path, extra: &[&str], stage: &str) -> (ExitStatus, String, String) {
 	let isolated = tempfile::tempdir().expect("isolated CLI environment");
 	let out = isolated.path().join("stdout");
 	let err = isolated.path().join("stderr");
@@ -70,32 +124,62 @@ fn execute(path: &Path, extra: &[&str]) -> (ExitStatus, String, String) {
 		fs::create_dir_all(&root).expect("isolated directory");
 		command.env(variable, root);
 	}
-	let mut child = command
+	let child = command
 		.args(["session", "verify"])
 		.arg(path)
 		.args(extra)
 		.stdin(Stdio::null())
 		.stdout(fs::File::create(&out).expect("stdout"))
 		.stderr(fs::File::create(&err).expect("stderr"))
-		.spawn()
-		.expect("spawn actual omp");
-	let deadline = Instant::now() + Duration::from_secs(30);
-	let status = loop {
-		if let Some(status) = child.try_wait().expect("poll child") {
-			break status;
-		}
-		if Instant::now() >= deadline {
-			child.kill().expect("kill timed-out verifier");
-			child.wait().expect("reap verifier");
-			panic!("session verify exceeded 30 seconds");
-		}
-		thread::sleep(Duration::from_millis(20));
+		.spawn();
+	let child = match child {
+		Ok(child) => child,
+		Err(error) => {
+			let retained = isolated.keep();
+			evidence(
+				stage,
+				"failure.txt",
+				format!("spawn failed: {error}; retained {}", retained.display()).as_bytes(),
+			);
+			panic!("spawn failed: {error}; logs retained in {}", retained.display());
+		},
 	};
-	(
-		status,
-		fs::read_to_string(out).expect("stdout text"),
-		fs::read_to_string(err).expect("stderr text"),
-	)
+	let mut owned = OwnedVerifier { child, reaped: false };
+	let observed = owned.poll_until(Instant::now() + Duration::from_secs(30));
+	let status = match observed {
+		Ok(Some(status)) => status,
+		other => {
+			let cleanup = owned.stop();
+			let retained = isolated.keep();
+			evidence(stage, "stdout.txt", &fs::read(&out).unwrap_or_default());
+			evidence(stage, "stderr.txt", &fs::read(&err).unwrap_or_default());
+			evidence(
+				stage,
+				"failure.txt",
+				format!("poll: {other:?}; cleanup: {cleanup:?}; retained: {}", retained.display())
+					.as_bytes(),
+			);
+			panic!(
+				"verifier failed: {other:?}; cleanup: {cleanup:?}; logs retained in {}",
+				retained.display()
+			);
+		},
+	};
+	let stdout = fs::read_to_string(out).expect("stdout text");
+	let stderr = fs::read_to_string(err).expect("stderr text");
+	evidence(stage, "stdout.txt", stdout.as_bytes());
+	evidence(stage, "stderr.txt", stderr.as_bytes());
+	evidence(stage, "journal.oms", &fs::read(path).expect("proof journal"));
+	evidence(
+		stage,
+		"exit.json",
+		serde_json::to_vec(
+			&serde_json::json!({"code": status.code(), "success": status.success(), "reaped": owned.reaped}),
+		)
+		.expect("exit JSON")
+		.as_slice(),
+	);
+	(status, stdout, stderr)
 }
 
 #[test]
@@ -114,7 +198,7 @@ fn actual_cli_reports_exact_tamper_location_and_never_repairs_legacy_or_torn_byt
 		.expect("tip")
 		.to_string();
 	// The writer remains held: verify must not take a writer lock.
-	let (status, stdout, stderr) = execute(&path, &["--json", "--expected-tip", &tip]);
+	let (status, stdout, stderr) = execute(&path, &["--json", "--expected-tip", &tip], "valid");
 	assert!(status.success(), "{stdout}\n{stderr}");
 	let report: serde_json::Value = serde_json::from_str(&stdout).expect("JSON");
 	assert_eq!(report["status"], "verified");
@@ -131,6 +215,7 @@ fn actual_cli_reports_exact_tamper_location_and_never_repairs_legacy_or_torn_byt
 		}
 	}
 	let target = target.expect("middle user entry");
+	evidence("expected", "oracle.json", serde_json::to_vec_pretty(&serde_json::json!({"id": target.entry.id, "offset": target.span.start, "original_tip": tip, "source": "actual Session fixture before byte edit"})).expect("oracle JSON").as_slice());
 	let mut changed = original.clone();
 	let local = changed[target.span.clone()]
 		.windows(5)
@@ -138,14 +223,29 @@ fn actual_cli_reports_exact_tamper_location_and_never_repairs_legacy_or_torn_byt
 		.expect("payload");
 	changed[target.span.start + local] = b'o';
 	fs::write(&path, &changed).expect("flip valid JSON byte");
-	let (status, stdout, _) = execute(&path, &["--json"]);
-	assert!(!status.success());
+	let refused = Session::open(&path, ComponentRegistry::standard())
+		.err()
+		.expect("forged history must not fold");
+	let diagnostic = refused.to_string();
+	let exact_refusal = matches!(refused, omp_session::SessionError::Journal(omp_journal::JournalError::Integrity(error)) if error.id == Some(target.entry.id) && error.offset == target.span.start);
+	evidence(
+		"tampered",
+		"session-open.json",
+		serde_json::to_vec_pretty(
+			&serde_json::json!({"refused": exact_refusal, "diagnostic": diagnostic}),
+		)
+		.expect("refusal JSON")
+		.as_slice(),
+	);
+	assert!(exact_refusal, "Session::open must identify the same divergent frame before fold");
+	let (status, stdout, _) = execute(&path, &["--json"], "tampered");
+	assert_eq!(status.code(), Some(1));
 	let report: serde_json::Value = serde_json::from_str(&stdout).expect("invalid JSON report");
 	assert_eq!(report["status"], "invalid");
 	assert_eq!(report["first_bad_entry_id"], target.entry.id.to_string());
 	assert_eq!(report["first_bad_byte_offset"], target.span.start);
-	let (status, text, _) = execute(&path, &[]);
-	assert!(!status.success());
+	let (status, text, _) = execute(&path, &[], "tampered-text");
+	assert_eq!(status.code(), Some(1));
 	assert!(text.contains(&format!("entry {}, byte {}", target.entry.id, target.span.start)));
 	assert_eq!(fs::read(&path).expect("unrepaired tamper"), changed);
 
@@ -158,16 +258,17 @@ fn actual_cli_reports_exact_tamper_location_and_never_repairs_legacy_or_torn_byt
 		[(legacy, "legacy_unsealed"), (torn, "torn_tail"), (Vec::new(), "empty")]
 	{
 		fs::write(&path, &bytes).expect("write fixture");
-		let (status, stdout, _) = execute(&path, &["--json"]);
-		assert!(!status.success(), "{expected} must not pass");
+		let (status, stdout, _) = execute(&path, &["--json"], expected);
+		assert_eq!(status.code(), Some(1), "{expected} must fail normally");
 		let report: serde_json::Value = serde_json::from_str(&stdout).expect("report");
 		assert_eq!(report["status"], expected);
 		assert_eq!(fs::read(&path).expect("no repair"), bytes);
 	}
 	fs::write(&path, &original[..target.span.end]).expect("remove complete suffix");
 	let shortened = fs::read(&path).expect("shortened");
-	let (status, stdout, _) = execute(&path, &["--json", "--expected-tip", &tip]);
-	assert!(!status.success());
+	let (status, stdout, _) =
+		execute(&path, &["--json", "--expected-tip", &tip], "expected-tip-mismatch");
+	assert_eq!(status.code(), Some(1));
 	let report: serde_json::Value = serde_json::from_str(&stdout).expect("tip report");
 	assert_eq!(report["status"], "invalid");
 	assert_eq!(report["first_bad_byte_offset"], shortened.len());

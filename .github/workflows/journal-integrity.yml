@@ -1,0 +1,86 @@
+name: Journal integrity evidence
+
+on:
+  push:
+    branches: [fix/journal-integrity-49]
+  pull_request:
+    branches: [main, omp2, fix/audit-ci-gates]
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .cargo/**
+      - rust-toolchain.toml
+      - justfile
+      - scripts/journal-integrity/**
+      - .github/workflows/journal-integrity.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  journal-integrity:
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record source and install documented prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/journal-integrity
+          git rev-parse HEAD > target/journal-integrity/source-revision.txt
+          git status --porcelain=v1 > target/journal-integrity/source-status.txt
+          brew install just cmake ninja lld@22 uv 2>&1 | tee target/journal-integrity/install.log
+          rustup show active-toolchain 2>&1 | tee target/journal-integrity/toolchain.log
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare embedded Python and check prerequisites
+        id: setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          just setup-python 2>&1 | tee target/journal-integrity/python-setup.log
+          just doctor 2>&1 | tee target/journal-integrity/doctor.log
+      - name: Record actual CLI corruption and refusal proof
+        env:
+          OMP_JOURNAL_PROOF_DIR: ${{ github.workspace }}/target/journal-integrity/fixture
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          just --command cargo nextest run --locked --profile ci --no-fail-fast -p omp-app --test session_verify 2>&1 | tee target/journal-integrity/proof.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'proof,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/journal-integrity/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Complete affected app journal and session targets and doctests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          failed=0
+          for package in omp-app omp-journal omp-session; do
+            just --command cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/journal-integrity/$package-tests.log"
+            tests=("${PIPESTATUS[@]}")
+            just --command cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/journal-integrity/$package-docs.log"
+            docs=("${PIPESTATUS[@]}")
+            printf '%s-tests,%s,%s\n' "$package" "${tests[0]}" "${tests[1]}" >> target/journal-integrity/exits.csv || failed=1
+            printf '%s-docs,%s,%s\n' "$package" "${docs[0]}" "${docs[1]}" >> target/journal-integrity/exits.csv || failed=1
+            for code in "${tests[@]}" "${docs[@]}"; do
+              if [ "$code" -ne 0 ]; then failed=1; fi
+            done
+          done
+          exit "$failed"
+      - name: Publish verification table and missing evidence
+        if: always()
+        shell: bash
+        run: python3 scripts/journal-integrity/summarize.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: journal-integrity-${{ github.sha }}
+          path: target/journal-integrity
+          if-no-files-found: error

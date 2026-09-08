@@ -94,7 +94,15 @@ return failure. The new actual-executable regression covers verification while
 a writer is held, byte corruption, legacy/empty/torn status and expected-tip
 mismatch; its runtime validation is pending separately from the core run above.
 
-Gap: CLI runtime validation and hosted proof remain pending. Explicit legacy
+The standalone `.github/workflows/journal-integrity.yml` leaf records actual
+CLI stdout/stderr, original and edited `.oms` files, the independently captured
+fixture id/offset, session-open refusal and expected-tip mismatch. Its summary
+checks artifact contents as well as every command/log exit. Complete affected
+app/journal/session targets and doctests continue after a proof failure. The
+fixture's process owner uses bounded polling and kill/reap cleanup, retaining
+failure logs. No authentication, model call or fabricated session is used.
+
+Gap: CLI runtime validation and hosted proof execution remain pending. Explicit legacy
 migration, browser-readable production session corruption evidence, and
 operation-specific compaction/lift/import proofs are not delivered by this slice. No complete #49 acceptance
 claim follows from the implementation or from unit test existence.
