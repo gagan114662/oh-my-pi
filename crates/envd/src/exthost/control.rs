@@ -2752,21 +2752,6 @@ pub enum ControlRuntimeError {
 	Remote(ControlProtocolError),
 }
 
-// The reader owns the connection lifetime. Cleanup must also run when its
-// task is aborted or a malformed frame returns early, not only on clean EOF.
-impl Drop for ControlRuntime {
-	fn drop(&mut self) {
-		self.shared.router.lock().disconnect();
-		self.shared.invocations.lock().clear();
-		self.shared.dispatch_by_id.lock().clear();
-		self.shared.dispatch_progress.lock().clear();
-		self.shared.dispatch_chunks.lock().clear();
-		for (_, request) in mem::take(&mut *self.shared.child_requests.lock()) {
-			request.abort();
-		}
-	}
-}
-
 impl ControlRuntime {
 	/// Binds one authenticated child descriptor and returns its dispatch handle.
 	pub fn new(
@@ -2796,6 +2781,14 @@ impl ControlRuntime {
 	pub async fn serve(mut self) -> Result<(), ControlRuntimeError> {
 		loop {
 			let Some(frame) = read_json_control_frame(&mut self.reader).await? else {
+				self.shared.router.lock().disconnect();
+				self.shared.invocations.lock().clear();
+				self.shared.dispatch_by_id.lock().clear();
+				self.shared.dispatch_progress.lock().clear();
+				self.shared.dispatch_chunks.lock().clear();
+				for (_, request) in mem::take(&mut *self.shared.child_requests.lock()) {
+					request.abort();
+				}
 				return Ok(());
 			};
 			match frame.kind.as_str() {
