@@ -1,0 +1,317 @@
+name: Read tail selectors
+
+on:
+  push:
+    branches: [fix/read-tail-31]
+  pull_request:
+    branches: [main, omp2]
+    paths:
+      - crates/tools/**
+      - crates/envd/**
+      - crates/py/**
+      - crates/driver/**
+      - crates/agent/src/prompt/**
+      - scripts/qa/**
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - justfile
+      - .github/workflows/read-tail.yml
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source revision to build; empty uses the workflow revision
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  read-tail:
+    name: Production tail reads and complete affected targets
+    runs-on: macos-15
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [before, after]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ matrix.revision == 'before' && 'b59b952172' || inputs.source_ref || github.sha }}
+      - name: Install the same QA checker and record provenance
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/read-tail
+          git status --porcelain=v1 > target/read-tail/source-before.txt
+          cp ../proof-tools/scripts/qa/cases/test_read_tail.py scripts/qa/cases/test_read_tail.py
+          python3 - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          def git(*args, cwd='.'):
+              return subprocess.check_output(['git', *args], cwd=cwd, text=True).strip()
+          def digest(path):
+              return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          report = {
+              'source_revision': git('rev-parse', 'HEAD'),
+              'checker_revision': git('rev-parse', 'HEAD', cwd='../proof-tools'),
+              'checker_sha256': digest('scripts/qa/cases/test_read_tail.py'),
+              'source_harness_sha256': digest('scripts/qa/harness.py'),
+              'workflow_sha256': digest('../proof-tools/.github/workflows/read-tail.yml'),
+              'cargo_config_sha256': digest('.cargo/config.toml'),
+              'source_status_before_checker_copy': Path('target/read-tail/source-before.txt').read_text(),
+              'source_status_after_checker_copy': git('status', '--porcelain=v1'),
+              'scope': 'Selected source with QA checker copied from the proof checkout; status fields identify whether the copy changed source bytes.',
+          }
+          Path('target/read-tail/provenance.json').write_text(json.dumps(report, indent=2) + '\n')
+          PY
+      - name: Install documented prerequisites
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install just cmake ninja lld@22 uv 2>&1 | tee target/read-tail/install.log
+          rustup show active-toolchain 2>&1 | tee target/read-tail/toolchain.log
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare Python and check prerequisites
+        id: setup
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          just setup-python 2>&1 | tee target/read-tail/python-setup.log
+          just doctor 2>&1 | tee target/read-tail/doctor.log
+          /opt/homebrew/opt/lld@22/bin/ld64.lld --version | tee target/read-tail/linker.log
+          df -h . | tee target/read-tail/free-space.log
+      - name: Build the selected production binary
+        id: build
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          just build 2>&1 | tee target/read-tail/build.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'build,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/read-tail/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ] || exit 1
+          shasum -a 256 target/debug/omp > target/read-tail/binary.sha256
+      - name: Exercise production read and eval tools
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: source
+        shell: bash
+        env:
+          OMP_READ_TAIL_REVISION: ${{ matrix.revision }}
+          OMP_READ_TAIL_EVIDENCE_DIR: ${{ github.workspace }}/source/target/read-tail/qa
+        run: |
+          set +e
+          set -uo pipefail
+          python3 scripts/qa/cases/test_read_tail.py -v 2>&1 | tee target/read-tail/qa.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'qa,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/read-tail/exits.csv || exit 1
+          [ "${codes[1]}" -eq 0 ] || exit 1
+          if [ "$OMP_READ_TAIL_REVISION" = before ]; then
+            # Baseline must execute the checker and expose a semantic mismatch.
+            [ "${codes[0]}" -ne 0 ] || exit 1
+            python3 - <<'PYBASE'
+          import json
+          from pathlib import Path
+          runs = json.loads(Path('target/read-tail/qa/manifest.json').read_text())['runs']
+          assert any(row['case'] == 'local-large' and row.get('terminal_validated') and row.get('semantic_mismatch') for row in runs), 'Baseline did not reach an observable tool result'
+          PYBASE
+          else
+            [ "${codes[0]}" -eq 0 ]
+          fi
+      - name: Run complete affected tests and doctests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          suite_status=0
+          for package in omp-tools omp-envd omp-driver omp-py; do
+            cargo nextest run --locked --profile ci --no-fail-fast -p "$package" 2>&1 | tee "target/read-tail/$package-tests.log"
+            test_codes=("${PIPESTATUS[@]}")
+            cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/read-tail/$package-doctests.log"
+            doc_codes=("${PIPESTATUS[@]}")
+            printf '%s-tests,%s,%s\n' "$package" "${test_codes[0]}" "${test_codes[1]}" >> target/read-tail/exits.csv || suite_status=1
+            printf '%s-doctests,%s,%s\n' "$package" "${doc_codes[0]}" "${doc_codes[1]}" >> target/read-tail/exits.csv || suite_status=1
+            for code in "${test_codes[@]}" "${doc_codes[@]}"; do
+              if [ "$code" -ne 0 ]; then suite_status=1; fi
+            done
+          done
+          exit "$suite_status"
+      - name: Publish complete and missing evidence
+        env:
+          OMP_READ_TAIL_REVISION: ${{ matrix.revision }}
+        if: always()
+        working-directory: source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import csv, json, os
+          from pathlib import Path
+          out = Path('target/read-tail')
+          out.mkdir(parents=True, exist_ok=True)
+          provenance = out / 'provenance.json'
+          lines = ['## Tail selector evidence', '',
+                   'The binary is built from the selected source with a copied QA checker. No build cache is restored. The before build is the recorded parent of the first tail fix; only its QA semantic failure is expected, while all affected package tests must pass.',
+                   'Missing, skipped, and failed execution is not passing evidence.', '', '```json',
+                   provenance.read_text() if provenance.exists() else '{"error":"provenance missing"}', '```', '',
+                   '| Check | Command exit | Log-write exit | Result |', '| --- | --- | --- | --- |']
+          exits = out / 'exits.csv'
+          rows = list(csv.reader(exits.open())) if exits.exists() else []
+          observed = {row[0]: row[1:] for row in rows}
+          failed = not provenance.exists()
+          for name in ('build', 'qa', 'omp-tools-tests', 'omp-tools-doctests', 'omp-envd-tests', 'omp-envd-doctests', 'omp-driver-tests', 'omp-driver-doctests', 'omp-py-tests', 'omp-py-doctests'):
+              codes = observed.get(name)
+              baseline_qa = name == 'qa' and os.environ['OMP_READ_TAIL_REVISION'] == 'before'
+              passed = bool(codes and codes[0] != '0' and codes[1] == '0') if baseline_qa else codes == ['0', '0']
+              failed |= not passed
+              lines.append(f"| {name} | {codes[0] if codes else 'missing'} | {codes[1] if codes else 'missing'} | {'PASS' if passed else 'FAIL / incomplete'} |")
+          qa_summary = out / 'qa/summary.md'
+          qa_manifest = out / 'qa/manifest.json'
+          if qa_summary.exists() and qa_manifest.exists():
+              lines += ['', qa_summary.read_text()]
+              try:
+                  runs = json.loads(qa_manifest.read_text())['runs']
+                  if not runs:
+                      raise ValueError('QA manifest contains no runs')
+                  baseline = os.environ['OMP_READ_TAIL_REVISION'] == 'before'
+                  if baseline and not any(row['case'] == 'local-large' and row.get('terminal_validated') and row.get('semantic_mismatch') for row in runs):
+                      raise ValueError('Baseline did not expose a semantic mismatch')
+                  if not baseline and (len(runs) != 9 or any(row['status'] != 'passed' for row in runs)):
+                      raise ValueError('Head did not pass all nine production cases')
+                  for row in runs:
+                      for name in ('captures.json', 'stdout.jsonl'):
+                          if not (out / 'qa' / row['case'] / name).is_file():
+                              raise ValueError(f'Missing raw evidence for {row["case"]}: {name}')
+              except (KeyError, TypeError, ValueError) as error:
+                  failed = True
+                  lines += ['', f'**Incomplete QA evidence:** {error}']
+          else:
+              failed = True
+              lines += ['', '**Incomplete:** QA transition summary or raw-evidence manifest is missing.']
+          lines += ['', '### Test counts reported by runners', '', '```text']
+          for log in sorted(out.glob('*tests.log')):
+              lines += [log.name] + [line for line in log.read_text(errors='replace').splitlines()
+                                            if 'Summary' in line or 'test result:' in line]
+          lines += ['```', '', 'Runner logs, provenance, and any produced QA request/journal evidence are retained in the artifact. Missing QA evidence is a failing result.']
+          summary = '\n'.join(lines) + '\n'
+          (out / 'summary.md').write_text(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
+              stream.write(summary)
+          raise SystemExit(1 if failed else 0)
+          PY
+      - name: Upload evidence even after failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: read-tail-${{ matrix.revision }}
+          path: source/target/read-tail/
+          if-no-files-found: error
+
+  linux-discovery:
+    name: Linux tools discovery (${{ matrix.revision }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [before, after]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.revision == 'before' && 'b59b952172' || inputs.source_ref || github.sha }}
+      - name: Install diagnostic prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/read-tail-linux
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pipx zstd gdb
+          command -v uv >/dev/null || pipx install uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          git rev-parse HEAD > target/read-tail-linux/source-revision.txt
+          rustup show active-toolchain > target/read-tail-linux/toolchain.txt
+          cp .cargo/config.toml target/read-tail-linux/cargo-config.toml
+          uname -a > target/read-tail-linux/platform.txt
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare the source's embedded Python
+        run: crates/py/scripts/fetch-python.sh
+      - name: Build exactly the affected package test targets without discovering tests
+        id: build
+        shell: bash
+        run: |
+          set -uo pipefail
+          cargo nextest list --locked --profile ci -p omp-driver -p omp-envd -p omp-py -p omp-tools --list-type binaries-only --message-format json > target/read-tail-linux/binaries.json 2> target/read-tail-linux/build.log
+          status=$?
+          printf '%s\n' "$status" > target/read-tail-linux/build.exit
+          exit "$status"
+      - name: Execute the actual tools libtest discovery and diagnose a crash
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          out = Path('target/read-tail-linux')
+          binaries = json.loads((out / 'binaries.json').read_text())['rust-binaries']
+          binary = binaries['omp-tools']['binary-path']
+          report = {'binary': binary, 'sha256': hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
+                    'command': [binary, '--list', '--format', 'terse']}
+          try:
+              result = subprocess.run(report['command'], capture_output=True, timeout=120)
+              report['returncode'] = result.returncode
+              (out / 'list.stdout').write_bytes(result.stdout)
+              (out / 'list.stderr').write_bytes(result.stderr)
+          except subprocess.TimeoutExpired as error:
+              report['returncode'] = None
+              report['error'] = 'discovery timed out after 120 seconds'
+              (out / 'list.stdout').write_bytes(error.stdout or b'')
+              (out / 'list.stderr').write_bytes(error.stderr or b'')
+          if report['returncode'] != 0:
+              try:
+                  debug = subprocess.run(['gdb', '--batch', '-ex', 'set pagination off', '-ex', 'run',
+                      '-ex', 'thread apply all bt full', '-ex', 'info registers', '-ex', 'info sharedlibrary',
+                      '--args', *report['command']], capture_output=True, timeout=120)
+                  (out / 'gdb.stdout').write_bytes(debug.stdout)
+                  (out / 'gdb.stderr').write_bytes(debug.stderr)
+                  report['gdb_returncode'] = debug.returncode
+              except subprocess.TimeoutExpired as error:
+                  (out / 'gdb.stdout').write_bytes(error.stdout or b'')
+                  (out / 'gdb.stderr').write_bytes(error.stderr or b'')
+                  report['gdb_error'] = 'debugger timed out after 120 seconds'
+          (out / 'discovery.json').write_text(json.dumps(report, indent=2) + '\n')
+          raise SystemExit(0 if report['returncode'] == 0 else 1)
+          PY
+      - name: Report Linux discovery without treating baseline crashes as passes
+        if: always()
+        env:
+          REVISION_LABEL: ${{ matrix.revision }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          out = Path('target/read-tail-linux')
+          report = out / 'discovery.json'
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('## Linux tools discovery: ' + os.environ['REVISION_LABEL'] + '\n\n')
+              summary.write('Same pinned toolchain, source configuration and embedded Python setup; no build cache. This is discovery evidence, not executed test coverage.\n\n```json\n')
+              summary.write(report.read_text() if report.exists() else '{"error":"discovery did not execute"}')
+              summary.write('\n```\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: read-tail-linux-${{ matrix.revision }}
+          path: target/read-tail-linux/
+          if-no-files-found: error
