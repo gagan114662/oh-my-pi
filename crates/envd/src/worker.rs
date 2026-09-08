@@ -2535,7 +2535,7 @@ impl ExtHostSupervisor {
 		let id = self.next_invocation.fetch_add(1, Ordering::Relaxed).max(1);
 		let invocation_id = call.invocation_id.clone();
 		// Client call names are only unique inside their own connection.
-		let execution_id = Str::from(omp_core::Ulid::generate().to_string());
+		let execution_id = invocation_id.clone();
 		if let Some(authority) = &self.data_authority {
 			authority.open(route.owner.clone(), execution_id.clone());
 		}
