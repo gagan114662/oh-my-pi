@@ -2333,13 +2333,30 @@ impl<C: Inference> Kernel<C> {
 		let mut first_token: Option<Instant> = None;
 		let fold: Result<Fold, KernelError> = async {
 			loop {
+				let flush_deadline = content_streams
+					.pending
+					.as_ref()
+					.map(|pending| tokio::time::Instant::from_std(pending.since + COALESCE_WINDOW));
+				let flush_ready = async {
+					if let Some(deadline) = flush_deadline {
+						tokio::time::sleep_until(deadline).await;
+					} else {
+						std::future::pending::<()>().await;
+					}
+				};
 				let signal = tokio::select! {
-					biased;
-					() = control.cancelled() => StreamSignal::Cancelled,
-					message = self.mailbox_rx.recv_async() => StreamSignal::Control(message.ok()),
-					event = stream.next() => StreamSignal::Event(event),
+					 biased;
+					 () = control.cancelled() => StreamSignal::Cancelled,
+					 () = flush_ready => StreamSignal::Flush,
+					 message = self.mailbox_rx.recv_async() => StreamSignal::Control(message.ok()),
+					 event = stream.next() => StreamSignal::Event(event),
 				};
 				let event = match signal {
+					StreamSignal::Flush => {
+						content_streams.flush(session)?;
+						self.apply_live_components(session)?;
+						continue;
+					},
 					StreamSignal::Cancelled => {
 						turn_cancel.cancel_turn();
 						return Ok(Fold::Cancelled);
@@ -3744,6 +3761,7 @@ enum PreflightSignal<T> {
 }
 
 enum StreamSignal {
+	Flush,
 	Event(Option<Result<ChatEvent, omp_ai::Error>>),
 	Control(Option<Up>),
 	Cancelled,
@@ -3908,9 +3926,9 @@ fn record_provider_tool_index(
 
 /// Deltas become one `stream@1` entry per window or byte budget instead of
 /// one fsync'd frame per token (#106): a months-long session's journal
-/// grows with flushes, not with output tokens. The buffer lands before any
-/// other event, on close, on error and on cancel, so the committed prefix
-/// a crash can lose is at most one window.
+/// grows with flushes, not with output tokens. An independent deadline flushes
+/// an idle provider's pending buffer. It also lands before any other event,
+/// on close, on error and on cancel, so a crash loses at most one window.
 const COALESCE_WINDOW: Duration = Duration::from_millis(250);
 const COALESCE_BYTES: usize = 4096;
 
