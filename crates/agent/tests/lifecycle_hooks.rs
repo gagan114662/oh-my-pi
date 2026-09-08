@@ -664,7 +664,7 @@ async fn pre_admission_hang_is_bounded_without_inventing_an_accepted_turn() {
 			DispatchPolicy::new(BlobStore::open(directory.path().join("blobs")).unwrap()),
 			StaticPrompt(sf!("system")),
 		)
-		.with_hook_gate(gate)
+		.with_hook_gate(Arc::new(gate))
 		.with_runtime_flags(omp_agent::RuntimeFlags {
 			turn_idle: if idle {
 				Duration::from_millis(100)
@@ -727,7 +727,7 @@ async fn idle_watchdog_preserves_actual_tool_terminal_when_result_hook_never_ans
 		DispatchPolicy::new(BlobStore::open(directory.path().join("blobs")).unwrap()),
 		StaticPrompt(sf!("system")),
 	)
-	.with_hook_gate(gate)
+	.with_hook_gate(Arc::new(gate))
 	.with_runtime_flags(omp_agent::RuntimeFlags {
 		turn_idle: Duration::from_millis(100),
 		turn_max_wall: None,
