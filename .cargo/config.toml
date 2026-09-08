@@ -47,12 +47,12 @@ checksum-freshness = true
 # Enables [resolver] feature-unification below.
 feature-unification = true
 
-# Resolve features as if the whole workspace were built at once, so
-# `cargo <cmd> -p <crate>` and `--workspace` invocations share one artifact
-# per dependency instead of compiling per-invocation feature variants of the
-# same crate into the shared target dir.
+# Resolve features for the selected packages. Workspace-wide unification makes
+# an unrelated `-p omp-core` build inherit the application's audio/RTC graph.
+# Dependencies must declare the features they use rather than borrowing them
+# from other workspace members. Full workspace commands still select all members.
 [resolver]
-feature-unification = "workspace"
+feature-unification = "selected"
 # Config profiles outrank manifest profiles, so a user-global
 # ~/.cargo/config.toml [profile.dev] (e.g. line-tables-only + unpacked
 # split-debuginfo) would silently re-inflate the target dir with retained

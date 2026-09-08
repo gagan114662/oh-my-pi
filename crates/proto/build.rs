@@ -23,7 +23,10 @@ use std::{
 };
 
 fn main() {
-	let root = Path::new(std::env!("CARGO_MANIFEST_DIR")).join("proto");
+	// Cargo may reuse this build-script executable across workspace checkouts.
+	// The runtime directory identifies the sources for this invocation.
+	let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"))
+		.join("proto");
 	println!("cargo::rerun-if-changed={}", root.display());
 
 	let mut protos = Vec::new();
