@@ -96,3 +96,13 @@ ANSI frames, and PNGs through the existing debug frame encoder. That encoder
 is monochrome, so the PNGs alone cannot prove colors. A real Settings →
 Appearance interaction, terminal appearance changes, resize, and clean quit
 still require live PTY proof before closing the issue.
+
+The `/theme` command opens the existing Settings theme submenu for the
+terminal's active dark/light appearance. Arrow keys preview through the
+host's ambient `UiContext`, Escape restores the original context without
+writing configuration, and Enter uses the existing settings `writecfg`
+command path. This is interactive selection, not a filesystem reload watcher.
+The leaf workflow also drives the production chat binary through P7's
+`OMP_TTY` and debug hooks, retaining raw ANSI, VT-emulated color cells and
+HTML, resize observations, and termios restoration evidence. A missing live
+proof or failed observation remains a failure, independently of unit tests.

@@ -10,6 +10,9 @@ on:
       - crates/chat/src/settings.rs
       - crates/app/src/chat_cmd.rs
       - crates/app/tests/theme_defaults.rs
+      - crates/chat/src/commands/settings.rs
+      - crates/chat/src/overlays/settings.rs
+      - scripts/qa/cases/theme_live_pty.py
       - .github/workflows/theme-defaults.yml
   workflow_dispatch:
     inputs:
@@ -44,7 +47,8 @@ jobs:
           git rev-parse HEAD > target/theme-proof/source-sha.txt
           git -C ../proof rev-parse HEAD > target/theme-proof/checker-sha.txt
           cp ../proof/crates/app/tests/theme_defaults.rs crates/app/tests/theme_defaults.rs
-          shasum -a 256 crates/app/tests/theme_defaults.rs > target/theme-proof/checker.sha256
+          cp ../proof/scripts/qa/cases/theme_live_pty.py scripts/qa/cases/theme_live_pty.py
+          shasum -a 256 crates/app/tests/theme_defaults.rs scripts/qa/cases/theme_live_pty.py scripts/qa/harness.py > target/theme-proof/checker.sha256
           git status --porcelain=v1 > target/theme-proof/source-status.txt
       - name: Install prerequisites
         run: brew install just cmake ninja lld@22 uv
@@ -75,6 +79,22 @@ jobs:
             done
           done
           exit "$status"
+      - name: Build and exercise production theme PTY
+        if: ${{ !cancelled() }}
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          just build 2>&1 | tee target/theme-proof/build.log
+          build_codes=("${PIPESTATUS[@]}")
+          printf 'build=%s log_write=%s\n' "${build_codes[0]}" "${build_codes[1]}" >> target/theme-proof/exits.txt
+          if [ "${build_codes[0]}" -ne 0 ] || [ "${build_codes[1]}" -ne 0 ]; then exit 1; fi
+          shasum -a 256 target/debug/omp > target/theme-proof/binary.sha256 || exit 1
+          uv run --with pyte==0.8.2 python scripts/qa/cases/theme_live_pty.py 2>&1 | tee target/theme-proof/live-pty.log
+          pty_codes=("${PIPESTATUS[@]}")
+          printf 'pty=%s log_write=%s\n' "${pty_codes[0]}" "${pty_codes[1]}" >> target/theme-proof/exits.txt
+          for code in "${pty_codes[@]}"; do if [ "$code" -ne 0 ]; then exit 1; fi; done
       - name: Publish enumeration and explicit proof limits
         if: always()
         working-directory: source
@@ -88,9 +108,11 @@ jobs:
             if [ -f target/theme-proof/exits.txt ]; then cat target/theme-proof/exits.txt; else echo 'Test execution incomplete'; fi
             echo '```'
             if [ -f target/theme-proof/summary.md ]; then cat target/theme-proof/summary.md; else echo '**Enumeration/frames missing: proof incomplete.**'; fi
-            echo 'This does not establish live Settings/PTY interaction or clean-quit proof. PNG uses the existing monochrome encoder; color is checked in retained cells and preserved in ANSI.'
+            if [ -f target/theme-proof/live-pty/summary.md ]; then cat target/theme-proof/live-pty/summary.md; else echo '**Live PTY proof missing.**'; fi
+            echo 'PNG uses the existing monochrome encoder; live color proof is in VT cell JSON/HTML and raw terminal ANSI.'
           } >> "$GITHUB_STEP_SUMMARY"
           test -s target/theme-proof/summary.md
+          test -s target/theme-proof/live-pty/summary.md
           test -s target/theme-proof/themes.json
           test -s target/theme-proof/cl_theme_dark-dark.png
           test -s target/theme-proof/cl_theme_light-light.png
