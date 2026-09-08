@@ -11,7 +11,7 @@ use std::path::Path;
 use std::{
 	env, ffi, fs,
 	fs::{File, OpenOptions},
-	os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
+	os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
 };
 use std::{io, mem, path::PathBuf, result, time::Duration};
 
@@ -132,16 +132,6 @@ pub enum Error {
 		/// Underlying file locking error.
 		#[source]
 		source: Errno,
-	},
-
-	/// Cannot set permissions on the lock directory.
-	#[error("cannot secure lock directory {directory:?}: {source}")]
-	SecureLockDirectory {
-		/// Path to the lock directory.
-		directory: PathBuf,
-		/// Underlying I/O error.
-		#[source]
-		source:    io::Error,
 	},
 
 	/// Cannot create the lock directory.
@@ -376,9 +366,20 @@ fn lock_directory() -> Result<PathBuf> {
 		Some(runtime) if runtime.is_absolute() => runtime.join("omp-envd-docserver"),
 		_ => env::temp_dir().join(format!("omp-envd-docserver-{user_id}")),
 	};
-	match fs::create_dir(&directory) {
-		Ok(()) => fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
-			.map_err(|source| Error::SecureLockDirectory { directory: directory.clone(), source })?,
+	ensure_lock_directory(directory, user_id)
+}
+
+/// Set the mode in mkdir itself: another process may inspect the directory as
+/// soon as it exists, before a separate chmod could secure it.
+#[cfg(unix)]
+fn create_private_lock_directory(directory: &Path) -> io::Result<()> {
+	fs::DirBuilder::new().mode(0o700).create(directory)
+}
+
+#[cfg(unix)]
+fn ensure_lock_directory(directory: PathBuf, user_id: u32) -> Result<PathBuf> {
+	match create_private_lock_directory(&directory) {
+		Ok(()) => {},
 		Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {},
 		Err(source) => {
 			return Err(Error::CreateLockDirectory { directory, source });
@@ -665,6 +666,88 @@ mod tests {
 		connection::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
 		wire::{FrameConfig, read_server_frame, write_client_frame},
 	};
+
+	#[test]
+	fn lock_directory_is_private_at_creation() {
+		const CHILD: &str = "OMP_TEST_PRIVATE_LOCK_DIRECTORY_CHILD";
+		if let Some(proof_path) = env::var_os(CHILD) {
+			// The parent starts this isolated test process with umask 000. Inspect
+			// immediately after mkdir, before validation or any chmod can hide a
+			// permissions window from a concurrent authority.
+			let root = TempDir::new().expect("temporary directory");
+			let directory = root.path().join("locks");
+			create_private_lock_directory(&directory).expect("create private directory");
+			let metadata = fs::symlink_metadata(&directory).expect("directory metadata");
+			assert_eq!(metadata.mode() & 0o777, 0o700);
+			assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
+			ensure_lock_directory(directory, metadata.uid()).expect("concurrent observer accepts it");
+			fs::write(proof_path, b"private-at-creation").expect("record child assertions completed");
+			return;
+		}
+
+		// Never change umask in the shared test process.
+		let proof_root = TempDir::new().expect("child proof directory");
+		let proof_path = proof_root.path().join("completed");
+		let mut child = std::process::Command::new("sh")
+			.args(["-c", "umask 000; exec \"$@\"", "private-lock-test"])
+			.arg(env::current_exe().expect("test executable"))
+			.args([
+				"--exact",
+				"docserver::daemon::tests::lock_directory_is_private_at_creation",
+				"--nocapture",
+			])
+			.env(CHILD, &proof_path)
+			.spawn()
+			.expect("start isolated permissions test");
+		let deadline = std::time::Instant::now() + Duration::from_secs(10);
+		loop {
+			if let Some(status) = child.try_wait().expect("poll permissions test") {
+				assert!(status.success(), "isolated permissions test failed: {status}");
+				assert_eq!(
+					fs::read(&proof_path).expect("child test actually ran"),
+					b"private-at-creation"
+				);
+				break;
+			}
+			if std::time::Instant::now() >= deadline {
+				child.kill().expect("stop stalled permissions test");
+				child.wait().expect("reap permissions test");
+				panic!("isolated permissions test exceeded 10 seconds");
+			}
+			std::thread::sleep(Duration::from_millis(10));
+		}
+	}
+
+	#[test]
+	fn lock_directory_rejects_insecure_existing_entries_without_changing_them() {
+		let root = TempDir::new().expect("temporary directory");
+		let directory = root.path().join("locks");
+		fs::create_dir(&directory).expect("create insecure directory");
+		fs::set_permissions(&directory, Permissions::from_mode(0o755)).expect("set insecure mode");
+		let user_id = rustix::process::geteuid().as_raw();
+		assert!(matches!(
+			ensure_lock_directory(directory.clone(), user_id),
+			Err(Error::InvalidLockDirectoryPermissions { .. })
+		));
+		assert_eq!(fs::symlink_metadata(&directory).expect("metadata").mode() & 0o777, 0o755);
+		fs::set_permissions(&directory, Permissions::from_mode(0o700)).expect("secure fixture");
+		assert!(matches!(
+			ensure_lock_directory(directory.clone(), user_id.wrapping_add(1)),
+			Err(Error::InvalidLockDirectoryPermissions { .. })
+		));
+		let link = root.path().join("link");
+		std::os::unix::fs::symlink(&directory, &link).expect("create symlink");
+		assert!(matches!(
+			ensure_lock_directory(link.clone(), user_id),
+			Err(Error::InvalidLockDirectoryPermissions { .. })
+		));
+		assert!(
+			fs::symlink_metadata(link)
+				.expect("link metadata")
+				.is_symlink()
+		);
+		ensure_lock_directory(directory, user_id).expect("secure existing directory accepted");
+	}
 
 	#[test]
 	fn authority_lock_is_exclusive_and_released_on_drop() {
