@@ -3416,23 +3416,8 @@ impl ControlHandle {
 			.ok_or_else(|| ControlProtocolError::malformed("dispatch response has no result").into())
 	}
 
-	/// Removes a callback which has not entered the child, or sends stage one
-	/// of the cancellation ladder for an already dispatched callback.
+	/// Sends stage one of the documented cancellation ladder.
 	pub async fn cancel(&self, invocation: &str) -> Result<(), ControlRuntimeError> {
-		if let Some(id) = self.last_frame(invocation) {
-			let queued = self
-				.shared
-				.router
-				.lock()
-				.cancel_queued(self.shared.identity.extension.as_str(), id)?;
-			if queued {
-				self.shared.invocations.lock().remove(invocation);
-				self.shared.dispatch_by_id.lock().remove(&id);
-				self.shared.dispatch_progress.lock().remove(&id);
-				self.shared.dispatch_chunks.lock().remove(&id);
-				return Ok(());
-			}
-		}
 		if !self.shared.invocations.lock().contains_key(invocation) {
 			return Err(
 				ControlProtocolError::new(
