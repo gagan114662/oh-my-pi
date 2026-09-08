@@ -11,6 +11,10 @@ checks without a corresponding tool result.
 The QA table covers 200,000-line local text, short/empty text, raw terminal
 newlines, a directory listing, invalid zero/overflow counts, and Python artifact
 reads including 200,000 lines. The artifact probe asserts exact raw strings.
+Video cases generate actual MP4/MOV fixtures and cover preview grids, frame and
+time parity, the exact `1h5m42s` selection, corrupt input and out-of-range seeks.
+The captured provider request must contain a PNG, which is decoded into the
+case evidence directory; metadata text alone cannot satisfy the video cases.
 Captured provider messages, process output, failures and expected/actual tables
 are retained per case. The before build must expose an observed semantic
 mismatch and retain a failing QA exit; missing execution is not a baseline reproduction. The after build

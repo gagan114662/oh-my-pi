@@ -668,6 +668,14 @@ async fn open_filesystem_lease(io_path: Str, source_path: Str) -> Result<ReadDoc
 impl ReadSources for ReadSourceAdapter {
 	type Lease = ReadDocumentLease;
 
+	async fn video(
+		&self,
+		path: Str,
+		selection: omp_tools::read::video::Selection,
+	) -> Result<omp_tools::read::video::Output, omp_tools::read::video::VideoFault> {
+		crate::tool_video::extract(Path::new(path.as_str()), selection).await
+	}
+
 	async fn stat(&self, path: Str) -> Result<SourceStat, Fault> {
 		self.stat_path(&path).await
 	}

@@ -4,6 +4,7 @@
 The identical checker runs on the recorded pre-fix revision and selected head.
 Captures, stdout, stderr, and expected/actual rows are retained even on failure.
 """
+import base64
 import json
 import os
 from pathlib import Path
@@ -75,6 +76,17 @@ class ReadTail(unittest.TestCase):
             (project / "directory").mkdir()
             for name in ("aaa.txt", "mmm.txt", "zzz.txt"):
                 (project / "directory" / name).write_text(name)
+            # These are encoded videos, not mocked PNG responses. A tiny long
+            # clip exercises the exact Appendix E timestamp without a large asset.
+            for filename, source in (("demo.mp4", "testsrc2=size=64x48:rate=2:duration=4"),
+                                     ("long.mov", "color=c=blue:size=32x32:rate=1:duration=3944")):
+                generated = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", source,
+                    "-c:v", "libx264", "-threads", "1", "-y", str(project / filename)],
+                    capture_output=True, timeout=30)
+                (output / (filename + ".generation.stderr")).write_bytes(generated.stderr)
+                self.assertEqual(generated.returncode, 0, generated.stderr)
+                (output / filename).write_bytes((project / filename).read_bytes())
+            (project / "corrupt.mp4").write_bytes(b"not video")
             artifact_code = r"""import omp
 ref = await omp.artifacts.put(b'one\ntwo\n', media_type='text/plain')
 assert await omp.artifacts.read(ref, 'raw:-2') == 'two\n'
@@ -93,6 +105,12 @@ print('ARTIFACT_TAIL_PARITY_OK')
                 ("invalid-zero", call("read", path="short.txt:-0"), [], ["KEEP_LAST"], True),
                 ("invalid-overflow", call("read", path="short.txt:-18446744073709551616"), [], ["KEEP_LAST"], True),
                 ("artifact-python-parity", call("eval", language="py", code=artifact_code), ["ARTIFACT_TAIL_PARITY_OK"], ["AssertionError"], False),
+                ("video-preview", call("read", path="demo.mp4"), ["3x3", "Resolution: 64x48", "Video codec: h264"], [], False),
+                ("video-frame", call("read", path="demo.mp4:2"), ["Frame: 2 (zero-based)"], [], False),
+                ("video-time", call("read", path="demo.mp4:1s"), ["Timestamp: 1.000s"], [], False),
+                ("video-appendix-e", call("read", path="long.mov:1h5m42s"), ["Timestamp: 3942.000s"], [], False),
+                ("video-outside", call("read", path="demo.mp4:9s"), [], [], True),
+                ("video-corrupt", call("read", path="corrupt.mp4"), [], [], True),
             ]
             for name, reply, required, forbidden, error_expected in cases:
                 with self.subTest(source=name):
@@ -114,7 +132,7 @@ print('ARTIFACT_TAIL_PARITY_OK')
                         environment.update(HOME=str(home), OMP_DATA_DIR=str(data), OMP_CONFIG_DIR=str(config),
                                            OMP_CACHE_DIR=str(root / name / "cache"), OMP_STATE_DIR=str(root / name / "state"))
                         with MockModel(reply, "ack") as mock:
-                            (data / "models.toml").write_text(MODELS_TOML.format(port=mock.port))
+                            (data / "models.toml").write_text(MODELS_TOML.format(port=mock.port) + 'input = ["text", "image"]\n')
                             process = subprocess.Popen([str(OMP_BINARY), "print", "--mode", "json", "--yolo", "--model", "mock",
                                 "--project", str(project), "--session-dir", str(root / name / "sessions"), "--max-time", "90s", "Run the requested tool."],
                                 cwd=project, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -157,6 +175,27 @@ print('ARTIFACT_TAIL_PARITY_OK')
                                 self.assertIn(marker, actual)
                             for marker in forbidden:
                                 self.assertNotIn(marker, actual)
+                            if name.startswith("video-") and not error_expected:
+                                images = []
+                                def collect_images(value):
+                                    if isinstance(value, dict):
+                                        for nested in value.values():
+                                            collect_images(nested)
+                                    elif isinstance(value, list):
+                                        for nested in value:
+                                            collect_images(nested)
+                                    elif isinstance(value, str) and value.startswith("data:image/png;base64,"):
+                                        images.append(base64.b64decode(value.split(",", 1)[1], validate=True))
+                                collect_images(captures[1]["messages"])
+                                self.assertEqual(len(images), 1, "actual provider request must contain one extracted PNG")
+                                png = images[0]
+                                self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+                                (directory / "frame.png").write_bytes(png)
+                                row["png_dimensions"] = [int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")]
+                                if name == "video-preview":
+                                    self.assertEqual(row["png_dimensions"], [960, 540])
+                                if name == "video-time":
+                                    self.assertEqual(png, (output / "video-frame/frame.png").read_bytes(), "frame index and timestamp must select the same actual frame")
                             row["status"] = "passed"
                     except BaseException:
                         row["failure"] = traceback.format_exc()
@@ -175,7 +214,7 @@ print('ARTIFACT_TAIL_PARITY_OK')
                                  "| Source | Required | Forbidden | Expected tool error | Actual provider tool result | Result |",
                                  "| --- | --- | --- | --- | --- | --- |"]
                         for item in rows:
-                            cells = [item["case"], str(item["required"]), str(item["forbidden"]), str(item["error_expected"]), item["actual"] or "not observed", item["status"]]
+                            cells = [item["case"], str(item["required"]), str(item["forbidden"]), str(item["error_expected"]), (item["actual"][:2000] + " [full result in captures.json]" if item["actual"] and len(item["actual"]) > 2000 else item["actual"] or "not observed"), item["status"]]
                             lines.append("| " + " | ".join(cell.replace("|", "\\|").replace("\n", "<br>") for cell in cells) + " |")
                         (output / "summary.md").write_text("\n".join(lines) + "\n")
 

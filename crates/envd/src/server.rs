@@ -10065,6 +10065,15 @@ async fn send_resource_fault(
 	fault: &read::Fault,
 ) {
 	let code = match fault {
+		read::Fault::Video { error, .. } => match error {
+			read::video::VideoFault::Selector | read::video::VideoFault::OutOfRange => {
+				pb::ProtocolErrorCode::InvalidArgument
+			},
+			read::video::VideoFault::Unavailable | read::video::VideoFault::MissingBinary => {
+				pb::ProtocolErrorCode::Unsupported
+			},
+			_ => pb::ProtocolErrorCode::Internal,
+		},
 		read::Fault::Invalid { .. } => pb::ProtocolErrorCode::InvalidArgument,
 		read::Fault::UnknownScheme { .. }
 		| read::Fault::SchemeNotReadable { .. }
