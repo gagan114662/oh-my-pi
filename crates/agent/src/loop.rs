@@ -1264,7 +1264,7 @@ impl<C: Inference> Kernel<C> {
 
 	async fn settle_lifecycle(
 		&self,
-		session: &Session,
+		session: &mut Session,
 		work: &omp_session::LifecycleWork,
 		run: &RunControl,
 	) {
