@@ -13,6 +13,10 @@ fn full_revision_survives_complete_and_streaming_call_replay() {
 		let path = directory.path().join("revision.oms");
 		let mut session = Session::create(&path, ComponentRegistry::default()).unwrap();
 		session.begin_turn().unwrap();
+		session.user("edit request", Vec::new()).unwrap();
+		session
+			.assistant_start("test-model", "test-provider", "test-route")
+			.unwrap();
 		let revision = Rev { family: Str::new_static(family), n: 7 };
 		let args =
 			serde_json::value::to_raw_value(&serde_json::json!({"input": "original"})).unwrap();
@@ -28,6 +32,7 @@ fn full_revision_survives_complete_and_streaming_call_replay() {
 				.call("edit", &revision, "call", None, Some(args), None)
 				.unwrap()
 		};
+		session.assistant_end("tool_calls").unwrap();
 		let verdict = serde_json::json!({"success": {"original": true}});
 		session
 			.settle(call, serde_json::value::to_raw_value(&verdict).unwrap())
