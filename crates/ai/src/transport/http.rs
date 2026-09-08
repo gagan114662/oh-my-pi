@@ -1695,6 +1695,11 @@ fn decode_stream(
 		let mut capture_remaining = capture_limit;
 		let mut ordinal = 0_u64;
 		let mut emitted = false;
+		// Idle watchdog: re-armed on every decoded frame, so a body that trickles
+		// keep-alives forever is still cut when no frame arrives within the idle
+		// interval, instead of living until the whole-attempt deadline.
+		let idle_timeout = attempt.idle_timeout;
+		let mut idle_deadline = idle_timeout.map(|timeout| Instant::now() + timeout);
 		'response: loop {
 			let next = tokio::select! {
 				next = incoming.frame() => next,
@@ -1705,6 +1710,11 @@ fn decode_stream(
 				() = sleep_until(deadline) => {
 					cancel.cancel();
 					yield Err(record_failure(deadline_exceeded(emitted, started, "stream.body"), &attempt, &evidence, Some(status), provider_request_id.as_ref(), started, emitted));
+					break;
+				},
+				() = sleep_until(idle_deadline.unwrap_or(deadline)), if idle_deadline.is_some_and(|idle| idle < deadline) => {
+					cancel.cancel();
+					yield Err(record_failure(deadline_exceeded(emitted, started, "stream.idle-timeout"), &attempt, &evidence, Some(status), provider_request_id.as_ref(), started, emitted));
 					break;
 				},
 			};
@@ -1758,6 +1768,9 @@ fn decode_stream(
 						break;
 					},
 				};
+				if !frames.is_empty() {
+					idle_deadline = idle_timeout.map(|timeout| Instant::now() + timeout);
+				}
 				for frame in frames {
 					capture_debug_frame(&attempt, &frame);
 					capture_http_frame(&capture, ordinal, &frame, &mut capture_remaining);

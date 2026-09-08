@@ -219,6 +219,7 @@ fn request(
 			provisional:         false,
 			timeout:             time::Duration::from_secs(5),
 			first_event_timeout: None,
+			idle_timeout:        None,
 			capture_limit:       10,
 		},
 	}
@@ -1239,6 +1240,124 @@ async fn stream_first_event_timeout_ms_matches_pi_behavior() {
 	let rendered = error.to_string();
 	assert!(rendered.contains("timed out after"), "{rendered}");
 	assert!(!rendered.contains("protocol violation"), "{rendered}");
+	server.abort();
+}
+
+#[tokio::test]
+async fn stream_idle_timeout_cuts_a_stalled_body_before_the_attempt_deadline() {
+	// The provider answers, sends one frame, then goes silent. Before this
+	// watchdog existed only the whole-attempt deadline (300 s in production)
+	// could end such a stream; the catalog's `idle_ms` had no consumer.
+	let listener = TcpListener::bind("127.0.0.1:0")
+		.await
+		.expect("bind fixture");
+	let address = listener.local_addr().expect("fixture address");
+	let server = tokio::spawn(async move {
+		let (mut socket, _) = listener.accept().await.expect("accept fixture");
+		let mut request = [0_u8; 1024];
+		let _ = socket.read(&mut request).await.expect("read request");
+		socket
+			.write_all(
+				b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n",
+			)
+			.await
+			.expect("write headers");
+		let frame = &b"data: first\n\n"[..];
+		socket
+			.write_all(format!("{:x}\r\n", frame.len()).as_bytes())
+			.await
+			.expect("write chunk size");
+		socket.write_all(frame).await.expect("write chunk");
+		socket.write_all(b"\r\n").await.expect("write chunk end");
+		future::pending::<()>().await;
+	});
+	let mut service = HttpTransport::new();
+	service.ready().await.expect("http ready");
+	let mut call = request(
+		BodySource::Bytes(Bytes::from_static(b"request")),
+		EmitDecoder,
+		Cancellation::default(),
+	);
+	call.encoded.uri = sf!("http://{address}/idle");
+	call.attempt.timeout = time::Duration::from_secs(5);
+	call.attempt.idle_timeout = Some(time::Duration::from_millis(50));
+	let started = time::Instant::now();
+	let response = service.call(call).await.expect("first frame commits");
+	let mut events = response.events.expect("ordinary event stream");
+	assert!(matches!(events.next().await, Some(Ok(RawEvent::Chat(_)))));
+	let Err(error) = events.next().await.expect("idle error") else {
+		panic!("a stalled committed body must hit the idle watchdog");
+	};
+	assert_eq!(error.kind, ErrorKind::DeadlineExceeded);
+	assert!(error.committed, "a frame was surfaced, so the stall is a committed partial");
+	let Some(ErrorDetail::Timeout { scope, elapsed_ms }) = error.detail_ref() else {
+		panic!("idle watchdog must surface a typed timeout, got {:?}", error.detail_ref());
+	};
+	assert_eq!(scope.0.as_str(), "stream.idle-timeout");
+	assert!(*elapsed_ms >= 50, "elapsed {elapsed_ms} ms must cover the 50 ms idle interval");
+	assert!(
+		started.elapsed() < time::Duration::from_secs(4),
+		"the idle watchdog must fire well before the 5 s attempt deadline"
+	);
+	server.abort();
+}
+
+#[tokio::test]
+async fn stream_idle_watchdog_is_re_armed_by_every_frame() {
+	// Frames keep arriving slower than the idle interval would allow only if
+	// the watchdog were armed once; re-arming on each frame lets the stream
+	// complete.
+	let listener = TcpListener::bind("127.0.0.1:0")
+		.await
+		.expect("bind fixture");
+	let address = listener.local_addr().expect("fixture address");
+	let server = tokio::spawn(async move {
+		let (mut socket, _) = listener.accept().await.expect("accept fixture");
+		let mut request = [0_u8; 1024];
+		let _ = socket.read(&mut request).await.expect("read request");
+		socket
+			.write_all(
+				b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n",
+			)
+			.await
+			.expect("write headers");
+		for _ in 0..6 {
+			let frame = &b"data: tick\n\n"[..];
+			socket
+				.write_all(format!("{:x}\r\n", frame.len()).as_bytes())
+				.await
+				.expect("write chunk size");
+			socket.write_all(frame).await.expect("write chunk");
+			socket.write_all(b"\r\n").await.expect("write chunk end");
+			time::sleep(time::Duration::from_millis(40)).await;
+		}
+		socket
+			.write_all(b"0\r\n\r\n")
+			.await
+			.expect("write terminating chunk");
+		socket.shutdown().await.expect("close fixture");
+	});
+	let mut service = HttpTransport::new();
+	service.ready().await.expect("http ready");
+	let mut call = request(
+		BodySource::Bytes(Bytes::from_static(b"request")),
+		EmitDecoder,
+		Cancellation::default(),
+	);
+	call.encoded.uri = sf!("http://{address}/ticks");
+	call.attempt.timeout = time::Duration::from_secs(5);
+	call.attempt.idle_timeout = Some(time::Duration::from_millis(150));
+	let response = service.call(call).await.expect("first frame commits");
+	let events: Vec<_> = response
+		.events
+		.expect("ordinary event stream")
+		.collect()
+		.await;
+	assert!(
+		events.iter().all(Result::is_ok),
+		"six frames 40 ms apart under a 150 ms idle interval must not time out: {events:?}"
+	);
+	assert_eq!(events.len(), 6);
 	server.abort();
 }
 
