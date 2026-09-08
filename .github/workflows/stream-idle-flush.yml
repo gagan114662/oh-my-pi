@@ -39,7 +39,7 @@ jobs:
       - name: Record selected source and install the same regression checker
         working-directory: source
         run: |
-          mkdir -p target/stream-idle-flush
+          mkdir -p target/stream-idle-flush/latency
           git status --porcelain=v1 > target/stream-idle-flush/source-before.txt
           cp ../proof-tools/crates/agent/tests/stream_coalescing.rs crates/agent/tests/stream_coalescing.rs
           python3 - <<'PY'
@@ -54,6 +54,7 @@ jobs:
                     'source_status_after': subprocess.check_output(['git', 'status', '--porcelain=v1'], text=True),
                     'checker_sha256': digest('crates/agent/tests/stream_coalescing.rs'),
                     'p6_sha256': digest('crates/e2e/tests/p6_crash_resume.rs'),
+                    'latency_helper_sha256': digest('scripts/p6-latency.py'),
                     'workflow_sha256': digest('../proof-tools/.github/workflows/stream-idle-flush.yml'),
                     'cargo_config_sha256': digest('.cargo/config.toml')}
           Path('target/stream-idle-flush/provenance.json').write_text(json.dumps(report, indent=2) + '\n')
@@ -86,7 +87,7 @@ jobs:
         shell: bash
         env:
           CARGO_BIN_EXE_omp_e2e_host: ${{ github.workspace }}/source/target/debug/omp_e2e_host
-          OMP_P6_LATENCY_PATH: ${{ github.workspace }}/source/target/stream-idle-flush/p6-latency.json
+          OMP_P6_LATENCY_PATH: ${{ github.workspace }}/source/target/stream-idle-flush/latency/normal.json
         run: |
           set +e
           set -uo pipefail
@@ -97,6 +98,31 @@ jobs:
           docs=("${PIPESTATUS[@]}")
           printf 'e2e-doctests,%s,%s\n' "${docs[0]}" "${docs[1]}" >> target/stream-idle-flush/exits.csv || exit 1
           [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ] && [ "${docs[0]}" -eq 0 ] && [ "${docs[1]}" -eq 0 ]
+      - name: Run unchanged P6 under actual disk pressure
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        working-directory: source
+        shell: bash
+        env:
+          CARGO_BIN_EXE_omp_e2e_host: ${{ github.workspace }}/source/target/debug/omp_e2e_host
+        run: |
+          set +e
+          set -uo pipefail
+          python3 scripts/p6-latency.py contended --output target/stream-idle-flush/latency -- cargo nextest run --locked --profile ci --no-fail-fast -p omp-e2e --test p6_crash_resume --no-tests fail 2>&1 | tee target/stream-idle-flush/p6-contended.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'p6-contended,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/stream-idle-flush/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Report both timing runs with unchanged two-times margin requirement
+        if: always()
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p target/stream-idle-flush/latency
+          python3 scripts/p6-latency.py report --output target/stream-idle-flush/latency 2>&1 | tee target/stream-idle-flush/p6-timing-report.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'p6-timing,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/stream-idle-flush/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
       - name: Run complete affected package tests and doctests
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         working-directory: source
@@ -135,27 +161,17 @@ jobs:
           exits = out / 'exits.csv'
           observed = {row[0]: row[1:] for row in csv.reader(exits.open())} if exits.exists() else {}
           failed = not provenance.exists()
-          for name in ('host-build', 'p6', 'e2e-doctests', 'omp-agent-tests', 'omp-agent-doctests', 'omp-driver-tests', 'omp-driver-doctests', 'omp-app-tests', 'omp-app-doctests'):
+          for name in ('host-build', 'p6', 'p6-contended', 'p6-timing', 'e2e-doctests', 'omp-agent-tests', 'omp-agent-doctests', 'omp-driver-tests', 'omp-driver-doctests', 'omp-app-tests', 'omp-app-doctests'):
               codes = observed.get(name)
               passed = codes == ['0', '0']
               failed |= not passed
               lines.append(f"| {name} | {codes[0] if codes else 'missing'} | {codes[1] if codes else 'missing'} | {'PASS' if passed else 'FAIL / incomplete'} |")
-          latency = out / 'p6-latency.json'
-          lines += ['', 'P6 timing evidence:', '', '```json', latency.read_text() if latency.exists() else '{"error":"timing evidence missing"}', '```']
-          if not latency.exists():
-              failed = True
+          timing_summary = out / 'latency/summary.md'
+          if timing_summary.exists():
+              lines += ['', timing_summary.read_text()]
           else:
-              measurements = json.loads(latency.read_text())
-              failed |= measurements.get('completed') is not True
-              lines += ['', '| Phase | Elapsed ms | Bound ms | Margin |', '| --- | --- | --- | --- |']
-              for phase in ('journal', 'resume'):
-                  measurement = measurements.get(phase) or {}
-                  elapsed = measurement.get('elapsed_ms')
-                  bound = measurement.get('bound_ms')
-                  valid = measurement.get('completed') is True and isinstance(elapsed, (int, float)) and elapsed > 0 and isinstance(bound, (int, float)) and bound > elapsed
-                  failed |= not valid
-                  margin = f'{bound / elapsed:.2f}x' if valid else 'incomplete / failed'
-                  lines.append(f'| {phase} | {elapsed} | {bound} | {margin} |')
+              failed = True
+              lines += ['', '**Missing normal/contended timing report.**']
           lines += ['', 'Test runner summaries:', '', '```text']
           for log in sorted(out.glob('*.log')):
               lines += [log.name] + [line for line in log.read_text(errors='replace').splitlines() if 'Summary' in line or 'test result:' in line]

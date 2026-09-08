@@ -21,8 +21,12 @@ Existing coalescing tests still constrain burst entry counts and large deltas.
 
 `stream-idle-flush.yml` uses a fresh source checkout without restored build
 artifacts. It records source/checker/P6/binary hashes, builds that source's
-production application host, runs both unchanged P6 tests, and runs complete
-agent/driver/app targets plus doctests. P6 timing JSON and raw logs are retained.
+production application host, runs both unchanged P6 tests normally and under
+actual bounded disk pressure through the existing `scripts/p6-latency.py`
+helper, and runs complete agent/driver/app targets plus doctests. The unchanged
+helper requires both runs to complete with at least 2x margin inside the original
+3s journal and 30s resume bounds. Missing measurements fail the always-run report;
+normal/contended JSON, disk-load counters and raw logs are retained.
 Dispatch `source_ref=b59b952172` separately for a red baseline with the same
 new regression checker; failing exits are never converted into passes.
 
