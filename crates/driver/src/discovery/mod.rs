@@ -3,6 +3,8 @@
 //! rules, and prompt templates.
 
 pub mod active_repo;
+mod claude_plugins;
+mod github;
 pub mod models;
 pub mod native;
 pub mod prompts;
