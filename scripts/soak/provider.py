@@ -21,17 +21,24 @@ The workflow, not omp, changes behaviour through ``POST /control``::
 
 from __future__ import annotations
 
+import faulthandler
+
+if __name__ == "__main__":
+	# Capture a blocked startup stack before the fixture's unchanged 10s gate.
+	faulthandler.dump_traceback_later(9)
+	print("SOAK_PROVIDER_STARTUP phase=imports", flush=True)
+
 import argparse
 import json
 import os
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "qa"))
-from harness import MockModel, Reply, call  # noqa: E402
+from harness import LoopbackHTTPServer, MockModel, Reply, call  # noqa: E402
 
 SCRIPT: tuple[Reply, ...] = (
 	call("bash", command="echo soak-turn; seq 1 40 | tr '\\n' ' '"),
@@ -98,8 +105,6 @@ def main() -> None:
 	options = parser.parse_args()
 
 	control = Control()
-	shaper = MockModel(*SCRIPT, loop=True)  # reused only for its wire builders
-	shaper.close()
 	log_path = Path(options.log)
 	log_lock = threading.Lock()
 	state = {"served": 0, "errors": 0, "stalls": 0, "overflows": 0, "retired": 0, "previous": b""}
@@ -225,7 +230,7 @@ def main() -> None:
 			reply = SCRIPT[(ordinal - 1) % len(SCRIPT)]
 			prompt_tokens = max(1, len(raw) // 4)
 			if body.get("stream") is False:
-				completion = shaper._completion(reply, ordinal, body)
+				completion = MockModel._completion(reply, ordinal, body)
 				completion["usage"] = {
 					"prompt_tokens": prompt_tokens,
 					"completion_tokens": 32,
@@ -235,7 +240,7 @@ def main() -> None:
 				log(record)
 				self._respond(200, "application/json", json.dumps(completion).encode())
 				return
-			events = shaper._sse_events(reply, ordinal, body)
+			events = MockModel._sse_events(reply, ordinal, body)
 			# Always report usage so compaction sees a provider receipt.
 			usage = json.dumps(
 				{
@@ -281,10 +286,12 @@ def main() -> None:
 			except (BrokenPipeError, ConnectionResetError):
 				log({"kind": "client_closed", "ordinal": ordinal})
 
-	server = ThreadingHTTPServer(("127.0.0.1", options.port), Handler)
+	print("SOAK_PROVIDER_STARTUP phase=bind", flush=True)
+	server = LoopbackHTTPServer(("127.0.0.1", options.port), Handler)
 	port = server.server_address[1]
 	if options.ready_file:
 		Path(options.ready_file).write_text(str(port))
+	faulthandler.cancel_dump_traceback_later()
 	print(f"SOAK_PROVIDER_LISTENING port={port} log={log_path}", flush=True)
 	log({"kind": "start", "port": port, "pid": os.getpid()})
 	try:
