@@ -13,6 +13,8 @@ on:
       - crates/chat/src/commands/settings.rs
       - crates/chat/src/overlays/settings.rs
       - scripts/qa/cases/theme_live_pty.py
+      - scripts/qa/pty_debug.py
+      - scripts/qa/test_pty_debug.py
       - .github/workflows/theme-defaults.yml
   workflow_dispatch:
     inputs:
@@ -48,8 +50,13 @@ jobs:
           git -C ../proof rev-parse HEAD > target/theme-proof/checker-sha.txt
           cp ../proof/crates/app/tests/theme_defaults.rs crates/app/tests/theme_defaults.rs
           cp ../proof/scripts/qa/cases/theme_live_pty.py scripts/qa/cases/theme_live_pty.py
-          shasum -a 256 crates/app/tests/theme_defaults.rs scripts/qa/cases/theme_live_pty.py scripts/qa/harness.py > target/theme-proof/checker.sha256
+          cp ../proof/scripts/qa/pty_debug.py scripts/qa/pty_debug.py
+          cp ../proof/scripts/qa/test_pty_debug.py scripts/qa/test_pty_debug.py
+          shasum -a 256 crates/app/tests/theme_defaults.rs scripts/qa/cases/theme_live_pty.py scripts/qa/pty_debug.py scripts/qa/test_pty_debug.py scripts/qa/harness.py > target/theme-proof/checker.sha256
           git status --porcelain=v1 > target/theme-proof/source-status.txt
+      - name: Verify PTY request pump and cleanup mechanics
+        working-directory: source
+        run: python3 scripts/qa/test_pty_debug.py
       - name: Install prerequisites
         run: brew install just cmake ninja lld@22 uv
       - uses: taiki-e/install-action@nextest
