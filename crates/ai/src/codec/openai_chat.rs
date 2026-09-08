@@ -1071,11 +1071,130 @@ struct ReasoningFields {
 	venice:        Option<WireVeniceParameters>,
 }
 
+// Chat tool messages carry textual results. Preserve their call identity and
+// put image content in a following user message only after every result in the
+// associated assistant tool batch. This is a wire projection, not a journal
+// edit.
+fn hoist_tool_result_images(
+	messages: &[Message],
+	tool_id: ToolIdWireProfile,
+) -> Result<Cow<'_, [Message]>, Error> {
+	let has_images = messages.iter().any(|message| {
+		message.content.iter().any(|part| {
+			matches!(part, ContentPart::ToolResult { content, .. }
+			if content.iter().any(|item| matches!(item, ToolResultContent::Image(_))))
+		})
+	});
+	if !has_images {
+		return Ok(Cow::Borrowed(messages));
+	}
+	let mut output = Vec::with_capacity(messages.len());
+	let mut pending = Vec::<ToolCallId>::new();
+	let mut batch_known = false;
+	let mut batch_invalid = false;
+	let mut images = Vec::new();
+	for message in messages {
+		if message.role != Role::Tool {
+			flush_tool_images(&mut output, &mut images, &pending, batch_known, batch_invalid)?;
+			pending.clear();
+			batch_known = false;
+			batch_invalid = false;
+			if message.role == Role::Assistant {
+				for part in message.content.iter() {
+					if let ContentPart::ToolCall { call, .. } = part {
+						batch_invalid |= pending.contains(call);
+						pending.push(call.clone());
+						batch_known = true;
+					}
+				}
+			}
+			output.push(message.clone());
+			continue;
+		}
+		let mut projected = Vec::with_capacity(message.content.len());
+		for part in message.content.iter() {
+			let ContentPart::ToolResult { call, name, content, is_error } = part else {
+				return Err(encoding_error(ErrorKind::InvalidRequest));
+			};
+			if let Some(position) = pending.iter().position(|id| id == call) {
+				pending.remove(position);
+			} else {
+				batch_invalid = true;
+			}
+			let mut text = Vec::with_capacity(content.len());
+			let mut attached = false;
+			for item in content.iter() {
+				if let ToolResultContent::Image(media) = item {
+					if !attached {
+						images.push(ContentPart::Text {
+							text:  sf!(
+								"Images from tool result {}:",
+								project_call_id(tool_id, call.as_str())
+							),
+							proof: None,
+						});
+						attached = true;
+					}
+					images.push(ContentPart::Image(media.clone()));
+				} else {
+					text.push(item.clone());
+				}
+			}
+			if attached {
+				text.push(ToolResultContent::Text(sf!(
+					"[images attached in the following user message]"
+				)));
+			}
+			projected.push(ContentPart::ToolResult {
+				call:     call.clone(),
+				name:     name.clone(),
+				content:  text.into(),
+				is_error: *is_error,
+			});
+		}
+		output.push(Message {
+			role:    message.role,
+			content: projected.into(),
+			name:    message.name.clone(),
+		});
+	}
+	flush_tool_images(&mut output, &mut images, &pending, batch_known, batch_invalid)?;
+	Ok(Cow::Owned(output))
+}
+
+fn flush_tool_images(
+	output: &mut Vec<Message>,
+	images: &mut Vec<ContentPart>,
+	pending: &[ToolCallId],
+	batch_known: bool,
+	batch_invalid: bool,
+) -> Result<(), Error> {
+	if images.is_empty() {
+		return Ok(());
+	}
+	// Do not insert a user message in the middle of an incomplete tool batch,
+	// or pretend that orphan/duplicate tool results have a known association.
+	if !batch_known || batch_invalid || !pending.is_empty() {
+		return Err(encoding_error(ErrorKind::InvalidRequest));
+	}
+	output.push(Message {
+		role:    Role::User,
+		content: std::mem::take(images).into(),
+		name:    None,
+	});
+	Ok(())
+}
+
 fn lower_messages(
 	profile: &OpenAiChatProfile,
 	messages: &[Message],
 ) -> Result<Vec<WireMessage>, Error> {
 	let messages = merge_assistant_runs(messages);
+	let messages = if profile.supports_images {
+		hoist_tool_result_images(&messages, profile.tool_id)?
+	} else {
+		Cow::Borrowed(messages.as_ref())
+	};
 	let mut lowered = Vec::new();
 	for message in messages.iter() {
 		if profile.requires_assistant_after_tool_result
@@ -2897,6 +3016,7 @@ mod tests {
 
 	use bytes::Bytes;
 	use omp_catalog::{Catalog, PolicyModel, WireTarget, policy};
+	use omp_core::encoding::base64;
 	use serde::Deserialize;
 
 	use super::{
@@ -4003,6 +4123,183 @@ mod tests {
 		assert_eq!(messages[1]["role"], "tool");
 		assert_eq!(messages[1]["tool_call_id"], "call_a");
 		assert_eq!(messages[2]["tool_call_id"], "call_b");
+	}
+
+	const TOOL_PNG: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0b\x49\x44\x41\x54\x78\xda\x63\xfc\xff\x1f\x00\x03\x03\x02\x00\xef\xa2\xa7\x5b\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+
+	fn canonical_image_batch() -> Vec<Message> {
+		use omp_proto::thread::v1 as thread;
+		let mut items = Vec::new();
+		for id in ["call_a", "call_b", "call_c"] {
+			items.push(thread::Item {
+				kind: Some(thread::item::Kind::ToolCall(thread::ToolCall {
+					id: id.into(),
+					name: "read".into(),
+					args_json: Bytes::from_static(b"{}"),
+					..Default::default()
+				})),
+				..Default::default()
+			});
+		}
+		for (id, text, image) in [
+			("call_a", "frame 2 at 1s", true),
+			("call_b", "text-only metadata", false),
+			("call_c", "frame 3 at 2s", true),
+		] {
+			let mut parts = vec![thread::Part { kind: Some(thread::part::Kind::Text(text.into())) }];
+			if image {
+				parts.push(thread::Part {
+					kind: Some(thread::part::Kind::Blob(thread::Blob {
+						mime: "image/png".into(),
+						inline: Bytes::from_static(TOOL_PNG),
+						size: TOOL_PNG.len() as u64,
+						..Default::default()
+					})),
+				});
+			}
+			items.push(thread::Item {
+				kind: Some(thread::item::Kind::ToolResult(thread::ToolResult {
+					call_id: id.into(),
+					name: "read".into(),
+					parts,
+					..Default::default()
+				})),
+				..Default::default()
+			});
+		}
+		Message::from_thread_items(&items).expect("canonical image results")
+	}
+
+	#[test]
+	fn canonical_tool_images_follow_the_complete_parallel_result_batch() {
+		let messages = canonical_image_batch();
+		let body = OpenAiChatCodec::default()
+			.encode_chat("vision-model", &request(messages.into()))
+			.expect("image tool results encode");
+		let wire: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+		let messages = wire["messages"].as_array().expect("messages");
+		assert_eq!(messages.len(), 5, "one assistant, three tool replies, one image message");
+		assert_eq!(messages[0]["tool_calls"].as_array().expect("calls").len(), 3);
+		for (index, id) in ["call_a", "call_b", "call_c"].into_iter().enumerate() {
+			assert_eq!(messages[index + 1]["role"], "tool");
+			assert_eq!(messages[index + 1]["tool_call_id"], id);
+			assert_eq!(messages[0]["tool_calls"][index]["id"], id);
+		}
+		assert!(
+			messages[1]["content"]
+				.as_str()
+				.expect("text")
+				.starts_with("frame 2 at 1s")
+		);
+		assert_eq!(messages[2]["content"], "text-only metadata");
+		assert!(
+			messages[3]["content"]
+				.as_str()
+				.expect("text")
+				.starts_with("frame 3 at 2s")
+		);
+		assert_eq!(messages[4]["role"], "user");
+		let parts = messages[4]["content"].as_array().expect("image parts");
+		assert_eq!(parts.len(), 4, "one association and image per image-bearing result");
+		assert_eq!(parts[0]["text"], "Images from tool result call_a:");
+		assert_eq!(parts[2]["text"], "Images from tool result call_c:");
+		let expected = format!("data:image/png;base64,{}", base64::encode(TOOL_PNG).into_string());
+		for index in [1, 3] {
+			assert_eq!(parts[index]["type"], "image_url");
+			assert_eq!(parts[index]["image_url"]["url"], expected, "exact PNG bytes");
+		}
+	}
+
+	#[test]
+	fn tool_images_preserve_result_order_and_precede_the_next_user_message() {
+		for packed in [false, true] {
+			let mut messages = canonical_image_batch();
+			messages.swap(3, 5); // Results may complete in a different order than calls.
+			if packed {
+				let content = messages
+					.drain(3..)
+					.flat_map(|message| message.content.to_vec())
+					.collect::<Vec<_>>();
+				messages.push(Message { role: Role::Tool, content: content.into(), name: None });
+			}
+			messages.push(text_message("What changed between these frames?"));
+			let body = OpenAiChatCodec::default()
+				.encode_chat("vision", &request(messages.into()))
+				.expect("ordered batch");
+			let wire: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+			let messages = wire["messages"].as_array().expect("messages");
+			assert_eq!(messages.len(), 6);
+			assert_eq!(messages[1]["tool_call_id"], "call_c");
+			assert_eq!(messages[3]["tool_call_id"], "call_a");
+			assert_eq!(messages[4]["content"][0]["text"], "Images from tool result call_c:");
+			assert_eq!(messages[4]["content"][2]["text"], "Images from tool result call_a:");
+			assert_eq!(messages[5]["content"], "What changed between these frames?");
+		}
+	}
+
+	#[test]
+	fn tool_images_keep_nonvision_omission_and_assistant_transition_policy() {
+		let messages = canonical_image_batch();
+		let mut profile = OpenAiChatProfile::default();
+		profile.supports_images = false;
+		let body = OpenAiChatCodec::new(profile, None)
+			.encode_chat("text-model", &request(messages.clone().into()))
+			.expect("nonvision results");
+		let wire: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+		assert_eq!(wire["messages"].as_array().expect("messages").len(), 4);
+		assert!(
+			wire["messages"][1]["content"]
+				.as_str()
+				.expect("text")
+				.contains("image omitted")
+		);
+		assert!(
+			!String::from_utf8(body.to_vec())
+				.expect("UTF8")
+				.contains("data:image/")
+		);
+		let mut profile = OpenAiChatProfile::default();
+		profile.requires_assistant_after_tool_result = true;
+		let body = OpenAiChatCodec::new(profile, None)
+			.encode_chat("compat-model", &request(messages.into()))
+			.expect("compat results");
+		let wire: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+		assert_eq!(wire["messages"][3]["role"], "tool");
+		assert_eq!(wire["messages"][4]["role"], "assistant");
+		assert_eq!(wire["messages"][5]["role"], "user");
+	}
+
+	#[test]
+	fn tool_image_lowering_rejects_incomplete_duplicate_and_document_results() {
+		let mut incomplete = canonical_image_batch();
+		incomplete.pop();
+		assert!(
+			OpenAiChatCodec::default()
+				.encode_chat("vision", &request(incomplete.into()))
+				.is_err()
+		);
+		let mut duplicate = canonical_image_batch();
+		duplicate.push(duplicate.last().expect("result").clone());
+		assert!(
+			OpenAiChatCodec::default()
+				.encode_chat("vision", &request(duplicate.into()))
+				.is_err()
+		);
+		let mut document = canonical_image_batch();
+		let mut result = document[3].content.to_vec();
+		let ContentPart::ToolResult { content, .. } = &mut result[0] else {
+			panic!("result")
+		};
+		*content = Arc::from([ToolResultContent::Document(MediaInput::Bytes {
+			media_type: "application/pdf".into(),
+			data:       Bytes::from_static(b"%PDF-1.7"),
+		})]);
+		document[3].content = result.into();
+		assert!(
+			OpenAiChatCodec::default()
+				.encode_chat("vision", &request(document.into()))
+				.is_err()
+		);
 	}
 
 	fn thinking_request(effort: ReasoningEffort) -> ChatRequest {

@@ -49,3 +49,19 @@ oracle and must be rerun against a binary built from the new source.
 Static formatting and diff checks passed. New Rust tests, complete affected
 `omp-proto`/`omp-envd`/`omp-driver`/`omp-agent` targets and doctests, and production read-tail QA remain
 pending; no runtime success is claimed from the source diagnosis alone.
+
+Canonical tool-result blobs with an image MIME essence now become inference
+images; other blobs remain documents. OpenAI Chat lowering moves image bytes
+into an associated user image message after the full assistant tool-call batch
+has received its textual tool replies. Call IDs, metadata text, result order,
+and the dialect's assistant-transition requirement remain intact. Incomplete,
+orphan, or duplicate image-bearing batches fail encoding; unsupported documents
+continue to fail, and non-vision profiles retain the existing omission notice.
+The canonical journal is unchanged by this provider-specific wire projection.
+
+Codec regressions start from canonical thread tool calls and results containing
+a valid one-pixel PNG and verify exact image URL bytes, parallel mixed results,
+out-of-order completion, multiple results in one message, placement before the
+next user turn, text-only profiles, and malformed batches. These tests are not
+provider calls and do not replace the unchanged read-tail PNG oracle. Rust tests
+and that production QA remain pending on this commit.

@@ -696,7 +696,17 @@ fn tool_result_from_thread(
 ) -> Result<ToolResultContent, ThreadProjectionError> {
 	match part.kind.as_ref() {
 		Some(part::Kind::Text(text)) => Ok(ToolResultContent::Text(text.as_str().into())),
-		Some(part::Kind::Blob(blob)) => Ok(ToolResultContent::Document(media_from_thread(blob)?)),
+		Some(part::Kind::Blob(blob)) => {
+			let media = media_from_thread(blob)?;
+			let essence = blob.mime.split(';').next().unwrap_or_default().trim();
+			if essence.split_once('/').is_some_and(|(kind, subtype)| {
+				kind.eq_ignore_ascii_case("image") && !subtype.is_empty()
+			}) {
+				Ok(ToolResultContent::Image(media))
+			} else {
+				Ok(ToolResultContent::Document(media))
+			}
+		},
 		_ => Err(ThreadProjectionError::UnsupportedToolResultPart),
 	}
 }
@@ -1718,6 +1728,38 @@ mod tests {
 	use omp_core::SecretString;
 
 	use super::{AuthInput, RawJson};
+
+	#[test]
+	fn canonical_tool_blobs_classify_images_without_reclassifying_documents() {
+		for (mime, image) in [
+			("image/png", true),
+			("IMAGE/JPEG; quality=90", true),
+			("application/pdf", false),
+			("audio/wav", false),
+			("application/image", false),
+			("image/", false),
+		] {
+			let bytes = Bytes::from_static(b"retained source bytes");
+			let part = super::thread_pb::Part {
+				kind: Some(super::part::Kind::Blob(super::thread_pb::Blob {
+					mime: mime.into(),
+					inline: bytes.clone(),
+					size: bytes.len() as u64,
+					..Default::default()
+				})),
+			};
+			let converted = super::ToolResultContent::from_thread_part(&part).expect("projection");
+			assert_eq!(matches!(converted, super::ToolResultContent::Image(_)), image, "{mime}");
+			let media = match converted {
+				super::ToolResultContent::Image(media) | super::ToolResultContent::Document(media) => {
+					media
+				},
+				_ => panic!("expected media"),
+			};
+			assert!(matches!(media, super::MediaInput::Bytes { data, media_type }
+				if data == bytes && media_type.as_str() == mime));
+		}
+	}
 
 	#[test]
 	fn auth_input_debug_never_exposes_secrets() {
