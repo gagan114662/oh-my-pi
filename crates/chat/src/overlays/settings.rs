@@ -75,44 +75,25 @@ const SETTING_TABS: &[TabSpec] = &[
 		tab:    SettingTab::Model,
 		label:  "Model",
 		icon:   "tab.model",
-		groups: &[
-			"Thinking",
-			"Sampling",
-			"Prompt",
-			"Retry & Fallback",
-			"Advisor",
-			"Prewalk",
-			"Vision",
-		],
+		groups: &["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Prewalk"],
 	},
 	TabSpec {
 		tab:    SettingTab::Interaction,
 		label:  "Interaction",
 		icon:   "tab.interaction",
-		groups: &[
-			"Input",
-			"Approvals",
-			"Notifications",
-			"Speech",
-			"Collab",
-			"Magic Keywords",
-			"Startup & Updates",
-			"Power",
-			"Agent",
-			"Git",
-		],
+		groups: &["Input", "Approvals", "Notifications", "Speech", "Collab", "Startup & Updates"],
 	},
 	TabSpec {
 		tab:    SettingTab::Context,
 		label:  "Context",
 		icon:   "tab.context",
-		groups: &["General", "Compaction", "Rules (TTSR)", "Experimental"],
+		groups: &["General", "Compaction"],
 	},
 	TabSpec {
 		tab:    SettingTab::Memory,
 		label:  "Memory",
 		icon:   "tab.memory",
-		groups: &["General", "Auto-Learn", "Mnemopi", "Hindsight", "Sharpshooter"],
+		groups: &["General", "Auto-Learn", "Mnemopi"],
 	},
 	TabSpec {
 		tab:    SettingTab::Files,
@@ -132,7 +113,6 @@ const SETTING_TABS: &[TabSpec] = &[
 		icon:   "tab.tools",
 		groups: &[
 			"Available Tools",
-			"Todos",
 			"Grep & Browser",
 			"Computer",
 			"GitHub",
@@ -140,20 +120,19 @@ const SETTING_TABS: &[TabSpec] = &[
 			"Execution",
 			"Discovery & MCP",
 			"Extensions",
-			"Developer",
 		],
 	},
 	TabSpec {
 		tab:    SettingTab::Tasks,
 		label:  "Tasks",
 		icon:   "tab.tasks",
-		groups: &["Modes", "Subagents", "Isolation", "Commands & Skills"],
+		groups: &["Modes", "Subagents", "Isolation"],
 	},
 	TabSpec {
 		tab:    SettingTab::Providers,
 		label:  "Providers",
 		icon:   "tab.providers",
-		groups: &["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
+		groups: &["Services", "Fireworks", "Tiny Model", "Protocol"],
 	},
 ];
 
@@ -530,6 +509,83 @@ fn row(con: &Ctx, spec: &VarView<'_>) -> Option<SettingRow> {
 #[must_use]
 pub fn settings_rows(con: &Ctx) -> Vec<SettingRow> {
 	con.vars().filter_map(|spec| row(con, &spec)).collect()
+}
+
+/// One tab/group relationship in the settings declaration audit.
+/// Names only are recorded; values (including secrets) are never exported.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SettingsGroupCoverage {
+	/// Stable tab key from the convar metadata and the curated roster.
+	pub tab:          Str,
+	/// Human-readable group name.
+	pub group:        Str,
+	/// Whether the actual panel's roster advertises this pair.
+	pub advertised:   bool,
+	/// Registered convars that the normal row projector can display.
+	pub convars:      Vec<Str>,
+	/// Declarations opting into this group which cannot produce a UI row.
+	pub unrenderable: Vec<Str>,
+}
+
+impl SettingsGroupCoverage {
+	/// Both directions must agree, with at least one functional row.
+	#[must_use]
+	pub fn is_complete(&self) -> bool {
+		self.advertised && !self.convars.is_empty() && self.unrenderable.is_empty()
+	}
+}
+
+/// Audits the panel's single curated roster against the actual linked convar
+/// registry. This intentionally inspects declarations before `settings_rows`
+/// filters invalid metadata: silently hidden bindings must remain visible to
+/// the audit. Conditional rows count as bound, even on a host where hidden.
+#[must_use]
+pub fn settings_group_coverage(con: &Ctx) -> Vec<SettingsGroupCoverage> {
+	group_coverage(con, SETTING_TABS)
+}
+
+fn group_coverage(con: &Ctx, tabs: &[TabSpec]) -> Vec<SettingsGroupCoverage> {
+	let mut groups = std::collections::BTreeMap::new();
+	for tab in tabs {
+		let key: &'static str = tab.tab.into();
+		for group in tab.groups {
+			groups.insert((Str::new_static(key), Str::new_static(group)), SettingsGroupCoverage {
+				tab:          Str::new_static(key),
+				group:        Str::new_static(group),
+				advertised:   true,
+				convars:      Vec::new(),
+				unrenderable: Vec::new(),
+			});
+		}
+	}
+	for spec in con.vars() {
+		let tab = spec.meta_get("ui.tab");
+		let group = spec.meta_get("ui.group");
+		if tab.is_none() && group.is_none() {
+			continue;
+		}
+		let tab = Str::new(tab.unwrap_or("<missing ui.tab>"));
+		let group = Str::new(group.unwrap_or("<missing ui.group>"));
+		let coverage = groups
+			.entry((tab.clone(), group.clone()))
+			.or_insert_with(|| SettingsGroupCoverage {
+				tab,
+				group,
+				advertised: false,
+				convars: Vec::new(),
+				unrenderable: Vec::new(),
+			});
+		if row(con, &spec).is_some() {
+			coverage.convars.push(Str::new(spec.name));
+		} else {
+			coverage.unrenderable.push(Str::new(spec.name));
+		}
+	}
+	for group in groups.values_mut() {
+		group.convars.sort();
+		group.unrenderable.sort();
+	}
+	groups.into_values().collect()
 }
 
 fn row_scalar(row: &SettingRow) -> Option<Str> {
@@ -2348,6 +2404,82 @@ mod tests {
 	use omp_tui::{Mods, Mouse, MouseButton, frame_text};
 
 	use super::*;
+
+	#[test]
+	fn coverage_names_a_new_advertised_group_with_no_binding() {
+		let ctx = Ctx::new();
+		let mut tabs = SETTING_TABS.to_vec();
+		tabs.push(TabSpec {
+			tab:    SettingTab::Tools,
+			label:  "Tools",
+			icon:   "tab.tools",
+			groups: &["Deliberately Unbound Group"],
+		});
+		let coverage = group_coverage(&ctx, &tabs);
+		let missing = coverage
+			.iter()
+			.find(|group| group.group == "Deliberately Unbound Group")
+			.unwrap();
+		assert!(missing.advertised);
+		assert!(missing.convars.is_empty());
+		assert!(!missing.is_complete(), "adding an unbound roster group must fail coverage");
+	}
+
+	#[test]
+	fn coverage_sees_unadvertised_and_invalid_bindings_before_row_filtering() {
+		let ctx = Ctx::new();
+		for (name, group, label) in [
+			("ext::coverage::orphan", "Unadvertised Fixture Group", "Orphan Control"),
+			("ext::coverage::invalid", "Extensions", ""),
+			("ext::coverage::valid", "Extensions", "Valid Control"),
+		] {
+			ctx.register_dynamic_var(DynamicVarSpec {
+				name:    Str::new(name),
+				desc:    Str::new_static("coverage fixture"),
+				ty:      TypeSpec::BOOL,
+				flags:   VarFlags::ARCHIVE,
+				default: Value::Bool(false),
+				meta:    Arc::from([
+					(Str::new_static("ui.tab"), Str::new_static("tools")),
+					(Str::new_static("ui.group"), Str::new(group)),
+					(Str::new_static("ui.label"), Str::new(label)),
+				]),
+			})
+			.unwrap();
+		}
+		let rows = settings_rows(&ctx);
+		assert!(rows.iter().any(|row| row.convar == "ext::coverage::valid"));
+		assert!(!rows.iter().any(
+			|row| row.convar == "ext::coverage::orphan" || row.convar == "ext::coverage::invalid"
+		));
+		let coverage = settings_group_coverage(&ctx);
+		let orphan = coverage
+			.iter()
+			.find(|group| group.group == "Unadvertised Fixture Group")
+			.unwrap();
+		assert!(!orphan.advertised);
+		assert!(!orphan.is_complete());
+		assert_eq!(orphan.unrenderable, [Str::new_static("ext::coverage::orphan")]);
+		let extensions = coverage
+			.iter()
+			.find(|group| group.tab == "tools" && group.group == "Extensions")
+			.unwrap();
+		assert!(extensions.advertised);
+		assert!(
+			extensions
+				.convars
+				.contains(&Str::new_static("ext::coverage::valid"))
+		);
+		assert!(
+			extensions
+				.unrenderable
+				.contains(&Str::new_static("ext::coverage::invalid"))
+		);
+		assert!(
+			!extensions.is_complete(),
+			"one valid control cannot hide another rejected declaration"
+		);
+	}
 
 	fn choice(value: &'static str, label: &'static str) -> Choice {
 		Choice {

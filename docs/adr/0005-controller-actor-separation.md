@@ -72,6 +72,60 @@ projection to the unchanged transcript viewer, and host select/editor requests
 race local and remote actors by correlated ids without granting either actor a
 mutable session handle.
 
+## Settings roster coverage (#55)
+
+The settings panel continues to read convar metadata, values, validation and
+persistence from `omp-con`. `SETTING_TABS` in
+`crates/chat/src/overlays/settings.rs` is the single curated tab/group roster
+used by both the panel and its coverage report. The report compares **tab/group
+pairs** against the linked convar registry before invalid declarations are
+filtered out. A declaration counts only if the existing row projector can
+produce its control; a label attached to an unrenderable variable does not close
+the gap. Host-conditional rows still count as declarations.
+
+Fourteen unbound declarations have been removed from the curated roster. This
+removes no convar and implements none of the missing capabilities below. The
+panel already filtered empty groups; the defect being closed here is the
+unguarded disagreement between declarations, not a claim that fourteen empty
+panels were visible in the current product.
+
+| Tab / removed group | Intended control surface and disposition |
+|---|---|
+| Interaction / Magic Keywords | Keyword-triggered behavior remains unimplemented; #22 remains open. Composer highlighting is unchanged. |
+| Memory / Hindsight | The Hindsight backend/settings gap remains tracked by #23; no backend is added or hidden behind a dummy control. |
+| Memory / Sharpshooter | The Sharpshooter backend/settings gap remains tracked by #23. |
+| Context / Rules (TTSR) | The intended streaming-rule controls have no bound variables; #34 remains open. Existing discovered rules are unchanged. |
+| Interaction / Agent | Reserved general agent-settings heading had no bindings. Existing agent controls in other groups remain. |
+| Interaction / Power | Reserved power-user settings heading had no bindings. No power-user control is removed. |
+| Interaction / Git | Unbound Git heading removed; the distinct Tools / GitHub group and Git workbench remain. |
+| Context / Experimental | Reserved experimental-context heading had no bindings. |
+| Model / Vision | Reserved vision-settings heading had no bindings. Image/vision functionality elsewhere is not removed. |
+| Tools / Todos | Reserved todo-settings heading had no bindings. Existing todo tools are unchanged. |
+| Tools / Developer | Reserved developer-tool settings heading had no bindings. |
+| Tasks / Commands & Skills | Reserved command/skill settings heading had no bindings. Discovery and execution remain separate capabilities. |
+| Providers / Timeouts | Reserved provider-timeout heading had no bindings. Existing timeout/retry convars in other groups remain. |
+| Providers / Privacy | Reserved provider-privacy heading had no bindings. This does not introduce a privacy policy/control. |
+
+Cross-session continuity (#35) also remains unresolved; removing unused settings
+declarations is not evidence for memory capabilities. A future feature can add a
+group together with genuine convar bindings and its behavioral tests.
+
+`crates/app/tests/settings_roster.rs` audits the actual linked product registry,
+not a copied list of expected convars. Chat tests deliberately add an unbound
+group and malformed/unadvertised bindings, asserting the coverage check names
+and rejects them. Existing settings interaction tests remain intact. The
+coverage report contains convar **names only**, never current values or secrets.
+
+For browser evidence, set `OMP_SETTINGS_ROSTER_EVIDENCE_DIR` when running
+`just test-pkg omp-app`; the test writes `settings-roster.json` and
+`settings-roster.md` **before** its final assertion, retaining missing rows on
+negative runs. Run `just test-pkg omp-chat` for the negative and existing panel
+contracts. The complete affected suites/doctests and a real PTY input/resize/quit
+walk through the settings tabs are required before acceptance. A deliberate
+unbound `TabSpec` mutation must fail the product registry test; upload its
+failure and normal enumeration, with source/checker identities. These artifacts
+must not be described as completed until their runs actually execute.
+
 ## References
 
 - The Harness Playbook, "The state" — "Controller and actor"; Appendix A items 2, 5, 6
