@@ -168,11 +168,13 @@ pub struct RankedCandidate {
 /// WAL and busy timeout.
 #[derive(Clone, Debug)]
 pub struct BankStore {
-	path:              PathBuf,
-	bank:              BankId,
-	identity_root:     PathBuf,
-	working_limit:     usize,
-	working_ttl_hours: u64,
+	path:                  PathBuf,
+	bank:                  BankId,
+	identity_root:         PathBuf,
+	working_limit:         usize,
+	working_ttl_hours:     u64,
+	/// Episodic tier byte budget; zero is unbounded (#116).
+	episodic_budget_bytes: u64,
 }
 
 impl BankStore {
@@ -188,6 +190,7 @@ impl BankStore {
 			identity_root: identity_root.into(),
 			working_limit: 1000,
 			working_ttl_hours: 24,
+			episodic_budget_bytes: DEFAULT_EPISODIC_BUDGET_BYTES,
 		};
 		if let Some(parent) = store.path.parent() {
 			fs::create_dir_all(parent)?;
@@ -202,6 +205,12 @@ impl BankStore {
 	pub(crate) const fn with_working_policy(mut self, limit: usize, ttl_hours: u64) -> Self {
 		self.working_limit = limit;
 		self.working_ttl_hours = ttl_hours;
+		self
+	}
+
+	/// Applies the episodic byte budget to this bank handle.
+	pub(crate) const fn with_episodic_budget(mut self, bytes: u64) -> Self {
+		self.episodic_budget_bytes = bytes;
 		self
 	}
 
@@ -613,7 +622,15 @@ impl BankStore {
 			Some(session) => transaction.execute(&delete_sql, [session])?,
 			None => transaction.execute(&delete_sql, [])?,
 		};
-		if promoted > 0 {
+		let evicted = prune_episodic_transaction(&transaction, self.episodic_budget_bytes)?;
+		if evicted > 0 {
+			tracing::info!(
+				evicted,
+				budget_bytes = self.episodic_budget_bytes,
+				"episodic memory over budget; oldest episodes evicted"
+			);
+		}
+		if promoted > 0 || evicted > 0 {
 			bump_durable(&transaction)?;
 		}
 		transaction.commit()?;
@@ -1517,6 +1534,67 @@ fn unix_millis() -> Result<u128> {
 		.as_millis())
 }
 
+/// Evicts the oldest episodes (superseded ones first) until the tier fits
+/// `budget_bytes`; their embeddings and links go with them, their facts stay
+/// with a cleared source (#116). Zero disables the budget.
+fn prune_episodic_transaction(
+	transaction: &rusqlite::Transaction<'_>,
+	budget_bytes: u64,
+) -> Result<usize> {
+	if budget_bytes == 0 {
+		return Ok(0);
+	}
+	let total: i64 = transaction.query_row(
+		"SELECT COALESCE(SUM(length(content) + length(COALESCE(metadata_json, ''))), 0) FROM \
+		 episodic_memory",
+		[],
+		|row| row.get(0),
+	)?;
+	let total = u64::try_from(total).unwrap_or(0);
+	if total <= budget_bytes {
+		return Ok(0);
+	}
+	let mut excess = total - budget_bytes;
+	let victims = {
+		let mut statement = transaction.prepare(
+			"SELECT id, length(content) + length(COALESCE(metadata_json, ''))
+			 FROM episodic_memory
+			 ORDER BY (superseded_by IS NULL) ASC,
+			          CASE WHEN timestamp NOT GLOB '*[^0-9]*' THEN CAST(timestamp AS INTEGER)
+			               ELSE COALESCE(unixepoch(timestamp) * 1000, 0) END ASC,
+			          rowid ASC",
+		)?;
+		let rows =
+			statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+		let mut victims = Vec::new();
+		for row in rows {
+			let (id, bytes) = row?;
+			let bytes = u64::try_from(bytes).unwrap_or(0);
+			victims.push(id);
+			if bytes >= excess {
+				break;
+			}
+			excess -= bytes;
+		}
+		victims
+	};
+	let mut removed = 0;
+	for id in victims {
+		transaction.execute("DELETE FROM memory_embeddings WHERE memory_id = ?1", [&id])?;
+		transaction
+			.execute("UPDATE facts SET source_memory_id = NULL WHERE source_memory_id = ?1", [&id])?;
+		transaction.execute(
+			"DELETE FROM memory_links WHERE source_memory_id = ?1 OR target_memory_id = ?1",
+			[&id],
+		)?;
+		removed += transaction.execute("DELETE FROM episodic_memory WHERE id = ?1", [&id])?;
+	}
+	Ok(removed)
+}
+
+/// Default episodic budget when no configuration applies.
+const DEFAULT_EPISODIC_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+
 fn prune_working_transaction(
 	transaction: &rusqlite::Transaction<'_>,
 	session_id: &str,
@@ -1562,7 +1640,7 @@ fn prune_working_transaction(
 		   WHERE memory_id IN (SELECT id FROM working_eviction_ids);
 		 DELETE FROM extraction_jobs
 		   WHERE source_memory_id IN (SELECT id FROM working_eviction_ids);
-		 DELETE FROM facts
+		 UPDATE facts SET source_memory_id = NULL
 		   WHERE source_memory_id IN (SELECT id FROM working_eviction_ids);
 		 DELETE FROM triples
 		   WHERE source_memory_id IN (SELECT id FROM working_eviction_ids);",
@@ -1809,7 +1887,10 @@ mod tests {
 	}
 
 	#[test]
-	fn ttl_eviction_purges_every_linked_projection() {
+	fn ttl_eviction_keeps_facts_and_purges_projections() {
+		// A fact learned from a working row is knowledge; the row's embedding
+		// and graph rows are projections of the row. Eviction drops the
+		// projections and keeps the fact with its source cleared (#116).
 		let store = store(10, 1);
 		save(&store, "stale");
 		store
@@ -1841,8 +1922,47 @@ mod tests {
 
 		assert!(store.get("stale").expect("lookup").is_none());
 		let integrity = store.integrity().expect("integrity");
-		assert_eq!(integrity.vector_rows, 0);
-		assert_eq!(store.counts().expect("counts").facts, 0);
+		assert_eq!(integrity.vector_rows, 0, "the embedding is a projection of the evicted row");
+		assert_eq!(store.counts().expect("counts").facts, 1, "the fact survives its source");
+		let source: Option<String> = store
+			.connection()
+			.expect("connection")
+			.query_row("SELECT source_memory_id FROM facts WHERE fact_id = 'fact-stale'", [], |row| {
+				row.get(0)
+			})
+			.expect("fact row");
+		assert_eq!(source, None, "the dangling provenance is cleared");
+	}
+
+	#[test]
+	fn episodic_budget_evicts_the_oldest_episodes_first() {
+		let store = store(10, 24).with_episodic_budget(250);
+		let content = "x".repeat(100);
+		for id in ["e1", "e2", "e3", "e4", "e5"] {
+			store
+				.save(NewMemory {
+					content:     &content,
+					embed_text:  None,
+					source:      "test",
+					session_id:  "session",
+					importance:  0.5,
+					veracity:    "user",
+					memory_type: "scratch",
+					metadata:    &serde_json::Value::Null,
+					stable_id:   Some(id),
+				})
+				.expect("save memory");
+		}
+		assert_eq!(store.consolidate(None).expect("consolidate"), 5, "every working row promotes");
+		let counts = store.counts().expect("counts");
+		assert_eq!(counts.working, 0);
+		assert_eq!(counts.episodic, 2, "500 bytes over a 250-byte budget keeps the two newest");
+		for id in ["e1", "e2", "e3"] {
+			assert!(store.get(id).expect("lookup").is_none(), "{id} was the oldest and is gone");
+		}
+		for id in ["e4", "e5"] {
+			assert!(store.get(id).expect("lookup").is_some(), "{id} survives");
+		}
 	}
 
 	#[test]
