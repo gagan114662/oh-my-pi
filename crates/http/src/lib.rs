@@ -8,13 +8,9 @@
 //! Reqwest clients own connection pools. Callers clone one of the process-wide
 //! clients instead of constructing a pool per request or host instance.
 
-use std::{
-	collections::VecDeque,
-	net::SocketAddr,
-	ops::Deref,
-	sync::{LazyLock, Mutex},
-};
+use std::{collections::VecDeque, net::SocketAddr, ops::Deref, sync::LazyLock};
 
+use parking_lot::Mutex;
 use reqwest::{Client as ReqwestClient, ClientBuilder, redirect::Policy};
 
 /// Cloneable handle to the workspace-owned HTTP connection pool.
@@ -90,9 +86,7 @@ pub fn pinned_destination_client_with_root(
 	addresses: &[SocketAddr],
 	root_certificate: Option<&[u8]>,
 ) -> Result<Client, reqwest::Error> {
-	let mut pools = PINNED_POOLS
-		.lock()
-		.unwrap_or_else(std::sync::PoisonError::into_inner);
+	let mut pools = PINNED_POOLS.lock();
 	if let Some(index) = pools.iter().position(|pool| {
 		pool.host == host
 			&& pool.addresses == addresses

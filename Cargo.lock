@@ -8382,6 +8382,7 @@ name = "omp-http"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "parking_lot",
  "reqwest 0.13.4",
  "rustls",
  "thiserror 2.0.20",
