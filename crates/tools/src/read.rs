@@ -1084,15 +1084,14 @@ impl<S: ReadSources, B: ReadBlobs, R: resolver::Resolve> ReadTool<S, B, R> {
 		let authored = file_authored.as_deref().unwrap_or(authored);
 
 		let literal = self.sources.stat(Str::new(authored)).await.ok();
-		let video_target = if literal.is_some() {
-			video::is_video(authored).then_some((authored, None))
+		let video_target = if let Some(stat) = literal.as_ref() {
+			(stat.kind == SourceKind::File && video::is_video(authored)).then_some((authored, None))
 		} else {
 			video::split_target(authored)
 				.map(|(path, suffix)| (path, Some(suffix)))
 				.or_else(|| video::is_video(authored).then_some((authored, None)))
 		};
 		if let Some((path, suffix)) = video_target {
-			let selection = video::parse(suffix).map_err(Fault::video)?;
 			let stat = match self.sources.stat(Str::new(path)).await {
 				Ok(stat) => stat,
 				Err(error) => match self.sources.resolve_suffix(Str::new(path)).await? {
@@ -1100,19 +1099,22 @@ impl<S: ReadSources, B: ReadBlobs, R: resolver::Resolve> ReadTool<S, B, R> {
 					None => return Err(error),
 				},
 			};
-			let output = self
-				.sources
-				.video(stat.canonical_path, selection)
-				.await
-				.map_err(Fault::video)?;
-			let blob = self
-				.blobs
-				.store(output.png, Str::new_static("image/png"))
-				.await?;
-			return Ok(ReadSection::new(vec![
-				PayloadPart::Text { text: output.description.clone() },
-				PayloadPart::Blob { blob, alt: output.description, vision: None },
-			]));
+			if stat.kind == SourceKind::File {
+				let selection = video::parse(suffix).map_err(Fault::video)?;
+				let output = self
+					.sources
+					.video(stat.canonical_path, selection)
+					.await
+					.map_err(Fault::video)?;
+				let blob = self
+					.blobs
+					.store(output.png, Str::new_static("image/png"))
+					.await?;
+				return Ok(ReadSection::new(vec![
+					PayloadPart::Text { text: output.description.clone() },
+					PayloadPart::Blob { blob, alt: output.description, vision: None },
+				]));
+			}
 		}
 
 		let parsed_split = selector::split_path_and_selector(authored);
