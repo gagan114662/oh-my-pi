@@ -366,6 +366,23 @@ jobs:
             cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
             cargo-${{ runner.os }}-${{ runner.arch }}-
 
+      - name: Release cached acceptance binaries before workspace linking
+        run: |
+          python3 - <<'PY_SPACE'
+          import json, os, shutil, subprocess
+          from pathlib import Path
+          before = shutil.disk_usage('.').free
+          result = subprocess.run(['cargo', 'clean', '-p', 'omp-e2e', '--locked'], check=False)
+          row = {'package': 'omp-e2e', 'free_bytes_before': before,
+                 'free_bytes_after': shutil.disk_usage('.').free, 'exit_code': result.returncode}
+          output = Path(os.environ['TEST_INVENTORY_DIR'])
+          output.mkdir(parents=True, exist_ok=True)
+          (output / 'released-cached-acceptance.json').write_text(json.dumps(row, indent=2) + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('## Space before workspace linking\n\n```json\n' + json.dumps(row, indent=2) + '\n```\n')
+          raise SystemExit(result.returncode)
+          PY_SPACE
+
       - name: Validate test inventory tooling
         run: python3 scripts/test-inventory-test.py
 
