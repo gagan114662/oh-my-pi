@@ -144,22 +144,34 @@ jobs:
           date +%s > "$OUT/start.epoch"
           setsid nohup bash scripts/soak/sample.sh "$OUT" "$SESS" "$DATA" "$PWD/target/debug/omp" "$SAMPLE_INTERVAL" > "$OUT/sampler.log" 2>&1 &
           bash scripts/soak/phase.sh "$OUT" baseline
-          # libfaketime: offset lives in a file the workflow edits later; monotonic clocks untouched, as an NTP step behaves.
-          LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1 \
-          FAKETIME_TIMESTAMP_FILE="$OUT/faketimerc" FAKETIME_NO_CACHE=1 FAKETIME_DONT_FAKE_MONOTONIC=1 \
+          # libfaketime reaches only the omp child (run 34224127165: preloading
+          # the Python driver broke its own sleep with EINVAL). The offset lives
+          # in a file the workflow edits later; monotonic clocks stay untouched,
+          # as an NTP step behaves.
           setsid nohup python3 scripts/soak/driver.py --omp "$PWD/target/debug/omp" --out "$OUT" --project "$PROJ" \
             --session-dir "$SESS" --data-dir "$DATA" --duration-min "$DURATION_MIN" --min-turns "$MIN_TURNS" \
-            --max-min "$MAX_MIN" --sentinel "${{ steps.prep.outputs.sentinel }}" > "$OUT/driver.log" 2>&1 &
+            --max-min "$MAX_MIN" --sentinel "${{ steps.prep.outputs.sentinel }}" \
+            --child-env LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1 \
+            --child-env "FAKETIME_TIMESTAMP_FILE=$OUT/faketimerc" --child-env FAKETIME_NO_CACHE=1 \
+            --child-env FAKETIME_DONT_FAKE_MONOTONIC=1 > "$OUT/driver.log" 2>&1 &
           echo $! > "$OUT/driver.pid"
           sleep 60
-          echo "--- first minute ---"; tail -5 "$OUT/driver.jsonl" || true; tail -20 "$OUT/omp-stderr.log" || true
+          echo "--- first minute ---"; tail -5 "$OUT/driver.jsonl" || true; tail -20 "$OUT/omp-stderr.log" || true; tail -5 "$OUT/driver.log" || true
+          [ -s "$OUT/driver.jsonl" ] && grep -q turn_end "$OUT/driver.jsonl" || echo "::warning::no turn completed in the first minute"
 
       - name: Fault 1 — kill -9 the live omp process group five times (minutes 8-16)
         run: |
           OUT="$SOAK/out"
           for n in 1 2 3 4 5; do
             bash scripts/soak/until.sh "$OUT" $((6 + n * 2))
-            pid=$(cat "$OUT/omp.pid" 2>/dev/null || true)
+            # Wait for a LIVE omp print child (turns are short); a kill that
+            # hits nothing would let the resume row pass trivially.
+            pid=""
+            for _ in $(seq 1 120); do
+              p=$(cat "$OUT/omp.pid" 2>/dev/null || true)
+              if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then pid=$p; break; fi
+              sleep 0.5
+            done
             if [ -n "$pid" ]; then kill -9 -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true; fi
             bash scripts/soak/phase.sh "$OUT" kill n="$n" pid="${pid:-none}"
           done

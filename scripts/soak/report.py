@@ -84,12 +84,12 @@ def main() -> None:
 	row("#105", "completed turns (turn.receipt@1)", receipts, f">= {options.min_turns}", receipts >= options.min_turns)
 	row("#105", "driver minutes", f"{minutes:.1f}", f">= {options.min_minutes}", minutes >= options.min_minutes)
 	row("#105", "turns started / exit 0", f"{turns_started} / {turns_ok}", "info", None)
-	kills = phase_times(phases, "kill")
+	kills = [float(p["ts"]) for p in phases if p.get("phase") == "kill" and p.get("pid") not in (None, "", "none")]
 	resumed = 0
 	for ts in kills:
 		if first_ok_turn_after(driver, ts) is not None:
 			resumed += 1
-	row("#105", "kill -9 count / resumed with a clean later turn", f"{len(kills)} / {resumed}", "resumed == kills >= 5", len(kills) >= 5 and resumed == len(kills))
+	row("#105", "kill -9 of a live omp (pid recorded) / resumed with a clean later turn", f"{len(kills)} / {resumed}", "resumed == kills >= 5", len(kills) >= 5 and resumed == len(kills))
 
 	def sample_at(minute: int) -> dict | None:
 		for s in samples:

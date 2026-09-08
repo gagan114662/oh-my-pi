@@ -136,6 +136,7 @@ def main() -> None:
 	parser.add_argument("--max-time", default="10m")
 	parser.add_argument("--sentinel", default="SENTINEL-unset")
 	parser.add_argument("--pause", type=float, default=0.2, help="seconds between turns")
+	parser.add_argument("--child-env", action="append", default=[], metavar="NAME=VALUE", help="environment set only for the omp child (e.g. libfaketime); the driver itself must not be preloaded")
 	options = parser.parse_args()
 	options.project = Path(options.project)
 	options.session_dir = Path(options.session_dir)
@@ -144,6 +145,9 @@ def main() -> None:
 	options.project.mkdir(parents=True, exist_ok=True)
 	options.session_dir.mkdir(parents=True, exist_ok=True)
 	env = {**os.environ, "OMP_DATA_DIR": options.data_dir}
+	for item in options.child_env:
+		name, _, value = item.partition("=")
+		env[name] = value
 	started = time.time()
 	log(out / "driver.jsonl", {"kind": "start", "pid": os.getpid(), "argv": sys.argv})
 	session_id = None
