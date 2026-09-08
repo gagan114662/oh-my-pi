@@ -82,7 +82,7 @@ jobs:
             check_status=("${PIPESTATUS[@]}")
             cargo nextest run --locked --profile ci --no-fail-fast -p "$package" 2>&1 | tee "target/feature-isolation/$package-tests.log"
             test_status=("${PIPESTATUS[@]}")
-            cargo test --locked --doc -p "$package" 2>&1 | tee "target/feature-isolation/$package-doctests.log"
+            cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/feature-isolation/$package-doctests.log"
             doc_status=("${PIPESTATUS[@]}")
             printf '%s check=%s tests=%s doctests=%s log_writes=%s,%s,%s\n' "$package" "${check_status[0]}" "${test_status[0]}" "${doc_status[0]}" "${check_status[1]}" "${test_status[1]}" "${doc_status[1]}" >> target/feature-isolation/exits.txt || suite_status=1
             for code in "${check_status[@]}" "${test_status[@]}" "${doc_status[@]}"; do
