@@ -292,6 +292,34 @@ fn registry(exec: FakeExec, _: usize) -> Registry {
 	registry
 }
 
+#[test]
+fn executor_owned_foreground_requires_exact_native_core_shell() {
+	let tools = registry(FakeExec::default(), 1024);
+	let identity = tools.resolved_identity("bash").expect("core shell");
+	assert!(shell::owns_foreground_lifetime(&tools, &identity));
+	let mut stale = identity.clone();
+	stale.rev.n += 1;
+	assert!(!shell::owns_foreground_lifetime(&tools, &stale));
+	let mut extension = Registry::new();
+	extension
+		.register(shell::shell(FakeExec::default()), Presentation::Slot, Claims {
+			precedence: Precedence::CORE,
+			claimant:   sf!("extension/other"),
+			replaces:   None,
+		})
+		.expect("same-name native extension");
+	assert!(!shell::owns_foreground_lifetime(&extension, &identity));
+	let mut worker = Registry::new();
+	worker
+		.register_worker(tools.live_spec("bash").expect("spec").clone(), Presentation::Slot, Claims {
+			precedence: Precedence::CORE,
+			claimant:   sf!("omp/core"),
+			replaces:   None,
+		})
+		.expect("same-name worker");
+	assert!(!shell::owns_foreground_lifetime(&worker, &identity));
+}
+
 fn call(registry: &Registry, raw: &str) -> Vec<ErasedEv> {
 	let (feed, params) = IncomingParams::channel();
 	feed.args_committed(Str::new(raw)).unwrap();

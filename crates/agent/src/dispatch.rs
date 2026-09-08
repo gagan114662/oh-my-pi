@@ -91,8 +91,11 @@ pub struct DispatchPolicy {
 	pub artifact_tail_bytes:       usize,
 	/// Maximum lines retained in each artifact-spilled output head/tail window.
 	pub artifact_tail_lines:       usize,
-	/// Maximum time a call may block the turn.
+	/// Maximum generic foreground wait; registered executor-owned tools defer
+	/// to their tool policy while retaining turn cancellation.
 	pub blocking_limit:            Duration,
+	/// Exact registered tools whose executor owns foreground/background policy.
+	pub executor_foreground:       Vec<ToolIdentity>,
 	/// Bounded wait after a stop request before a call that has not settled
 	/// is forcibly terminated and journaled as effects-unknown (ADR 0011).
 	/// Execution units apply their own courtesy grace inside this bound.
@@ -120,6 +123,7 @@ impl DispatchPolicy {
 			artifact_tail_bytes: 0,
 			artifact_tail_lines: usize::MAX,
 			blocking_limit: Duration::from_secs(30),
+			executor_foreground: Vec::new(),
 			interrupt_grace: Duration::from_secs(1),
 			spill,
 		}
@@ -147,6 +151,21 @@ impl DispatchPolicy {
 		self.artifact_tail_lines = usize::MAX;
 		self.blocking_limit = blocking_limit;
 		self
+	}
+
+	/// Defers foreground/background decisions to one registered executor.
+	#[must_use]
+	pub fn with_executor_foreground(mut self, identity: ToolIdentity) -> Self {
+		self.executor_foreground.push(identity);
+		self
+	}
+
+	fn foreground_deadline(&self, call: &PreparedCall) -> Option<Instant> {
+		if self.executor_foreground.contains(&call.identity) {
+			None
+		} else {
+			call.started.map(|started| started + self.blocking_limit)
+		}
 	}
 
 	/// Selects the inline head/tail projection used after complete output is
@@ -213,31 +232,35 @@ pub struct DispatchRequest {
 /// One externally routed invocation with committed canonical arguments.
 pub struct ExternalDispatchRequest {
 	/// Exact selected tool identity.
-	pub identity:       ToolIdentity,
+	pub identity:            ToolIdentity,
 	/// Stable durable session identity owning this call.
-	pub session_id:     Str,
+	pub session_id:          Str,
 	/// Content-addressed store owned by the session currently dispatching the
 	/// call. Session switches and relocation therefore cannot leave the
 	/// external executor writing into its launch-time namespace.
-	pub blobs:          BlobStore,
+	pub blobs:               BlobStore,
 	/// Stable provider call identity.
-	pub call_id:        Str,
+	pub call_id:             Str,
 	/// Canonical committed argument object.
-	pub args:           Box<RawValue>,
+	pub args:                Box<RawValue>,
 	/// Resolved worker or remote execution route.
-	pub route:          ToolRoute,
+	pub route:               ToolRoute,
 	/// Maximum time the invocation may block this turn.
-	pub blocking_limit: Duration,
+	pub blocking_limit:      Duration,
+	/// Executor owns its foreground policy and tool-specific execution timeout.
+	pub executor_foreground: bool,
 	/// Caller-selected output projection policy. The environment still enforces
 	/// its fixed security ceiling.
-	pub output_request: OutputRequest,
+	pub output_request:      OutputRequest,
 	/// Turn/session cancellation the executor must honor (ADR 0011): once
 	/// cancelled, the invocation is interrupted and settles aborted.
-	pub cancellation:   CancellationToken,
+	pub cancellation:        CancellationToken,
 }
 
 /// One state mutation produced by an externally routed tool executor.
 pub enum ExternalDispatchEvent {
+	/// A verified environment-owned job continues outside the foreground call.
+	Detached(JobRef),
 	/// Ephemeral structured progress.
 	Update(Box<RawValue>),
 	/// Durable structured outcome and its canonical model-facing projection.
@@ -1492,7 +1515,8 @@ impl Dispatcher {
 	/// event through the session as it arrives. Read-only calls run
 	/// concurrently; a mutating or session-owned call is exclusive. Steering
 	/// journaled meanwhile skips every call that has not started; a call
-	/// outliving the blocking limit detaches into the job primitive; a stop
+	/// outliving the generic blocking limit detaches into the job primitive
+	/// unless its registered executor owns foreground policy; a stop
 	/// request follows the cooperative → grace →
 	/// forced ladder (ADR 0011). Reports are returned in batch order.
 	pub async fn drive(
@@ -1550,8 +1574,7 @@ impl Dispatcher {
 			let deadline = calls
 				.iter()
 				.filter(|call| call.phase == Phase::Running)
-				.filter_map(|call| call.started)
-				.map(|started| started + policy.blocking_limit)
+				.filter_map(|call| policy.foreground_deadline(call))
 				.min();
 			let grace = calls
 				.iter()
@@ -1770,9 +1793,9 @@ impl Dispatcher {
 							call.phase = Phase::Settled;
 							call.report = Some(report);
 						} else if call.phase == Phase::Running
-							&& call
-								.started
-								.is_some_and(|started| started + policy.blocking_limit <= now)
+							&& policy
+								.foreground_deadline(call)
+								.is_some_and(|deadline| deadline <= now)
 						{
 							self.detach(session, call)?;
 						}
@@ -1973,6 +1996,11 @@ impl Dispatcher {
 						args,
 						route: route.clone(),
 						blocking_limit: self.committer.policy.blocking_limit,
+						executor_foreground: self
+							.committer
+							.policy
+							.executor_foreground
+							.contains(&call.identity),
 						output_request: call.options.output_request(),
 						cancellation: call.interrupt.clone(),
 					};
@@ -2492,6 +2520,9 @@ impl Committer {
 				Ok(Some(self.finish(session, call, outcome, output)?))
 			},
 			DispatchEvent::Native(Err(error)) => Err(error.into()),
+			DispatchEvent::External(ExternalDispatchEvent::Detached(job)) => {
+				Ok(Some(self.finish(session, call, ErasedOutcome::Detached(job), output)?))
+			},
 			DispatchEvent::External(ExternalDispatchEvent::Update(update)) => {
 				self.commit_update(session, call, update, output)?;
 				Ok(None)

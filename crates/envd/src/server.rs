@@ -7378,6 +7378,18 @@ impl EnvServer {
 		} else {
 			Duration::from_millis(request.deadline_ms)
 		};
+		// Admission stays bounded. Only the exact native core shell may omit
+		// the outer execution timer: it owns timeout/auto-background and still
+		// receives connection/turn cancellation. Explicit deadlines win.
+		let execution_deadline = native_execution_deadline(
+			registry
+				.resolved_identity(&request.name)
+				.is_some_and(|identity| {
+					omp_tools::shell::owns_foreground_lifetime(&registry, &identity)
+				}),
+			request.deadline_ms,
+		);
+
 		let output_request = match pb::OutputRequest::try_from(request.output_request) {
 			Ok(pb::OutputRequest::Complete) => omp_tool::OutputRequest::Complete,
 			Ok(pb::OutputRequest::Bounded | pb::OutputRequest::Unspecified) | Err(_) => {
@@ -7487,7 +7499,7 @@ impl EnvServer {
 				edit_repair_context,
 				acp_context,
 				feed,
-				deadline,
+				execution_deadline,
 				output_request,
 				params,
 				Arc::clone(&registry),
@@ -9115,6 +9127,84 @@ enum NativeForward {
 	Backpressure,
 }
 
+fn native_execution_deadline(shell_owned: bool, requested_ms: u64) -> Option<Duration> {
+	match (shell_owned, requested_ms) {
+		(true, 0) => None,
+		(false, 0) => Some(DEFAULT_TOOL_DEADLINE),
+		(_, millis) => Some(Duration::from_millis(millis)),
+	}
+}
+
+async fn send_native_abort_verdict(
+	responses: &flume::Sender<pb::ServerFrame>,
+	request_id: u64,
+	invocation_id: &Str,
+	retention_session: Option<&str>,
+	blobs: &BlobHost,
+	output_request: omp_tool::OutputRequest,
+	abort: omp_tool::Abort,
+) {
+	let verdict = CallOutcome::<serde_json::Value, serde_json::Value>::aborted(abort);
+	let Ok(json) = serde_json::to_vec(&verdict) else {
+		let _ = send_invocation_stream_error(
+			responses,
+			request_id,
+			invocation_id,
+			"failed to serialize native abort verdict",
+		)
+		.await;
+		return;
+	};
+	let details = match blobs.put_verdict_bytes(retention_session, invocation_id, &json) {
+		Ok(details) => details,
+		Err(error) => {
+			tracing::error!(%error, %invocation_id, "could not retain native abort before publication");
+			let _ = send_invocation_stream_error(
+				responses,
+				request_id,
+				invocation_id,
+				"native abort could not be retained",
+			)
+			.await;
+			return;
+		},
+	};
+	let source_bytes = u64::try_from(json.len()).unwrap_or(u64::MAX);
+	let limit = match output_request {
+		omp_tool::OutputRequest::Bounded => DEFAULT_RESULT_PROJECTION_BYTES,
+		omp_tool::OutputRequest::Complete => COMPLETE_RESULT_PROJECTION_BYTES,
+	};
+	let omitted = json.len() > limit;
+	let inline = if omitted {
+		Bytes::new()
+	} else {
+		Bytes::from(json)
+	};
+	let projection = output_projection(
+		output_request,
+		source_bytes,
+		u64::try_from(inline.len()).unwrap_or(u64::MAX),
+		omitted,
+		Some(details.clone()),
+	);
+	send_invocation_terminal_body(
+		responses,
+		request_id,
+		server_frame::Body::Verdict(pb::Verdict {
+			invocation_id: invocation_id.to_string(),
+			json:          inline,
+			details_blob:  Some(details),
+			parts:         Vec::new(),
+			is_error:      true,
+			useless:       false,
+			terminate:     None,
+			projection:    Some(projection),
+			props:         Default::default(),
+		}),
+	)
+	.await;
+}
+
 async fn spawn_native_invocation(
 	request_id: u64,
 	invocation_id: Str,
@@ -9124,7 +9214,7 @@ async fn spawn_native_invocation(
 	edit_repair: InvocationEditRepairContext,
 	acp: InvocationAcpBackends,
 	feed: omp_tool::InvocationFeed,
-	deadline: Duration,
+	deadline: Option<Duration>,
 	output_request: omp_tool::OutputRequest,
 	params: IncomingParams<'static>,
 	registry: Arc<Registry>,
@@ -9149,7 +9239,13 @@ async fn spawn_native_invocation(
 						let _ = started.send(());
 						match result {
 							Ok(mut stream) => {
-								let mut deadline = Box::pin(time::sleep(deadline));
+								let mut deadline = Box::pin(async move {
+									if let Some(deadline) = deadline {
+										time::sleep(deadline).await;
+									} else {
+										std::future::pending::<()>().await;
+									}
+								});
 								let mut cancel_grace: Option<pin::Pin<Box<Sleep>>> = None;
 								let mut timed_out = false;
 								let mut grace_expired = false;
@@ -9207,10 +9303,13 @@ async fn spawn_native_invocation(
 														NATIVE_CANCEL_GRACE,
 													)));
 												} else if lifecycle.claim_precommit_terminal() {
-													send_abort_verdict(
+													send_native_abort_verdict(
 														&responses,
 														request_id,
 														&invocation_id,
+														retention_session.as_deref(),
+														&blobs,
+														output_request,
 														omp_tool::Abort::Interrupted { reason },
 													)
 													.await;
@@ -9278,10 +9377,13 @@ async fn spawn_native_invocation(
 									} else {
 										sf!("native invocation did not stop within cancellation grace")
 									};
-									send_abort_verdict(
+									send_native_abort_verdict(
 										&responses,
 										request_id,
 										&invocation_id,
+										retention_session.as_deref(),
+										&blobs,
+										output_request,
 										omp_tool::Abort::EffectsUnknown { reason },
 									)
 									.await;
@@ -9678,10 +9780,13 @@ async fn forward_native_event(
 		},
 		Some(Err(_)) | None => {
 			if lifecycle.is_committed() && lifecycle.claim_terminal() {
-				send_abort_verdict(
+				send_native_abort_verdict(
 					responses,
 					request_id,
 					invocation_id,
+					retention_session,
+					blobs,
+					output_request,
 					omp_tool::Abort::EffectsUnknown { reason: Str::from(fallback_reason) },
 				)
 				.await;
@@ -12871,6 +12976,62 @@ mod tests {
 				)
 				.is_err()
 			);
+		}
+	}
+
+	#[test]
+	fn shell_execution_deadline_does_not_erase_explicit_deadlines() {
+		assert_eq!(native_execution_deadline(true, 0), None);
+		assert_eq!(native_execution_deadline(false, 0), Some(DEFAULT_TOOL_DEADLINE));
+		for owned in [false, true] {
+			assert_eq!(native_execution_deadline(owned, 125), Some(Duration::from_millis(125)));
+		}
+	}
+
+	#[tokio::test]
+	async fn native_abort_retains_verifiable_outcome_and_projection() {
+		let scratch = tempfile::tempdir().expect("verdict store");
+		let blobs = BlobHost::open(scratch.path()).expect("blobs");
+		for request in [omp_tool::OutputRequest::Bounded, omp_tool::OutputRequest::Complete] {
+			let (sender, receiver) = flume::unbounded();
+			let expected =
+				omp_tool::Abort::EffectsUnknown { reason: sf!("native cancellation did not settle") };
+			send_native_abort_verdict(
+				&sender,
+				7,
+				&sf!("native-abort"),
+				Some("session"),
+				&blobs,
+				request,
+				expected.clone(),
+			)
+			.await;
+			let frame = receiver.try_recv().expect("one terminal already published");
+			let Some(server_frame::Body::Verdict(verdict)) = frame.body else {
+				panic!("verdict")
+			};
+			assert!(verdict.is_error);
+			assert_eq!(verdict.invocation_id, "native-abort");
+			let details = verdict.details_blob.expect("retained canonical outcome");
+			let projection = verdict.projection.expect("projection facts");
+			assert_eq!(projection.request, match request {
+				omp_tool::OutputRequest::Bounded => pb::OutputRequest::Bounded as i32,
+				omp_tool::OutputRequest::Complete => pb::OutputRequest::Complete as i32,
+			});
+			assert_eq!(projection.artifact.as_ref(), Some(&details));
+			assert_eq!(projection.source_bytes, details.size);
+			assert!(!projection.omitted);
+			let stored = blobs
+				.get(BlobId {
+					hash: details.hash.as_ref().try_into().expect("hash"),
+					size: details.size,
+				})
+				.expect("retained bytes");
+			assert_eq!(stored, verdict.json);
+			let decoded: CallOutcome<serde_json::Value, serde_json::Value> =
+				serde_json::from_slice(&stored).expect("canonical outcome");
+			assert_eq!(decoded, CallOutcome::aborted(expected));
+			assert!(receiver.try_recv().is_err(), "one terminal only");
 		}
 	}
 
