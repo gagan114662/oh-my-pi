@@ -81,7 +81,13 @@ frames, byte edits in middle/final payloads, physical insertion/deletion/
 reordering, branch/prune behavior, torn suffixes, expected-tip mismatch and
 legacy rejection. Existing frozen tests and fixtures are unchanged.
 
-Gap: Rust execution and hosted proof remain pending. The user-facing
+Local validation at `322e01521e`: the complete `omp-journal` and `omp-session`
+all-targets nextest run passed 110 tests. Three unchanged subprocess helper
+entrypoints were skipped by the outer runner and exercised by passing parent
+tests. Both crate doctest commands succeeded with zero doctests. These local
+results do not substitute for browser-visible production evidence.
+
+Gap: Hosted proof remains pending. The user-facing
 `omp session verify` operation, explicit legacy migration, browser-readable
 production session corruption demo, and operation-specific compaction/lift/
 import proofs are not delivered by this slice. No complete #49 acceptance
