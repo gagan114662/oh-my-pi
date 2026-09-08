@@ -14,7 +14,6 @@ from pathlib import Path
 import pty
 import select
 import signal
-import socket
 import struct
 import subprocess
 import sys
@@ -26,6 +25,7 @@ import pyte
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness import MODELS_TOML, OMP_BINARY, MockModel
+from pty_debug import request as debug_request, kill_and_reap
 
 
 def process_command(pid):
@@ -88,12 +88,13 @@ def main():
     output = Path(os.environ['OMP_SETTINGS_ROSTER_PROOF_DIR']) / 'live-pty'
     output.mkdir(parents=True, exist_ok=False)
     rows, failures, raw = [], [], bytearray()
+    cleanup = []
     screen = pyte.Screen(140, 45)
     stream = pyte.ByteStream(screen)
     provenance = {'revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                   'source_status': subprocess.check_output(['git', 'status', '--porcelain=v1'], text=True),
                   'hashes': {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in
-                             (Path(__file__), Path(__file__).parents[1] / 'harness.py', OMP_BINARY)}}
+                             (Path(__file__), Path(__file__).parents[1] / 'harness.py', Path(__file__).parents[1] / 'pty_debug.py', OMP_BINARY)}}
     (output / 'provenance.json').write_text(json.dumps(provenance, indent=2))
     process = None
     master = slave = None
@@ -112,6 +113,10 @@ def main():
                    XDG_CONFIG_HOME=str(root / 'config'), TERM='xterm-256color', COLORTERM='truecolor',
                    OMP_TUI_DEBUG=str(debug))
 
+        def consume(chunk):
+            raw.extend(chunk)
+            stream.feed(chunk)
+
         def drain(seconds=0.2):
             deadline = time.monotonic() + seconds
             while time.monotonic() < deadline:
@@ -122,19 +127,10 @@ def main():
                         break
                     if not chunk:
                         break
-                    raw.extend(chunk)
-                    stream.feed(chunk)
+                    consume(chunk)
 
         def request(op):
-            with socket.socket(socket.AF_UNIX) as connection:
-                connection.settimeout(2)
-                connection.connect(str(debug))
-                connection.sendall(json.dumps({'op': op}).encode() + b'\n')
-                with connection.makefile('rb') as reader:
-                    response = json.loads(reader.readline())
-            if response.get('ok') is not True:
-                raise AssertionError(response)
-            return response
+            return debug_request(debug, op, master, consume)
 
         def capture(name):
             drain()
@@ -234,11 +230,10 @@ def main():
                     failures.append(f'cleanup proof: {error}')
                 finally:
                     if process.poll() is None:
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                            process.wait(timeout=5)
-                        except (OSError, subprocess.TimeoutExpired) as error:
-                            failures.append(f'process reap failed: {error}')
+                        record = kill_and_reap(process, master, consume)
+                        cleanup.append(record)
+                        if not record['reaped']:
+                            failures.append(f'process reap failed: {record.get("error", "unknown")}')
             daemon_records = []
             try:
                 cleanup_daemons(OMP_BINARY, root / 'project', daemon_records)
@@ -249,6 +244,19 @@ def main():
                 failures.append('unexpected provider request')
             if not any(stage == 'quit' and passed for stage, _, passed in rows):
                 failures.append('clean quit was not verified')
+            if not any(stage == 'resize' and passed for stage, _, passed in rows):
+                failures.append('resize was not verified')
+            for fd in (master, slave):
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError as error:
+                        failures.append(f'PTY close failed: {error}')
+            try:
+                mock.close()
+            except Exception as error:
+                failures.append(f'mock close failed: {error}')
+            (output / 'cleanup.json').write_text(json.dumps(cleanup, indent=2))
             (output / 'daemon-cleanup.json').write_text(json.dumps({'project': str(root / 'project'), 'binary': str(OMP_BINARY), 'identities': daemon_records}, indent=2))
             (output / 'terminal.ansi').write_bytes(raw)
             (output / 'requests.json').write_text(json.dumps(mock.captures, indent=2))
@@ -256,10 +264,6 @@ def main():
             (output / 'summary.md').write_text('## Real PTY settings walkthrough\n\n| Stage | Observed | Pass |\n|---|---|---|\n' +
                 ''.join(f'| {stage} | {html.escape(detail).replace("|", "&#124;")} | {passed} |\n' for stage, detail, passed in rows) +
                 '\n' + '\n'.join('FAIL: ' + f for f in failures) + '\n\nHTML and JSON contain VT-emulated terminal colors; raw ANSI is retained.\n')
-            for fd in (master, slave):
-                if fd is not None:
-                    os.close(fd)
-            mock.close()
     if failures:
         raise SystemExit('\n'.join(failures))
 
