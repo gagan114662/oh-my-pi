@@ -384,6 +384,12 @@ jobs:
       - name: Gate frozen Python examples
         run: python3 scripts/check-python-examples.py
 
+      - name: Release completed test executables for acceptance linking
+        run: |
+          python3 scripts/release-tested-binaries-test.py
+          python3 scripts/release-tested-binaries.py --phase "$TEST_INVENTORY_DIR/workspace" --target target | tee "$TEST_INVENTORY_DIR/released-binaries.json"
+          cat "$TEST_INVENTORY_DIR/released-binaries.json" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Compile acceptance proofs
         run: cargo nextest run -p omp-e2e --tests --no-run --locked
 
