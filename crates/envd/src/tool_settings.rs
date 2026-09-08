@@ -318,10 +318,12 @@ omp_con::var! {
 			"legacy.path": "tools.abortOnFabricatedResult",
 		},
 	};
-	/// Maximum repeated equivalent calls before interruption.
+	/// Consecutive identical tool rounds (same calls, same results, no text) the kernel executes
+	/// before it refuses the next identical round; after as many refusals the turn settles with a
+	/// `loop-guard` notice. 0 disables the guard.
 	pub static SV_TOOLS_LOOP_GUARD_LIMIT = sv_tools_loop_guard_limit: u32 {
 		default: 8,
-		min: 1,
+		min: 0,
 		flags: archive,
 		meta: {
 			"legacy.path": "tools.loop_guard_limit",

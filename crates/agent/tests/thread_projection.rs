@@ -88,7 +88,7 @@ async fn projected(
 			.run_turn(
 				&mut session,
 				TurnInput { text: sf!(text), attachments: Vec::new() },
-				RunControl::default(),
+				RunControl::new(Default::default(), None),
 			)
 			.await
 			.expect("turn");

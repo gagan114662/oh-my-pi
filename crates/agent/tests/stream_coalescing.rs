@@ -73,7 +73,7 @@ async fn a_burst_of_tokens_within_the_window_is_one_journal_entry() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("stream"), RunControl::default())
+		.run_turn(&mut session, input("stream"), RunControl::new(Default::default(), None))
 		.await
 		.expect("turn completes");
 	let expected = deltas.concat();
@@ -96,7 +96,7 @@ async fn a_delta_past_the_byte_budget_lands_immediately() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("stream"), RunControl::default())
+		.run_turn(&mut session, input("stream"), RunControl::new(Default::default(), None))
 		.await
 		.expect("turn completes");
 	assert_eq!(outcome.assistant_text.len(), 5000 + "head ".len() + " tail".len());

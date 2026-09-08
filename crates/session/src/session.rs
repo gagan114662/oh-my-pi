@@ -1,7 +1,7 @@
 use std::{
 	fmt::Write as _,
 	path::Path,
-	time::{SystemTime, SystemTimeError, UNIX_EPOCH},
+	time::{Instant, SystemTime, SystemTimeError, UNIX_EPOCH},
 };
 
 use flume::Receiver;
@@ -12,8 +12,8 @@ use omp_journal::{
 	blob::{BlobRef, BlobStore},
 	data::{
 		Attachment, Compaction, FileMentions, Genesis, MsgAssistantEnd, MsgAssistantStart, MsgUser,
-		Patch, SkillPrompt, Stream, StreamOp, ToolCall, ToolResult, ToolUpdate, TurnReceipt,
-		TurnStart,
+		Patch, SkillPrompt, Stream, StreamOp, ToolCall, ToolResult, ToolUpdate, TurnOutcome,
+		TurnReceipt, TurnStart, TurnStatus,
 	},
 };
 use omp_tool::{Abort, CallOutcome, Part as ToolPart};
@@ -97,6 +97,12 @@ pub enum SessionError {
 	/// A turn-scoped write was attempted outside an explicit turn.
 	#[error("turn-scoped entry requires an active turn")]
 	NoActiveTurn,
+	/// Terminal settlement no longer refers to the selected turn after rewind.
+	#[error("terminal outcome refers to a turn outside the selected lifecycle")]
+	TurnChanged,
+	/// One selected turn cannot acquire conflicting terminal outcomes.
+	#[error("turn already has a different terminal outcome")]
+	ConflictingTurnOutcome,
 	/// An assistant completion was attempted before an assistant start.
 	#[error("assistant completion requires an active assistant message")]
 	NoActiveAssistant,
@@ -142,6 +148,7 @@ pub enum SessionError {
 
 /// The mutable controller for one journal-derived session tree.
 pub struct Session {
+	progress: tokio::sync::watch::Sender<crate::JournalProgress>,
 	pub(crate) journal: Journal,
 	pub(crate) entries: Vec<Entry>,
 	pub(crate) entry_index: FastHashMap<EntryId, usize>,
@@ -279,6 +286,17 @@ impl Session {
 			.map(|(index, entry)| (entry.id, index))
 			.collect();
 		session.rebuild_all()?;
+		if let Some(entry) = session
+			.entries
+			.iter()
+			.rev()
+			.find(|entry| entry.kind != Kind::known(KindName::Stream))
+		{
+			session.progress.send_replace(crate::JournalProgress {
+				entry:       Some(entry.id),
+				observed_at: Instant::now(),
+			});
+		}
 		Ok(session)
 	}
 
@@ -289,6 +307,7 @@ impl Session {
 
 	fn empty(journal: Journal, components: ComponentRegistry, blobs: BlobStore) -> Self {
 		Self {
+			progress: crate::progress::channel(),
 			journal,
 			blobs,
 			entries: Vec::new(),
@@ -307,6 +326,13 @@ impl Session {
 			next_sid: 0,
 			pending_prior: None,
 		}
+	}
+
+	/// Observes durable non-stream progress without borrowing the mutable
+	/// session.
+	#[must_use]
+	pub fn journal_progress(&self) -> tokio::sync::watch::Receiver<crate::JournalProgress> {
+		self.progress.subscribe()
 	}
 
 	/// Returns the authoritative materialized DOM.
@@ -907,6 +933,51 @@ impl Session {
 		self.commit(KindName::TurnReceipt, Some(by), None, None, &receipt)
 	}
 
+	/// Commits one durable terminal outcome for the selected turn. Repeating the
+	/// same outcome is idempotent; a conflicting outcome requires a rewind that
+	/// abandons the old outcome. This never creates a success for an abandoned
+	/// turn.
+	pub fn finish_turn(
+		&mut self,
+		turn: Handle,
+		status: TurnStatus,
+	) -> Result<EntryId, SessionError> {
+		if self.current_turn_handle()? != turn {
+			return Err(SessionError::TurnChanged);
+		}
+		let by = self.turn_cause()?;
+		let head = self.head.ok_or(SessionError::NoActiveTurn)?;
+		let mut index = *self
+			.entry_index
+			.get(&head)
+			.ok_or(SessionError::UnknownEntry { id: head })?;
+		// Inspect only this turn's selected tail; older turns cannot contain its
+		// terminal record. This adds no full-history allocation at every yield.
+		loop {
+			let entry = &self.entries[index];
+			if entry.id == by {
+				break;
+			}
+			if entry.kind == Kind::known(KindName::TurnOutcome) && entry.by == Some(by) {
+				let existing: TurnOutcome = serde_json::from_str(entry.data.as_str())?;
+				return if existing.status == status {
+					Ok(entry.id)
+				} else {
+					Err(SessionError::ConflictingTurnOutcome)
+				};
+			}
+			index = if let Some(prior) = entry.prior {
+				*self
+					.entry_index
+					.get(&prior)
+					.ok_or(SessionError::UnknownEntry { id: prior })?
+			} else {
+				index.checked_sub(1).ok_or(SessionError::TurnChanged)?
+			};
+		}
+		self.commit(KindName::TurnOutcome, Some(by), None, None, &TurnOutcome { status })
+	}
+
 	/// Journals and applies a caller-built DOM transaction.
 	pub fn patch(&mut self, txn: Txn) -> Result<EntryId, SessionError> {
 		let data = serde_json::to_string(&txn.ops)?;
@@ -1125,6 +1196,7 @@ impl Session {
 			data,
 		};
 		let entry = self.journal.append(draft)?;
+		crate::progress::committed(&self.progress, kind, entry.id, Instant::now());
 		self.pending_prior = None;
 		let id = entry.id;
 		let index = self.entries.len();

@@ -896,9 +896,11 @@ async fn run_child(prepared: PreparedChild) -> Result<ChildExecution, SpawnError
 			.run_turn(
 				&mut child_session,
 				TurnInput { text: Str::new(prompt), attachments: Vec::new() },
-				RunControl::new(prepared.cancel.token(), deadline)
-					.with_request_budget(prepared.settings.soft_request_budget)
-					.with_request_budget_notice(prepared.settings.soft_request_budget_notice),
+				kernel.bound_turn_control(
+					RunControl::new(prepared.cancel.token(), deadline)
+						.with_request_budget(prepared.settings.soft_request_budget)
+						.with_request_budget_notice(prepared.settings.soft_request_budget_notice),
+				),
 			)
 			.await?;
 		Ok::<_, SpawnError>((turn, child_session))

@@ -1176,6 +1176,16 @@ pub struct PreparedCall {
 	abort_reason:     Option<Str>,
 }
 
+impl Drop for PreparedCall {
+	fn drop(&mut self) {
+		// Native argument consumers are spawned during prepare, before
+		// admission. Dropping an interrupted provider/hook future must not
+		// detach those speculative tasks. Admitted calls retain dispatcher
+		// ownership through settlement; detached jobs explicitly take the task.
+		self.discard();
+	}
+}
+
 impl PreparedCall {
 	/// Journal identity of the `tool.call@1`.
 	#[must_use]
@@ -1785,8 +1795,8 @@ impl Dispatcher {
 		}
 		Ok(calls
 			.into_iter()
-			.map(|call| {
-				let mut report = call.report.expect("settled calls carry a report");
+			.map(|mut call| {
+				let mut report = call.report.take().expect("settled calls carry a report");
 				report.duration = call
 					.started
 					.map_or(Duration::ZERO, |started| started.elapsed());
@@ -2378,10 +2388,15 @@ impl Committer {
 			"annotate": [],
 			"spill": serde_json::Value::Null,
 		});
-		let transformed = match hooks
-			.gate(omp_proto::toolhost::v1::HookEventId::HookEventToolResult, payload.clone())
-			.await
-		{
+		let transformed = match tokio::select! {
+			result = hooks.gate(omp_proto::toolhost::v1::HookEventId::HookEventToolResult, payload.clone()) => result,
+			() = call.interrupt.cancelled() => {
+				// The tool already supplied its terminal. Preserve it under the
+				// documented fail-open gate policy when an extension never replies.
+				hooks.notify(omp_proto::toolhost::v1::HookEventId::HookEventToolResult, payload)?;
+				return Ok(staged);
+			},
+		} {
 			Ok(value) => value,
 			Err(error) => {
 				tracing::warn!(?error, call_id = %call.call_id, "tool_result hook failed; keeping the tool terminal");

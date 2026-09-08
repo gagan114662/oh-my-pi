@@ -438,9 +438,11 @@ async fn run_kernel_worker_inner(
 			.run_turn(
 				&mut session,
 				TurnInput { text: Str::new(prompt), attachments: Vec::new() },
-				RunControl::new(run.cancel.clone(), deadline)
-					.with_request_budget(settings.soft_request_budget)
-					.with_request_budget_notice(settings.soft_request_budget_notice),
+				kernel.bound_turn_control(
+					RunControl::new(run.cancel.clone(), deadline)
+						.with_request_budget(settings.soft_request_budget)
+						.with_request_budget_notice(settings.soft_request_budget_notice),
+				),
 			)
 			.await;
 		let outcome = match outcome {

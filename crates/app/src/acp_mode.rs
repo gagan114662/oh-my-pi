@@ -4,7 +4,7 @@ use std::{borrow::Cow, fs, path::Path, sync::Arc};
 
 use miette::{IntoDiagnostic as _, miette};
 use omp_agent::{
-	ApprovalDecision, ApprovalScope, ApprovalSource, Inference, Kernel, RunControl, TurnInput, Up,
+	ApprovalDecision, ApprovalScope, ApprovalSource, Inference, Kernel, TurnInput, Up,
 };
 use omp_core::{Str, base64};
 use omp_driver::{headless::kernel::SessionHome, sessions::SessionIndex};
@@ -504,7 +504,7 @@ where
 					let turn_session = session_id.clone();
 					active = Some(tokio::spawn(async move {
 						let response = match kernel
-							.run_turn(&mut session, input, RunControl::default())
+							.run_turn(&mut session, input, kernel.turn_control())
 							.await
 						{
 							Ok(outcome) => Ok(prompt_response(&session, &outcome)),

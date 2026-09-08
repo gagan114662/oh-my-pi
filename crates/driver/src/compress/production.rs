@@ -233,7 +233,9 @@ impl CompressHost for ProductionCompressHost {
 				.run_turn(
 					&mut session.session,
 					omp_agent::TurnInput { text, attachments: Vec::new() },
-					omp_agent::RunControl::new(cancel.clone(), None),
+					session
+						.kernel
+						.bound_turn_control(omp_agent::RunControl::new(cancel.clone(), None)),
 				)
 				.await?;
 			Ok(mem::take(&mut *session.actions.lock()))

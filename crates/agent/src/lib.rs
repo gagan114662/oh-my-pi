@@ -15,6 +15,7 @@ pub mod jobs;
 pub mod local;
 #[path = "loop.rs"]
 pub mod loop_;
+mod loop_guard;
 pub mod pause;
 pub mod prompt;
 pub mod registry;

@@ -10,7 +10,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use omp_agent::{DispatchPolicy, Kernel, RunControl, StaticPrompt, TurnInput};
+use omp_agent::{DispatchPolicy, Kernel, StaticPrompt, TurnInput};
 use omp_ai::{BlockKind, ChatEvent, Completion, ExecutionReceipt, FinishReason, Usage};
 use omp_core::Str;
 use omp_journal::blob::BlobStore;
@@ -120,7 +120,7 @@ pub async fn measure(
 			.run_turn(
 				&mut session,
 				TurnInput { text: Str::new_static("measure"), attachments: Vec::new() },
-				RunControl::default(),
+				kernel.turn_control(),
 			)
 			.await
 			.context("measure full kernel loop")?;

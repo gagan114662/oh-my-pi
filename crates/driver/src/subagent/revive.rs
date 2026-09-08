@@ -340,9 +340,11 @@ async fn drive(
 		};
 		let deadline = (child.settings.max_runtime_ms != 0)
 			.then(|| std::time::Instant::now() + Duration::from_millis(child.settings.max_runtime_ms));
-		let control = RunControl::new(host_cancel.token(), deadline)
-			.with_request_budget(child.settings.soft_request_budget)
-			.with_request_budget_notice(child.settings.soft_request_budget_notice);
+		let control = kernel.bound_turn_control(
+			RunControl::new(host_cancel.token(), deadline)
+				.with_request_budget(child.settings.soft_request_budget)
+				.with_request_budget_notice(child.settings.soft_request_budget_notice),
+		);
 		let outcome = {
 			let turn = match skill {
 				Some(prompt) => {

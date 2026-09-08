@@ -129,11 +129,11 @@ async fn first_overflow_compacts_journals_the_window_and_retries_once() {
 	let mut session = fresh_session(&journal_path);
 
 	kernel
-		.run_turn(&mut session, input("first"), RunControl::default())
+		.run_turn(&mut session, input("first"), RunControl::new(Default::default(), None))
 		.await
 		.expect("first turn completes");
 	let outcome = kernel
-		.run_turn(&mut session, input("second"), RunControl::default())
+		.run_turn(&mut session, input("second"), RunControl::new(Default::default(), None))
 		.await
 		.expect("the overflowing turn recovers");
 	assert_eq!(outcome.assistant_text.as_str(), "done after compaction");
@@ -185,11 +185,11 @@ async fn second_overflow_in_the_same_turn_fails_the_turn_with_a_notice() {
 	let mut session = fresh_session(&journal_path);
 
 	kernel
-		.run_turn(&mut session, input("first"), RunControl::default())
+		.run_turn(&mut session, input("first"), RunControl::new(Default::default(), None))
 		.await
 		.expect("first turn completes");
 	let error = kernel
-		.run_turn(&mut session, input("second"), RunControl::default())
+		.run_turn(&mut session, input("second"), RunControl::new(Default::default(), None))
 		.await
 		.expect_err("a second overflow after the forced compaction fails the turn");
 	let KernelError::Inference(inference) = error else {

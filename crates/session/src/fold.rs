@@ -20,6 +20,17 @@ use crate::{Draft, Session, SessionError};
 impl Session {
 	pub(crate) fn apply(&mut self, entry: &Entry) -> Result<(), SessionError> {
 		self.entry_patch_published = false;
+		// Terminal outcomes are accounting facts, not a new Component execution
+		// boundary. No fallible projection or extension may run after a synced
+		// successful terminal record and turn it into an apparent failure.
+		if entry.kind.name.as_str() == kind::TURN_OUTCOME && entry.kind.rev == 1 {
+			let _: omp_journal::data::TurnOutcome = serde_json::from_str(entry.data.as_str())?;
+			if entry.by != self.current_turn || entry.by.is_none() {
+				return Err(SessionError::TurnChanged);
+			}
+			self.head = Some(entry.id);
+			return Ok(());
+		}
 		match (entry.kind.name.as_str(), entry.kind.rev) {
 			(kind::JOURNAL, 1) => self.fold_genesis(entry)?,
 			(kind::TURN_START, 1) => self.fold_turn_start(entry)?,

@@ -129,3 +129,44 @@ assistant node for replay.
   0016 (semantic requests), 0019 (forced-call escalation)
 - `crates/agent/src/director.rs`, `crates/agent/src/loop.rs`, `crates/agent/src/directors`,
   `docs/architecture/agent-loop.md`, `docs/py/15-regimes.md`, `AGENTS.md` "Locked Deviations"
+
+### Journal-idle enforcement
+
+The built-in `progress_watchdog` Director records the effective
+`sv_turn_idle_minutes` policy (default 30). Its disposable observer reads the
+session's durable-append projection: only successfully appended non-`stream@1`
+entries reset progress. Text or whitespace deltas cannot extend the idle
+interval. Reopening preserves the last non-stream entry identity and starts a
+new host observation epoch, rather than charging offline time to a new turn.
+
+Active provider, tool, approval, and Director waits share normal RunControl
+cancellation. The enclosing turn-body supervisor also bounds awaits that do
+not poll cancellation, first requesting cooperative interruption and then
+using the dispatcher's configured interrupt grace. Cancellation records a
+`turn-limit` notice; it never reports successful completion. Explicit global
+pause at a safe point suspends idle observation; resume starts a new idle
+interval without appending fake progress. The independent wall limit remains
+active while paused.
+
+The same limits cover asynchronous admission and file-mention setup. A
+before-agent-start hook that never answers returns a typed admission-limit
+error without creating an accepted turn or its journal record. Once
+`turn.start` exists, setup expiry records a notice on that actual turn and
+uses the normal cancelled-turn finalizer. Reply-obligation expiry likewise
+cannot turn a cancelled settlement into reported success.
+
+Validation includes session-owned injected-clock classification and replay
+checks, plus actual kernel fixtures for hung tools, unanswered approvals,
+endless whitespace, pause/resume, and pre-admission hangs. Hosted tests and the
+31-minute soak proof remain required before claiming this issue complete.
+
+The outer supervisor never drops an admitted dispatcher batch: a disposable
+settlement guard lets the existing dispatcher finish its cooperative/grace/
+forced ladder and journal actual terminals or `effects_unknown`. The guard is
+installed before `drive` can admit or start effects. A hung post-result extension
+gate honors the call interrupt and retains the already-staged actual terminal,
+consistent with that gate's existing fail-open contract. Native argument
+consumers spawned before admission are aborted when their `PreparedCall` is
+dropped; detached jobs explicitly transfer their task ownership. Regression
+sources cover both an uncooperative mutating executor (including its drop witness
+and durable uncertain result) and an unanswered result transform.

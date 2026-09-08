@@ -1241,7 +1241,7 @@ impl<C: omp_agent::Inference> Controller<C> {
 		// store.
 		let blobs = self.session.blobs().clone();
 		let result = {
-			let control = omp_agent::RunControl::default();
+			let control = self.kernel.turn_control();
 			let turn =
 				match input {
 					Some(TurnRequest::User(input)) => futures::future::Either::Left(
@@ -2183,10 +2183,9 @@ impl<C: omp_agent::Inference> Controller<C> {
 		let current_id = runtime_id(&self.session);
 		while self.live_events.try_recv().is_ok() {}
 		let failure = {
-			let local =
-				self
-					.kernel
-					.run_local(&mut self.session, run, omp_agent::RunControl::default());
+			let local = self
+				.kernel
+				.run_local(&mut self.session, run, self.kernel.turn_control());
 			tokio::pin!(local);
 			loop {
 				tokio::select! {
@@ -2967,7 +2966,7 @@ impl<C: omp_agent::Inference> Controller<C> {
 					.run_turn(
 						&mut session,
 						TurnInput { text: prompt, attachments: Vec::new() },
-						omp_agent::RunControl::default(),
+						kernel.turn_control(),
 					)
 					.await
 					.map(|outcome| outcome.assistant_text)

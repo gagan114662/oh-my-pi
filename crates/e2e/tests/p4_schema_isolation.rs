@@ -118,7 +118,7 @@ async fn p4_live_schema_isolated_and_tool_call_journals_revision() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: Str::new_static("call versioned"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
