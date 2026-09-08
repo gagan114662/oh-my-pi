@@ -17,7 +17,7 @@ BASELINE = 'crates/envd/src/http_baseline_tests.rs'
 BASELINE_HASH = '766fa48cb29a350027f0ff2c0275ef9ae454528884d4ec6a126a37059457ae9c'
 PARENT_REVISION = 'b59b952172f1f331c2a79a6bc22f6ea25a3e2135'
 IMPLEMENTATION = 'crates/envd/src/http_egress.rs'
-PACKAGES = ('omp-envd', 'omp-env', 'omp-http', 'omp-driver')
+PACKAGES = ('omp-envd', 'omp-env', 'omp-http', 'omp-driver', 'omp-proto')
 CASES = (
     'native_http_denies_effectful_get_and_redirect_before_destination_effects',
     'native_http_allows_relative_and_explicit_cross_origin_redirects',
@@ -121,7 +121,7 @@ def main():
             for package in PACKAGES:
                 run(package + '-targets', ['just', '--command', 'cargo', 'nextest', 'run', '--profile', 'ci', '--locked', '-p', package, '--all-targets', '--no-fail-fast', '--no-tests', 'fail'])
                 run(package + '-doctests', ['just', '--command', 'cargo', 'test', '--doc', '--locked', '-p', package, '--no-fail-fast'])
-            report['status'] = 'passed' if len(records) == 11 and all(r['status'] == 'passed' for r in records) else 'failed'
+            report['status'] = 'passed' if len(records) == 3 + 2 * len(PACKAGES) and all(r['status'] == 'passed' for r in records) else 'failed'
         else:
             preflight, _ = focused('preflight', CASES[:1])
             assert preflight['status'] == 'passed', 'Normal counter fixture must pass before mutation'
