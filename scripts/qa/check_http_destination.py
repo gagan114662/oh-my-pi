@@ -12,9 +12,9 @@ import sys
 import difflib
 
 FIXTURE = 'crates/envd/src/http_egress_tests.rs'
-FIXTURE_HASH = 'f6897c3ef1e7adf91d0dc00bd223091f45f1ba3eec4334880199d7a5cbc711d6'
+FIXTURE_HASH = '6c858052664fd0a27ec85f0a8184d6ed8eb79e376b1e89f7fa6939ca573e3fc2'
 BASELINE = 'crates/envd/src/http_baseline_tests.rs'
-BASELINE_HASH = '766fa48cb29a350027f0ff2c0275ef9ae454528884d4ec6a126a37059457ae9c'
+BASELINE_HASH = '08c809c87c059872b0c7818710ac478582c15e07aec633c28b24181f008ad487'
 PARENT_REVISION = 'b59b952172f1f331c2a79a6bc22f6ea25a3e2135'
 IMPLEMENTATION = 'crates/envd/src/http_egress.rs'
 PACKAGES = ('omp-envd', 'omp-env', 'omp-http', 'omp-driver', 'omp-proto')
@@ -37,6 +37,27 @@ def git(*args, cwd=None):
     return subprocess.check_output(['git', *args], cwd=cwd, text=True).strip()
 
 
+def summary_table(report):
+    """Readable decisions and independent destination counters for the step summary."""
+    rows = []
+    for record in report.get('commands', ()):
+        for decision in record.get('decisions', ()):
+            counters = ', '.join(f'{name}={count}' for name, count in decision['counters'].items())
+            for request, outcome in decision['decisions'].items():
+                rows.append((record['name'], decision['case'], request, outcome, counters))
+    observation = report.get('baseline_observation')
+    if observation:
+        rows.append(('baseline', observation['expectation'], observation['method'] + ' ' + observation['url'], observation['response'], f"destination={observation['destination_counter']}"))
+    mutation = report.get('mutation')
+    if mutation:
+        rows.append(('mutation-raw', 'admission predicate disabled', 'denied-destination-direct-get', 'independent counter failure observed' if mutation.get('independent_counter_failure_observed') else 'no counter failure observed', f"raw_exit={mutation.get('raw_test_exit')}"))
+    if not rows:
+        return ''
+    lines = ['| command | case | request | decision | independent counters |', '| --- | --- | --- | --- | --- |']
+    lines.extend('| ' + ' | '.join(str(cell) for cell in row) + ' |' for row in rows)
+    return 'Status: **' + report['status'] + '**\n\n' + '\n'.join(lines) + '\n\n'
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', choices=('normal', 'mutation', 'baseline-parent', 'baseline-head'))
@@ -56,7 +77,7 @@ def main():
     def save():
         (out / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
 
-    def run(name, argv, cases=(), env=None):
+    def run(name, argv, cases=(), env=None, require_decisions=False):
         record = {'name': name, 'argv': argv, 'raw_exit': None, 'status': 'incomplete'}
         records.append(record)
         save()
@@ -67,13 +88,17 @@ def main():
         log_text = (out / (name + '.log')).read_text(errors='replace')
         record['summaries'] = re.findall(r'Summary[^\n]*', log_text)
         record['missing_pass_cases'] = [case for case in cases if not re.search(r'PASS[^\n]*\b' + re.escape(case) + r'\b', log_text)]
-        record['status'] = 'passed' if result.returncode == 0 and not record['missing_pass_cases'] else 'failed'
+        # Each fixture publishes its decisions and independent destination counters.
+        record['decisions'] = [json.loads(line) for line in re.findall(r'HTTP_DECISION=(\{[^\n]*\})', log_text)]
+        observed = {decision['case'] for decision in record['decisions']}
+        record['missing_decision_cases'] = [case for case in cases if case not in observed] if require_decisions else []
+        record['status'] = 'passed' if result.returncode == 0 and not record['missing_pass_cases'] and not record['missing_decision_cases'] else 'failed'
         save()
         print(name, json.dumps(record), flush=True)
         return record, log_text
 
-    def focused(name, cases=CASES):
-        return run(name, ['just', '--command', 'cargo', 'nextest', 'run', '--profile', 'ci', '--locked', '-p', 'omp-envd', '--lib', '--no-fail-fast', '--no-tests', 'fail', '-E', ' | '.join('test(' + case + ')' for case in cases)], cases)
+    def focused(name, cases=CASES, require_decisions=True):
+        return run(name, ['just', '--command', 'cargo', 'nextest', 'run', '--profile', 'ci', '--locked', '-p', 'omp-envd', '--lib', '--no-fail-fast', '--no-tests', 'fail', '--success-output', 'immediate', '-E', ' | '.join('test(' + case + ')' for case in cases)], cases, require_decisions=require_decisions)
 
     try:
         report.update(source_revision=git('rev-parse', 'HEAD'), checker_revision=git('rev-parse', 'HEAD', cwd=proof), checker_sha256=digest(__file__), workflow_sha256=digest(proof / '.github/workflows/http-destination.yml'), source_status_before=git('status', '--porcelain=v1'))
@@ -107,8 +132,11 @@ def main():
             observations = re.findall(r'HTTP_BASELINE_OBSERVATION=(\{[^\n]*\})', log)
             assert command['status'] == 'passed' and len(observations) == 1, 'Missing actual baseline execution; build/configuration errors are not semantic observations'
             observation = json.loads(observations[0])
-            expected = {'expectation': expectation, 'method': 'GET', 'url': 'http://127.0.0.1:43843/mutate?value=1', 'capability': 'env.net', 'invocation': 'baseline-invocation', 'configuration_supported': not parent, 'response': 'http-200' if parent else 'permission-denied', 'destination_counter': 1 if parent else 0}
-            report['baseline_observation'] = observation
+            # The fixture binds an ephemeral port and reports the URL it actually used.
+            url = observation.pop('url', '')
+            assert re.fullmatch(r'http://127\.0\.0\.1:\d+/mutate\?value=1', url), 'Unexpected baseline destination URL'
+            expected = {'expectation': expectation, 'method': 'GET', 'capability': 'env.net', 'invocation': 'baseline-invocation', 'configuration_supported': not parent, 'response': 'http-200' if parent else 'permission-denied', 'destination_counter': 1 if parent else 0}
+            report['baseline_observation'] = dict(observation, url=url)
             report['baseline_interpretation'] = 'Enhancement baseline: parent broad env.net has no new scope setting; comparison is not a violation of a preexisting parent guarantee.'
             assert observation == expected, 'Unexpected destination or configuration observation'
             assert digest(BASELINE) == BASELINE_HASH, 'Baseline fixture changed during execution'
@@ -134,7 +162,7 @@ def main():
             save()
             try:
                 Path(IMPLEMENTATION).write_bytes(mutated)
-                mutant, log = focused('mutation-raw', CASES[:1])
+                mutant, log = focused('mutation-raw', CASES[:1], require_decisions=False)
                 report['mutation']['raw_test_exit'] = mutant['raw_exit']
                 oracle = ('denied GET reached independent destination' in log and re.search(r'left:\s*1\s*\n\s*right:\s*0', log) is not None)
                 expected = mutant['raw_exit'] == 100 and oracle and CASES[0] in log
@@ -154,7 +182,9 @@ def main():
         save()
         if os.environ.get('GITHUB_STEP_SUMMARY'):
             with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-                summary.write('## Native HTTP ' + args.mode + '\n\n```json\n' + json.dumps({k: v for k, v in report.items() if k != 'source_file_sha256'}, indent=2) + '\n```\n')
+                summary.write('## Native HTTP ' + args.mode + '\n\n')
+                summary.write(summary_table(report))
+                summary.write('```json\n' + json.dumps({k: v for k, v in report.items() if k != 'source_file_sha256'}, indent=2) + '\n```\n')
     return 0 if report['status'] == 'passed' else 1
 
 

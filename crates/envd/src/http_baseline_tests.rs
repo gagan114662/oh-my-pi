@@ -18,11 +18,13 @@ async fn native_http_parent_and_head_effectful_get_observation() {
 	let expectation = std::env::var("OMP_HTTP_BASELINE_EXPECTATION")
 		.unwrap_or_else(|_| "restricted-head".to_owned());
 	assert!(matches!(expectation.as_str(), "broad-parent" | "restricted-head"));
-	// Fixed URL across independent hosted jobs; a bind failure is an infrastructure
-	// failure, never evidence of denied or permitted egress.
-	let listener = TcpListener::bind("127.0.0.1:43843")
+	// The destination binds an ephemeral port and the observation reports the
+	// actual URL, so no fixture destination is hardcoded. A bind failure is an
+	// infrastructure failure, never evidence of denied or permitted egress.
+	let listener = TcpListener::bind("127.0.0.1:0")
 		.await
 		.expect("independent destination");
+	let port = listener.local_addr().expect("destination address").port();
 	let hits = Arc::new(AtomicUsize::new(0));
 	let destination = tokio::spawn({
 		let hits = hits.clone();
@@ -121,7 +123,7 @@ async fn native_http_parent_and_head_effectful_get_observation() {
 			.body,
 		Some(server_frame::Body::Hello(_))
 	));
-	let url = "http://127.0.0.1:43843/mutate?value=1";
+	let url = format!("http://127.0.0.1:{port}/mutate?value=1");
 	requests
 		.send_async(pb::ClientFrame {
 			request_id: 1,
@@ -134,7 +136,7 @@ async fn native_http_parent_and_head_effectful_get_observation() {
 			}),
 			body: Some(client_frame::Body::HttpRequest(pb::HttpRequest {
 				method: "GET".to_owned(),
-				url: url.to_owned(),
+				url: url.clone(),
 				redirects: 0,
 				timeout_ms: 2000,
 				..Default::default()

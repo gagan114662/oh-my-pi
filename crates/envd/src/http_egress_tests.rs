@@ -294,6 +294,24 @@ fn denied(response: server_frame::Body) {
 	);
 }
 
+/// Publishes one readable record per case: the decision for each request and
+/// the independent destination counters. The CI checker collects these lines
+/// into its step summary; assertions above remain the proof.
+fn observe(case: &str, decisions: &[(&str, &str)], counters: &[(&str, usize)]) {
+	let decisions: serde_json::Map<String, serde_json::Value> = decisions
+		.iter()
+		.map(|(request, decision)| ((*request).to_owned(), serde_json::Value::from(*decision)))
+		.collect();
+	let counters: serde_json::Map<String, serde_json::Value> = counters
+		.iter()
+		.map(|(destination, hits)| ((*destination).to_owned(), serde_json::Value::from(*hits)))
+		.collect();
+	eprintln!(
+		"HTTP_DECISION={}",
+		serde_json::json!({"case": case, "decisions": decisions, "counters": counters})
+	);
+}
+
 #[tokio::test]
 async fn native_http_denies_effectful_get_and_redirect_before_destination_effects() {
 	let denied_destination = Destination::start(None, false).await;
@@ -325,6 +343,16 @@ async fn native_http_denies_effectful_get_and_redirect_before_destination_effect
 		.await;
 	denied(harness.response(4).await);
 	assert_eq!(denied_destination.hits(), 0);
+	observe(
+		"native_http_denies_effectful_get_and_redirect_before_destination_effects",
+		&[
+			("denied-destination-direct-get", "permission-denied"),
+			("allowed-origin-redirect-to-denied-destination", "permission-denied"),
+			("allowed-origin-same-origin-get", "http-200"),
+			("denied-destination-after-console-widening", "permission-denied"),
+		],
+		&[("allowed", allowed.hits()), ("denied", denied_destination.hits())],
+	);
 }
 
 #[tokio::test]
@@ -369,6 +397,14 @@ async fn native_http_allows_relative_and_explicit_cross_origin_redirects() {
 		relative.received.lock()[1].contains("private-token"),
 		"same-origin redirect retains credentials"
 	);
+	observe(
+		"native_http_allows_relative_and_explicit_cross_origin_redirects",
+		&[
+			("allowed-cross-origin-redirect", "http-200-credentials-stripped"),
+			("same-origin-relative-redirect", "http-200-credentials-retained"),
+		],
+		&[("cross", cross.hits()), ("target", target.hits()), ("relative", relative.hits())],
+	);
 }
 
 #[tokio::test]
@@ -391,6 +427,14 @@ async fn native_http_revocation_interrupts_held_redirect_and_preserves_destinati
 	harness.send(2, target.url("/effectful-get")).await;
 	assert!(matches!(harness.response(2).await, server_frame::Body::Error(_)));
 	assert_eq!(target.hits(), 0);
+	observe(
+		"native_http_revocation_interrupts_held_redirect_and_preserves_destination_counter",
+		&[
+			("held-redirect-after-invocation-settled", "permission-denied"),
+			("get-after-invocation-settled", "error"),
+		],
+		&[("redirect", redirect.hits()), ("target", target.hits())],
+	);
 }
 
 #[tokio::test]
@@ -430,6 +474,15 @@ async fn native_http_cancel_is_processed_while_redirect_response_is_pending() {
 	));
 	assert_eq!(redirect.hits(), 1);
 	assert_eq!(target.hits(), 1, "only the later benign request may arrive");
+	observe(
+		"native_http_cancel_is_processed_while_redirect_response_is_pending",
+		&[
+			("cancelled-while-redirect-pending", "no-redirect-dispatch"),
+			("malformed-scheme-after-cancel", "invalid-argument"),
+			("later-benign-get", "http-200"),
+		],
+		&[("redirect", redirect.hits()), ("target", target.hits())],
+	);
 }
 
 #[tokio::test]
@@ -443,6 +496,11 @@ async fn native_http_explicit_broad_owner_scope_preserves_existing_local_access(
 		server_frame::Body::HttpResponse(pb::HttpResponse { status: 200, .. })
 	));
 	assert_eq!(target.hits(), 1);
+	observe(
+		"native_http_explicit_broad_owner_scope_preserves_existing_local_access",
+		&[("broad-owner-get", "http-200")],
+		&[("target", target.hits())],
+	);
 }
 
 #[tokio::test]
@@ -494,6 +552,11 @@ async fn native_http_https_downgrade_never_reaches_plaintext_destination() {
 	tls_task.await.expect("TLS server completed");
 	assert_eq!(tls_hits.load(Ordering::SeqCst), 1, "TLS redirect must actually be received");
 	assert_eq!(target.hits(), 0, "downgrade must not dispatch plaintext GET");
+	observe(
+		"native_http_https_downgrade_never_reaches_plaintext_destination",
+		&[("https-to-http-redirect", "permission-denied")],
+		&[("tls-redirect", tls_hits.load(Ordering::SeqCst)), ("plaintext-target", target.hits())],
+	);
 }
 
 #[tokio::test]
@@ -578,6 +641,15 @@ async fn native_http_session_host_intersects_authenticated_project_baseline() {
 		matches!(peer.response(3).await,server_frame::Body::Error(pb::ProtocolError{code,..}) if code==pb::ProtocolErrorCode::PreconditionFailed as i32)
 	);
 	assert_eq!(permitted.hits(), 1);
+	observe(
+		"native_http_session_host_intersects_authenticated_project_baseline",
+		&[
+			("resumed-child-forbidden-get", "permission-denied"),
+			("resumed-child-permitted-get", "http-200"),
+			("stale-incarnation-replay", "precondition-failed"),
+		],
+		&[("permitted", permitted.hits()), ("forbidden", forbidden.hits())],
+	);
 	serving.abort();
 }
 
@@ -593,4 +665,9 @@ async fn native_http_rejects_malformed_redirect_without_leaking_url_secrets() {
 	assert_eq!(error.code, pb::ProtocolErrorCode::InvalidArgument as i32);
 	assert!(!format!("{error:?}").contains("private-value"));
 	assert_eq!(malformed.hits(), 1);
+	observe(
+		"native_http_rejects_malformed_redirect_without_leaking_url_secrets",
+		&[("malformed-redirect-location", "invalid-argument-without-secret")],
+		&[("malformed", malformed.hits())],
+	);
 }
