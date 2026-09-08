@@ -60,7 +60,32 @@ All paths should be absolute. Output must be an empty directory outside the sour
 }
 ```
 
-Credentials and gateway settings are inherited from the invoking environment. Per-trial config and session storage are separate from the scored project. Extra argv must not override adapter-owned model, project, session or output-mode flags. Do not use `--no-tools` for an edit benchmark. Unix process groups are owned and killed on timeout, overflow and completion; Windows is rejected until equivalent job-object ownership exists. Stdout/stderr are bounded to 64 MiB combined.
+Each trial receives fresh HOME/USERPROFILE, OMP config/data/state/cache, all XDG
+roots (including an owner-only runtime directory), temporary directories and
+session storage outside the scored project. Ambient OMP profiles, user context,
+Python/Node/shell injection variables and undeclared credentials are not passed.
+PATH, LANG, LC_ALL and TZ remain host execution prerequisites.
+
+Declare provider environment **names**, never secret values, in the manifest:
+
+```json
+"provider": {
+  "env": ["OMP_ANTHROPIC_API_KEY"],
+  "models": {"path": "/artifacts/models.toml", "sha256": "SHA256_OF_NON_SECRET_CATALOG"}
+}
+```
+
+Both fields are optional. Built-in Anthropic routing needs no custom catalog.
+Declared credentials must be nonempty in the invoking environment; supported
+names end in `_API_KEY`, `_ACCESS_TOKEN` or `_BASE_URL`, plus explicitly declared
+HTTP(S)/ALL/NO_PROXY inputs. Values are passed directly to the child environment
+and are not added to manifests or reports. The optional non-secret models.toml
+is hash-checked, retained in memory and copied to each trial's fresh data root.
+Do not put credentials in that catalog: trial files are evidence artifacts.
+Other provider setup must be added explicitly, not recovered from the caller's
+home. Provider-side prompt caching is not reset by filesystem isolation; its
+order effects remain part of the interleaved A/A measurement.
+ Extra argv must not override adapter-owned model, project, session or output-mode flags. Do not use `--no-tools` for an edit benchmark. Unix process groups are owned and killed on timeout, overflow and completion; Windows is rejected until equivalent job-object ownership exists. Stdout/stderr are bounded to 64 MiB combined.
 
 The complete A/A phase runs before A/B. Within each task/repetition, the two arms alternate; which arm is first also alternates across tasks/repetitions. A/A uses the exact baseline binary and argv for both arms. It measures the observed run-window noise floor, not a formal confidence interval. Every comparison row includes the absolute A/A delta. Effects at or below that floor are unresolved; success-rate effects below 5 percentage points on 20 or fewer tasks are also unresolved. No promotion occurs automatically.
 
@@ -129,3 +154,30 @@ OMP_RULER_SOURCE=/benchmarks/RULER OMP_RULER_PYTHON=/absolute/path/to/python3 \
 ```
 
 Without `OMP_RULER_SOURCE`, the two official-source execution tests are explicitly skipped; final-answer extraction and the existing adapter tests still run. A real standardized result requires the immutable official/generated dataset, reviewed generation provenance, actual production OMP binaries, provider access, and published run artifacts. The manifest does not currently enforce an explicit maximum generated-answer token count; generation settings must be established through supported, verified arm arguments/configuration, and differences from the upstream inference protocol must be disclosed. Evaluator isolation and descendant cost accounting remain separate limitations.
+
+
+## Production state-isolation regression
+
+After a real build wrapped by `omp bench build`, run:
+
+```sh
+python3 scripts/qa/cases/benchmark_isolation.py \
+  --source /checkout/omp2 --binary /checkout/omp2/target/debug/omp \
+  --provenance /artifacts/build.json --output /artifacts/state-isolation
+```
+
+The output directory must not exist. This uses the existing adapter and shared
+loopback MockModel against the actual OMP binary, with no paid provider calls.
+A positive control must expose a synthetic inherited home-context marker to the
+provider. The four real A/A+A/B trials must exclude it; the mock also plants a
+second marker in trial zero's home before its response finishes, and later
+trials must exclude that marker. Every trial must complete successfully. Captures,
+traces, provenance, per-trial results and summary.md remain readable on failure.
+The checker explicitly stops only detached envd processes whose executable and
+project root match its owned fixtures.
+
+This regression is authored but has not yet run against a compiled production
+binary. Bun adapter tests exercise environment isolation and catalog copying;
+they do not replace that runtime proof. Filesystem state isolation is not an
+access-control sandbox (#50), complete descendant accounting (#62), or protected
+candidate promotion (#67); all three remain open.

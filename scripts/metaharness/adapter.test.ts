@@ -23,6 +23,7 @@ import {
 	sourceIdentity,
 	summarize,
 	telemetry,
+	trialEnvironment,
 	validateComparison,
 	verifyArm,
 	verifyFiles,
@@ -255,8 +256,12 @@ test("process adapter plumbing produces real filesystem verification and manager
 	await mkdir(expected);
 	await writeFile(join(input, "answer.txt"), "before");
 	await writeFile(join(expected, "answer.txt"), "done");
+	const catalog = "[providers.fixture]\nauth = \"none\"\n";
+	const modelsPath = join(root, "models.toml");
+	await writeFile(modelsPath, catalog);
 	const report = await runExperiment({
 		version: 1,
+		provider: { models: { path: modelsPath, sha256: digest(catalog) } },
 		model: "test/snapshot-2026-01-01",
 		baseline: arm,
 		candidate: arm,
@@ -272,6 +277,8 @@ test("process adapter plumbing produces real filesystem verification and manager
 		await readFile(join(root, "results", "baseline", "result.json"), "utf8"),
 	);
 	expect(row.tasks[0].runs[0].tokens.input).toBe(10);
+	for (let ordinal = 0; ordinal < 4; ordinal++)
+		expect(await readFile(join(root, "results", `trial-${ordinal}`, "data/models.toml"), "utf8")).toBe(catalog);
 });
 test("process deadline kills a descendant retaining stdout", async () => {
 	const root = await temp();
@@ -444,3 +451,28 @@ test.skipIf(!process.env.OMP_RULER_SOURCE)(
 		).rejects.toThrow("exactly match");
 	},
 );
+
+
+test("trial state isolates native roots and strips ambient context/runtime overrides", async () => {
+	const root = await temp();
+	const parent = {
+		PATH: process.env.PATH, HOME: "/ambient-home", OMP_DATA_DIR: "/ambient-data",
+		OMP_PROFILE: "contaminated", CODEX_HOME: "/ambient-codex", PYTHONPATH: "/ambient-python",
+		NODE_OPTIONS: "--require /ambient-code", BASH_ENV: "/ambient-shell", XDG_CONFIG_HOME: "/ambient-xdg",
+		ANTHROPIC_API_KEY: "fixture-secret-only", OPENAI_API_KEY: "undeclared-fixture-secret",
+	};
+	const first = await trialEnvironment(join(root, "first"), { env: ["ANTHROPIC_API_KEY"] }, parent);
+	await mkdir(join(first.HOME!, ".claude"));
+	await writeFile(join(first.HOME!, ".claude/CLAUDE.md"), "FIRST_TRIAL_CONTEXT");
+	const second = await trialEnvironment(join(root, "second"), { env: ["ANTHROPIC_API_KEY"] }, parent);
+	for (const key of ["HOME", "OMP_CONFIG_DIR", "OMP_DATA_DIR", "OMP_STATE_DIR", "OMP_CACHE_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "TMPDIR"]) {
+		expect(first[key]).not.toBe(second[key]);
+		expect(second[key]!.startsWith(join(root, "second") + "/")).toBe(true);
+	}
+	expect(await Bun.file(join(second.HOME!, ".claude/CLAUDE.md")).exists()).toBe(false);
+	for (const key of ["OMP_PROFILE", "CODEX_HOME", "PYTHONPATH", "NODE_OPTIONS", "BASH_ENV", "OPENAI_API_KEY"]) expect(second[key]).toBeUndefined();
+	expect(second.ANTHROPIC_API_KEY).toBe("fixture-secret-only");
+	await expect((await import("node:fs/promises")).stat(second.XDG_RUNTIME_DIR!).then(s => s.mode & 0o777)).resolves.toBe(0o700);
+	await expect(trialEnvironment(join(root, "bad"), { env: ["OMP_PROFILE"] }, parent)).rejects.toThrow("Unsupported provider");
+	await expect(trialEnvironment(join(root, "missing"), { env: ["OMP_ANTHROPIC_API_KEY"] }, parent)).rejects.toThrow("Missing declared");
+});

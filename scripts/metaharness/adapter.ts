@@ -39,7 +39,14 @@ export interface Task {
 	expected: string;
 	prompt: string;
 }
+export interface ProviderInputs {
+	/** Names only; values are read from the invoking environment, never recorded. */
+	env?: string[];
+	/** Non-secret provider catalog; credentials belong in declared environment inputs. */
+	models?: { path: string; sha256: string };
+}
 export interface Manifest {
+	provider?: ProviderInputs;
 	answerVerifier?: RulerSpec;
 	version: 1;
 	model: string;
@@ -645,6 +652,37 @@ function outside(path: string, root: string) {
 	const rel = relative(root, path);
 	return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 }
+/** Build a fresh native environment; ambient profiles, context and runtime hooks are excluded. */
+export async function trialEnvironment(
+	root: string,
+	provider: ProviderInputs = {},
+	parent: NodeJS.ProcessEnv = process.env,
+): Promise<NodeJS.ProcessEnv> {
+	const env: NodeJS.ProcessEnv = {};
+	for (const name of ["PATH", "LANG", "LC_ALL", "TZ"]) {
+		if (parent[name] !== undefined) env[name] = parent[name];
+	}
+	for (const name of provider.env ?? []) {
+		if (!/^(?:(?:OMP_)?[A-Z][A-Z0-9_]*_(?:API_KEY|ACCESS_TOKEN|BASE_URL)|HTTPS?_PROXY|ALL_PROXY|NO_PROXY)$/.test(name))
+			throw new Error(`Unsupported provider environment input: ${name}`);
+		if (!parent[name]) throw new Error(`Missing declared provider environment input: ${name}`);
+		env[name] = parent[name];
+	}
+	const paths: Record<string, string> = {
+		HOME: "home", USERPROFILE: "home",
+		OMP_CONFIG_DIR: "config", OMP_DATA_DIR: "data", OMP_STATE_DIR: "state", OMP_CACHE_DIR: "cache",
+		XDG_CONFIG_HOME: "xdg-config", XDG_DATA_HOME: "xdg-data", XDG_STATE_HOME: "xdg-state",
+		XDG_CACHE_HOME: "xdg-cache", XDG_RUNTIME_DIR: "runtime",
+		TMPDIR: "tmp", TMP: "tmp", TEMP: "tmp",
+	};
+	for (const [name, directory] of Object.entries(paths)) {
+		const path = join(root, directory);
+		await mkdir(path, { recursive: true, mode: 0o700 });
+		env[name] = path;
+	}
+	return env;
+}
+
 export async function runExperiment(manifest: Manifest) {
 	if (
 		manifest.version !== 1 ||
@@ -737,6 +775,10 @@ export async function runExperiment(manifest: Manifest) {
 			selected.add(record.index);
 		}
 	}
+	const models = manifest.provider?.models;
+	const modelsBytes = models ? await readFile(models.path) : undefined;
+	if (models && (!isAbsolute(models.path) || digest(modelsBytes!) !== models.sha256))
+		throw new Error("Provider catalog must have an absolute path and matching SHA-256");
 	const runs: Run[] = [];
 	for (const [ordinal, item] of schedule(
 		manifest.tasks,
@@ -762,13 +804,15 @@ export async function runExperiment(manifest: Manifest) {
 			...item.arm.args,
 			item.task.prompt,
 		];
+		const env = await trialEnvironment(rowRoot, manifest.provider);
+		if (modelsBytes) await writeFile(join(env.OMP_DATA_DIR!, "models.toml"), modelsBytes, { mode: 0o600 });
 		const started = performance.now();
 		const result = await execute(
 			command,
 			project,
 			manifest.timeoutMs,
 			undefined,
-			{ ...process.env, OMP_CONFIG_DIR: join(rowRoot, "config") },
+			env,
 		);
 		const { stdout, stderr, exitCode, timedOut } = result;
 		let error = result.error;
