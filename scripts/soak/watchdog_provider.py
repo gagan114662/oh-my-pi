@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """Finite adversarial script on the existing QA wire builder; no model claims."""
+import faulthandler
+
+if __name__ == '__main__':
+    faulthandler.dump_traceback_later(9)
+    print('WATCHDOG_PROVIDER_STARTUP phase=imports', flush=True)
+
 import argparse
 import json
 from pathlib import Path
@@ -22,8 +28,11 @@ def main():
     count = 100 if args.phase == 'repeat' else 1
     script = [call('bash', **payload)] * count + [Reply(text='Adversarial script exhausted.')]
     (args.out / 'script.json').write_text(json.dumps({'phase': args.phase, 'tool': 'bash', 'arguments': payload, 'scripted_tool_responses': count}, indent=2))
+    print(f'WATCHDOG_PROVIDER_STARTUP phase=bind script={args.phase}', flush=True)
     with MockModel(*script) as model:
         (args.out / 'port').write_text(str(model.port))
+        faulthandler.cancel_dump_traceback_later()
+        print(f'WATCHDOG_PROVIDER_LISTENING port={model.port}', flush=True)
         captured = 0
         while True:
             state = model.state()

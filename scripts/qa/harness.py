@@ -22,6 +22,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -104,6 +105,16 @@ def _reply(value: Reply | str) -> Reply:
 	if isinstance(value, str):
 		return Reply(text=value)
 	raise TypeError(f"mock reply must be Reply or str, got {type(value).__name__}")
+
+
+class LoopbackHTTPServer(ThreadingHTTPServer):
+	"""Numeric-loopback fixture listener without reverse-DNS startup work."""
+	def server_bind(self):
+		if self.server_address[0] != "127.0.0.1":
+			raise ValueError("fixture server must bind numeric loopback")
+		TCPServer.server_bind(self)
+		self.server_name = "localhost"
+		self.server_port = self.server_address[1]
 
 
 class MockModel:
@@ -208,7 +219,7 @@ class MockModel:
 				self.end_headers()
 				self.wfile.write(body)
 
-		self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+		self.server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
 		self.port = self.server.server_address[1]
 		self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 		self.thread.start()

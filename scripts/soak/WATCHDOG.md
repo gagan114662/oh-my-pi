@@ -100,3 +100,29 @@ The standalone fixture currently creates a fresh private session. Wiring these
 phases into the existing successful 500-turn journal and actually running that
 combined soak is intentionally still pending, as are all other #105 fault rows.
 Neither the two-phase leaf nor a static review satisfies that acceptance item.
+
+## Provider startup evidence
+
+Run `34259443561` at head `81abe06ff6f94e6b393604051724fa689fbb4eb3`
+failed both phases before the provider published a port. Each phase wrote its
+script descriptor, but its provider log was empty, `initial_head` was null,
+and no watchdog turn ran. Those failures are not behavioral evidence for the
+loop guard or the real-duration idle cutoff.
+
+The watchdog provider uses one actual `MockModel` listener; it does not create
+the soak provider's former throwaway listener. It did share the standard HTTP
+listener's unnecessary reverse-DNS lookup. This branch applies the numeric
+loopback binding correction from `05a13d28e5` to the shared harness, without
+changing its response builders. A subprocess regression with reverse DNS
+unavailable failed for both scripts before the correction and passed after it:
+each real provider published a port within the original ten-second limit,
+served JSON and streaming HTTP responses, and retained both request captures.
+It also checks the unchanged 100-call repeat script and idle shell arguments.
+This demonstrates the DNS dependency, not the historical hosted stall's exact
+cause. Import/bind phase logs and a nine-second startup stack dump now preserve
+that distinction on future failures.
+
+The production fixture, its ten-second readiness deadline, watchdog assertions,
+and `31 * 60` real observation duration are unchanged. The 25 offline soak tests
+passed locally; no new production watchdog phase has run. The existing leaf's
+`test_watchdog*.py` discovery includes the new startup regression automatically.
