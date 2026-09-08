@@ -1279,6 +1279,8 @@ async fn stream_idle_timeout_cuts_a_stalled_body_before_the_attempt_deadline() {
 		Cancellation::default(),
 	);
 	call.encoded.uri = sf!("http://{address}/idle");
+	// `Raw` framing buffers the whole body; SSE yields a frame per event.
+	call.encoded.framing = FramingProtocol::Sse;
 	call.attempt.timeout = time::Duration::from_secs(5);
 	call.attempt.idle_timeout = Some(time::Duration::from_millis(50));
 	let started = time::Instant::now();
@@ -1345,6 +1347,8 @@ async fn stream_idle_watchdog_is_re_armed_by_every_frame() {
 		Cancellation::default(),
 	);
 	call.encoded.uri = sf!("http://{address}/ticks");
+	// `Raw` framing buffers the whole body; SSE yields a frame per event.
+	call.encoded.framing = FramingProtocol::Sse;
 	call.attempt.timeout = time::Duration::from_secs(5);
 	call.attempt.idle_timeout = Some(time::Duration::from_millis(150));
 	let response = service.call(call).await.expect("first frame commits");

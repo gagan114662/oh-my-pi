@@ -1695,9 +1695,9 @@ fn decode_stream(
 		let mut capture_remaining = capture_limit;
 		let mut ordinal = 0_u64;
 		let mut emitted = false;
-		// Idle watchdog: re-armed on every decoded frame, so a body that trickles
-		// keep-alives forever is still cut when no frame arrives within the idle
-		// interval, instead of living until the whole-attempt deadline.
+		// Idle watchdog: re-armed on every body chunk, so a body that goes
+		// silent is cut at the idle interval instead of living until the
+		// whole-attempt deadline.
 		let idle_timeout = attempt.idle_timeout;
 		let mut idle_deadline = idle_timeout.map(|timeout| Instant::now() + timeout);
 		'response: loop {
@@ -1755,6 +1755,10 @@ fn decode_stream(
 				},
 			};
 			if !chunk.is_empty() {
+				// Any body bytes are progress: `Raw` framing buffers a whole
+				// response before it yields a frame, and SSE keep-alives are
+				// bytes from a live provider. The stall this cuts is silence.
+				idle_deadline = idle_timeout.map(|timeout| Instant::now() + timeout);
 				response_bytes = response_bytes.saturating_add(chunk.len() as u64);
 				if response_bytes > response_limit {
 					let error = protocol_error(if emitted { ErrorPhase::Streaming } else { ErrorPhase::Handshake }, emitted, "response-body-limit");
@@ -1768,9 +1772,6 @@ fn decode_stream(
 						break;
 					},
 				};
-				if !frames.is_empty() {
-					idle_deadline = idle_timeout.map(|timeout| Instant::now() + timeout);
-				}
 				for frame in frames {
 					capture_debug_frame(&attempt, &frame);
 					capture_http_frame(&capture, ordinal, &frame, &mut capture_remaining);
