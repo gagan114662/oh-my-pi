@@ -51,38 +51,6 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
-  benchmark_contracts:
-    name: Benchmark adapter and pinned scorer contracts
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.11
-      - name: Fetch exact official scorer sources
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/ruler-official"
-          for file in scripts/eval/evaluate.py scripts/eval/synthetic/constants.py; do
-            mkdir -p "$root/$(dirname "$file")"
-            curl --fail --location --retry 3 "https://raw.githubusercontent.com/NVIDIA/RULER/c3f5e3b4f87f97e048793bb510a3a6b19a46bf3a/$file" -o "$root/$file"
-          done
-          printf 'OMP_RULER_SOURCE=%s\n' "$root" >> "$GITHUB_ENV"
-          printf 'OMP_RULER_PYTHON=%s\n' "$(command -v python3)" >> "$GITHUB_ENV"
-      - name: Run adapter and real Python scorer contracts
-        run: |
-          set -o pipefail
-          mkdir -p target/benchmark-contracts
-          bun test scripts/metaharness 2>&1 | tee target/benchmark-contracts/tests.log
-      - name: Publish benchmark contract evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: benchmark-contracts
-          path: target/benchmark-contracts/
-          if-no-files-found: error
-
   format:
     name: Rust format
     runs-on: ubuntu-24.04
@@ -94,8 +62,17 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Test ADR path diagnostics
+        run: python3 scripts/test-adr-paths.py
       - name: Check current ADR paths
-        run: python3 scripts/check-adr-paths.py
+        run: python3 scripts/check-adr-paths.py --report target/adr-paths/report.json
+      - name: Publish ADR path evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: adr-path-reference-evidence
+          path: target/adr-paths/report.json
+          if-no-files-found: error
 
       - name: Enforce model data ownership
         run: cargo run --release --locked --manifest-path tools/lintx/Cargo.toml -- --only model-gate --only model-table crates/ai/src
@@ -313,11 +290,37 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  roster_coverage:
+    name: Native tool roster source coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inventory every native tool implementation
+        run: python3 scripts/check-tool-roster.py --self-test
+      - name: Publish full family coverage table
+        if: always()
+        run: cat target/tool-roster/coverage.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload roster source coverage
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-tool-roster-coverage
+          path: target/tool-roster/
+          if-no-files-found: error
+          retention-days: 14
+
   rust:
     name: Rust workspace and acceptance proofs
-    needs: [format, adr_status, runtime_spec, licenses]
+    # License compliance remains a required independent job. It produces no
+    # input for Rust verification, so do not serialize the expensive builds.
+    needs: [format, adr_status, runtime_spec, roster_coverage]
     runs-on: macos-15
     timeout-minutes: 120
+    env:
+      TEST_INVENTORY_DIR: target/test-inventory/${{ github.run_id }}-${{ github.run_attempt }}
+      OMP_OUTPUT_PROOF_DIR: ${{ github.workspace }}/target/output-proof/${{ github.run_id }}-${{ github.run_attempt }}
+      OMP_P6_PROOF_DIR: ${{ github.workspace }}/target/p6-proof/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
 
@@ -349,8 +352,9 @@ jobs:
           test -f vendor/python/pyo3-config.txt
           crates/py/scripts/ld64.lld --version
 
-      - name: Cache Cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Restore Cargo build cache
+        id: cargo-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry/index
@@ -362,11 +366,34 @@ jobs:
             cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
             cargo-${{ runner.os }}-${{ runner.arch }}-
 
+      - name: Release cached acceptance binaries before workspace linking
+        run: |
+          python3 - <<'PY_SPACE'
+          import json, os, shutil, subprocess
+          from pathlib import Path
+          before = shutil.disk_usage('.').free
+          result = subprocess.run(['cargo', 'clean', '-p', 'omp-e2e', '--locked'], check=False)
+          row = {'package': 'omp-e2e', 'free_bytes_before': before,
+                 'free_bytes_after': shutil.disk_usage('.').free, 'exit_code': result.returncode}
+          output = Path(os.environ['TEST_INVENTORY_DIR'])
+          output.mkdir(parents=True, exist_ok=True)
+          (output / 'released-cached-acceptance.json').write_text(json.dumps(row, indent=2) + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('## Space before workspace linking\n\n```json\n' + json.dumps(row, indent=2) + '\n```\n')
+          raise SystemExit(result.returncode)
+          PY_SPACE
+
+      - name: Validate test inventory tooling
+        run: python3 scripts/test-inventory-test.py
+
+      - name: Initialize workspace test inventory
+        run: python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" init
+
       - name: Lint workspace
         run: cargo clippy --workspace --locked
 
       - name: Test workspace
-        run: cargo nextest run --profile ci --workspace --exclude omp-e2e --locked
+        run: python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase workspace -- --workspace --exclude omp-e2e --locked
       # nextest cannot run doctests; omp has them in 25+ modules, so they need
       # their own libtest pass or the coverage silently disappears.
       - name: Test doctests
@@ -375,12 +402,21 @@ jobs:
       - name: Gate frozen Python examples
         run: python3 scripts/check-python-examples.py
 
+      - name: Release completed test executables for acceptance linking
+        run: |
+          python3 scripts/release-tested-binaries-test.py
+          python3 scripts/release-tested-binaries.py --phase "$TEST_INVENTORY_DIR/workspace" --target target | tee "$TEST_INVENTORY_DIR/released-binaries.json"
+          cat "$TEST_INVENTORY_DIR/released-binaries.json" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Compile acceptance proofs
         run: cargo nextest run -p omp-e2e --tests --no-run --locked
 
       - name: Run acceptance proofs P1-P6
+        env:
+          OMP_P6_LATENCY_PATH: ${{ env.OMP_P6_PROOF_DIR }}/normal.json
         run: |
-          cargo nextest run --profile ci -p omp-e2e --locked \
+          mkdir -p "$OMP_P6_PROOF_DIR"
+          python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p1-p6 -- -p omp-e2e --locked \
             --test p1_doc_race \
             --test p2_cancel_matrix \
             --test p3_detached_jobs \
@@ -388,21 +424,42 @@ jobs:
             --test p5_prefix_stability \
             --test p6_crash_resume
 
+      - name: Run P6 under disk pressure
+        run: |
+          python3 scripts/p6-latency-test.py
+          python3 scripts/p6-latency.py contended --output "$OMP_P6_PROOF_DIR" -- \
+            python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p6-contended -- \
+            -p omp-e2e --locked --test p6_crash_resume
+
+      - name: Report P6 timing margins
+        if: always()
+        run: python3 scripts/p6-latency.py report --output "$OMP_P6_PROOF_DIR"
+
+      - name: Upload P6 timing evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: p6-latency-macos-arm64
+          path: ${{ env.OMP_P6_PROOF_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Run acceptance proofs P9-P10 and tool sources
         run: |
-          cargo nextest run --profile ci -p omp-e2e --locked \
+          python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p9-p10-tools -- -p omp-e2e --locked \
             --test p9_isolation \
             --test p9_extension_control \
             --test p10_lift_idempotence \
-            --test tool_sources
+            --test tool_sources \
+            --test output_completeness
 
       - name: Run terminal proof P7
         env:
           TERM: xterm-256color
-        run: cargo nextest run --profile ci -p omp-e2e --test p7_tui --locked
+        run: python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p7 -- -p omp-e2e --test p7_tui --locked
 
       - name: Validate P8 baseline contract
-        run: cargo nextest run --profile ci -p omp-e2e --test p8_baselines --locked
+        run: python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" capture --phase p8 -- -p omp-e2e --test p8_baselines --locked
 
       - name: Record P8 baseline
         continue-on-error: true
@@ -418,6 +475,54 @@ jobs:
           path: target/e2e-artifacts/p8-baselines.json
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Summarize 2MiB output completeness evidence
+        if: always()
+        run: |
+          python3 - <<'PY_OUTPUT'
+          import json, os
+          from pathlib import Path
+          rows = json.loads((Path(os.environ['OMP_OUTPUT_PROOF_DIR']) / 'output-completeness.json').read_text())
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as report:
+              report.write('## Actual 2MiB Bash output\n\n')
+              report.write('Inline delivery and verified artifact recovery are different claims.\n\n```json\n')
+              report.write(json.dumps(rows, indent=2) + '\n```\n')
+          PY_OUTPUT
+
+      - name: Upload 2MiB output completeness evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: output-completeness-macos-arm64
+          path: ${{ env.OMP_OUTPUT_PROOF_DIR }}/output-completeness.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Report executed workspace tests
+        if: always()
+        run: python3 scripts/test-inventory.py --output "$TEST_INVENTORY_DIR" report
+
+      - name: Upload workspace test inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workspace-test-inventory-macos-arm64
+          path: ${{ env.TEST_INVENTORY_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
+      # A failed test must not discard the expensive, fingerprinted build.
+      # Evidence remains separately regenerated and validated for each run.
+      - name: Preserve Cargo build cache after checks
+        if: ${{ always() && !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   p7_linux:
     name: Terminal proof P7 (Linux PTY)
@@ -490,23 +595,87 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Prove installed benchmark command parsing
+      - name: Publish compiled tool roster policy proof
         run: |
           set -o pipefail
-          mkdir -p target/benchmark-cli
-          set +e
-          cargo nextest run --profile ci --locked -p omp-app --lib -E 'test(parses_harness_benchmark_and_rejects_ambiguous_modes)' --no-tests fail 2>&1 | tee target/benchmark-cli/nextest.log
-          test_status=${PIPESTATUS[0]}
-          cargo test --doc --locked -p omp-app 2>&1 | tee target/benchmark-cli/doctests.log
-          doc_status=${PIPESTATUS[0]}
-          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
-
-      - name: Publish benchmark command evidence
+          mkdir -p "$ENVD_PROOF_DIR"/roster
+          cargo nextest run --profile ci -p omp-envd --locked --no-tests fail --success-output immediate -E 'test(every_environment_family_has_one_advertised_surface_in_each_policy)' 2>&1 | tee "$ENVD_PROOF_DIR"/roster/policy.log
+          cat "$ENVD_PROOF_DIR"/roster/policy.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload compiled roster proof
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: benchmark-cli
-          path: target/benchmark-cli/
+          name: native-tool-roster-policy-proof
+          path: ${{ env.ENVD_PROOF_DIR }}/roster/policy.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Prove managed skill discovery roundtrip
+        run: |
+          set -o pipefail
+          mkdir -p target/managed-skill-proof
+          cargo nextest run --profile ci --locked -p omp-driver --test managed_skill_roundtrip --no-tests fail 2>&1 | tee target/managed-skill-proof/nextest.log
+          cargo test --doc --locked -p omp-driver 2>&1 | tee target/managed-skill-proof/doctests.log
+
+      - name: Publish managed skill proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: managed-skill-roundtrip
+          path: target/managed-skill-proof/
+      - name: Prove Linux shell contracts and approved command wrappers
+        run: |
+          set -o pipefail
+          mkdir -p target/approved-scope-proof
+          set +e
+          cargo nextest run --profile ci --locked -p omp-shell --lib --tests --no-tests fail 2>&1 | tee target/approved-scope-proof/shell.log
+          test_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-shell 2>&1 | tee target/approved-scope-proof/doctests.log
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > target/approved-scope-proof/nextest.exit
+          printf '%s\n' "$doc_status" > target/approved-scope-proof/doctests.exit
+          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+
+      - name: Publish approved command wrapper evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: approved-command-wrapper
+          path: target/approved-scope-proof/
+          if-no-files-found: error
+
+      - name: Prove authenticated proxy header boundaries
+        run: |
+          set -o pipefail
+          mkdir -p target/proxy-header-proof
+          cargo nextest run --profile ci --locked -p omp-envd --lib -E 'test(headers_are_bounded_cumulatively_and_by_count)' --no-tests fail --success-output immediate 2>&1 | tee target/proxy-header-proof/nextest.log
+          cargo test --doc --locked -p omp-envd 2>&1 | tee target/proxy-header-proof/doctests.log
+
+      - name: Publish proxy header boundary evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proxy-header-boundaries
+          path: target/proxy-header-proof/
+          if-no-files-found: error
+
+      - name: Prove command terminal backpressure
+        run: |
+          set -o pipefail
+          mkdir -p target/exec-terminal-proof
+          set +e
+          cargo nextest run --profile ci --locked -p omp-envd --lib --no-tests fail --success-output immediate -E 'test(exec::tests::terminal_event_yields_on_a_full_queue_and_preserves_order) | test(exec::tests::fast_output_is_host_bounded_and_complete_in_the_spill_artifact) | test(exec::tests::saturated_output_queue_counts_only_delivered_bytes_and_retains_all_source)' 2>&1 | tee target/exec-terminal-proof/nextest.log
+          test_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-envd 2>&1 | tee target/exec-terminal-proof/doctests.log
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > target/exec-terminal-proof/nextest.exit
+          printf '%s\n' "$doc_status" > target/exec-terminal-proof/doctests.exit
+          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+      - name: Publish terminal backpressure evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: exec-terminal-backpressure
+          path: target/exec-terminal-proof/
           if-no-files-found: error
 
       - name: Prove Linux environment host contracts

@@ -1,0 +1,138 @@
+name: Benchmark adapter contracts
+
+on:
+  push:
+    branches: [fix/benchmark-trial-isolation, fix/integration-foundation-20260908]
+  pull_request:
+    branches: [main, omp2]
+    paths:
+      - scripts/metaharness/**
+      - scripts/metaharness-omp2.ts
+      - scripts/qa/cases/benchmark_isolation.py
+      - crates/app/**
+      - .github/workflows/benchmark-contracts.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  benchmark_contracts:
+    name: Benchmark adapter and pinned scorer contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record exact source and fixture identity
+        run: |
+          mkdir -p target/benchmark-source
+          git rev-parse HEAD > target/benchmark-source/source.commit
+          git status --porcelain=v1 > target/benchmark-source/worktree.status
+          git ls-files scripts/metaharness scripts/metaharness-omp2.ts scripts/qa/cases/benchmark_isolation.py crates/app/src/bench_harness_cmd.rs crates/app/src/cli.rs | sort | while IFS= read -r file; do shasum -a 256 "$file"; done > target/benchmark-source/files.sha256
+          {
+            echo "### Benchmark contract evidence"
+            echo "Source: $(git rev-parse HEAD)"
+            echo "Workflow: ${{ github.workflow_ref }} at ${{ github.workflow_sha }}"
+            echo "Deterministic contracts and CLI parsing only; no production quality benchmark or superiority claim."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - name: Fetch exact official scorer sources
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ruler-official"
+          for file in scripts/eval/evaluate.py scripts/eval/synthetic/constants.py; do
+            mkdir -p "$root/$(dirname "$file")"
+            curl --fail --location --retry 3 "https://raw.githubusercontent.com/NVIDIA/RULER/c3f5e3b4f87f97e048793bb510a3a6b19a46bf3a/$file" -o "$root/$file"
+          done
+          printf 'OMP_RULER_SOURCE=%s\n' "$root" >> "$GITHUB_ENV"
+          printf 'OMP_RULER_PYTHON=%s\n' "$(command -v python3)" >> "$GITHUB_ENV"
+      - name: Run adapter and real Python scorer contracts
+        run: |
+          set -o pipefail
+          mkdir -p target/benchmark-contracts
+          bun test scripts/metaharness 2>&1 | tee target/benchmark-contracts/tests.log
+      - name: Publish benchmark contract evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-contracts
+          path: target/benchmark-contracts/
+          if-no-files-found: error
+
+      - name: Publish source identity
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: benchmark-contract-source
+          path: target/benchmark-source/
+          if-no-files-found: error
+
+  benchmark_cli:
+    name: Installed benchmark CLI contracts
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record exact source and fixture identity
+        run: |
+          mkdir -p target/benchmark-source
+          git rev-parse HEAD > target/benchmark-source/source.commit
+          git status --porcelain=v1 > target/benchmark-source/worktree.status
+          git ls-files scripts/metaharness scripts/metaharness-omp2.ts scripts/qa/cases/benchmark_isolation.py crates/app/src/bench_harness_cmd.rs crates/app/src/cli.rs | sort | while IFS= read -r file; do shasum -a 256 "$file"; done > target/benchmark-source/files.sha256
+          {
+            echo "### Benchmark contract evidence"
+            echo "Source: $(git rev-parse HEAD)"
+            echo "Workflow: ${{ github.workflow_ref }} at ${{ github.workflow_sha }}"
+            echo "Deterministic contracts and CLI parsing only; no production quality benchmark or superiority claim."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Install native prerequisites
+        run: |
+          test "$(uname -m)" = arm64
+          brew install just cmake ninja lld@22 uv zstd
+          rustup show active-toolchain
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare and verify embedded Python
+        run: |
+          just setup-python
+          just doctor
+          test -f vendor/python/pyo3-config.txt
+          crates/py/scripts/ld64.lld --version
+      - name: Prove installed benchmark command parsing
+        run: |
+          set -o pipefail
+          mkdir -p target/benchmark-cli
+          set +e
+          cargo nextest run --profile ci --locked -p omp-app --lib -E 'test(parses_harness_benchmark_and_rejects_ambiguous_modes)' --no-tests fail 2>&1 | tee target/benchmark-cli/nextest.log
+          test_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-app 2>&1 | tee target/benchmark-cli/doctests.log
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > target/benchmark-cli/nextest.exit
+          printf '%s\n' "$doc_status" > target/benchmark-cli/doctests.exit
+          printf '| Check | Raw exit |\n|---|---:|\n| CLI parsing | %s |\n| App doctests | %s |\n' "$test_status" "$doc_status" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$test_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+
+      - name: Publish benchmark command evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-cli
+          path: target/benchmark-cli/
+          if-no-files-found: error
+
+      - name: Publish source identity
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: benchmark-cli-source
+          path: target/benchmark-source/
+          if-no-files-found: error
