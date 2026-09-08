@@ -46,7 +46,7 @@ fn default_convars_resolve_and_paint_named_palettes() {
 				40,
 				context,
 			);
-			let painted = ui.frame().cell(0, 0).style.fg;
+			let painted = ui.frame().cell(0, 0).style().fg;
 			let color_matches = painted == expected;
 			if !color_matches {
 				failures.push(format!(
