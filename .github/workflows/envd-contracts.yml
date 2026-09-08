@@ -101,6 +101,8 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
               out.write('## Environment host execution\n\nRevision: `' + os.environ['GITHUB_SHA'] + '`\n\n')
               out.write('\n'.join(name + ': ' + ' '.join(rows) for name, rows in summaries.items()) + '\n\nExit codes: `' + str(exits) + '`\n')
+          if not re.search(r'\b3 tests run: 3 passed\b', ' '.join(summaries['application'])):
+              raise SystemExit('Expected all three application cancellation cases to execute and pass')
           if any(not rows for rows in summaries.values()) or any(code != 0 for code in exits.values()):
               raise SystemExit('Missing or failed environment host evidence')
           PYREPORT
