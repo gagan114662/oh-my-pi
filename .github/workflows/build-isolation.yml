@@ -42,9 +42,14 @@ jobs:
       - name: Install documented prerequisites
         working-directory: source
         run: |
-          brew install just cmake ninja lld@22 uv
+          brew install just cmake ninja lld@22 uv zstd
           rustup show active-toolchain
       - uses: taiki-e/install-action@nextest
+      - name: Exercise archive stage failures and prerequisite diagnostics
+        working-directory: source
+        run: |
+          python3 crates/py/scripts/test-fetch-python-archive.py
+          just doctor-test
       - name: Prepare embedded Python and diagnose prerequisites
         working-directory: source
         shell: bash

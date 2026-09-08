@@ -36,7 +36,7 @@ class DoctorTests(unittest.TestCase):
         p.chmod(0o755)
 
     def provision(self):
-        for name in ['cargo', 'rustup', 'just', 'cc', 'c++', 'cmake', 'ninja', 'uv', 'cargo-nextest', 'pkg-config']:
+        for name in ['cargo', 'rustup', 'just', 'cc', 'c++', 'cmake', 'ninja', 'uv', 'curl', 'zstd', 'tar', 'cargo-nextest', 'pkg-config']:
             self.command(name)
         self.command('cmake', 'cmake version 4.1.0')
         self.command('rustup', 'nightly-2026-08-08-aarch64-apple-darwin (default)\nclippy-aarch64-apple-darwin\nrustc-codegen-cranelift-aarch64-apple-darwin')
@@ -48,7 +48,7 @@ class DoctorTests(unittest.TestCase):
     def test_empty_path_reports_all_missing_tools_without_build(self):
         start = time.monotonic()
         result = self.results('arm64-darwin', executable=lambda _: False)
-        for name in ['cmake', 'ninja', 'configured Apple Silicon linker', 'cargo-nextest']:
+        for name in ['cmake', 'ninja', 'curl', 'zstd', 'tar', 'configured Apple Silicon linker', 'cargo-nextest']:
             self.assertFalse(result[name][0])
             self.assertIn('install', result[name][1].lower())
         self.assertLess(time.monotonic() - start, 3)
@@ -56,7 +56,7 @@ class DoctorTests(unittest.TestCase):
     def test_complete_profile_and_each_missing_native_tool(self):
         self.provision()
         self.assertTrue(all(ok for ok, _ in self.results().values()))
-        for name in ['cmake', 'ninja', 'cc', 'c++', 'pkg-config', 'cargo-nextest']:
+        for name in ['cmake', 'ninja', 'cc', 'c++', 'curl', 'zstd', 'tar', 'pkg-config', 'cargo-nextest']:
             with self.subTest(name=name):
                 p = self.bin / name
                 saved = p.read_text()

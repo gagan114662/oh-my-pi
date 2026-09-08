@@ -34,6 +34,9 @@ def inspect(root, host, path, environ=None, executable=None):
         'cmake': 'Install CMake 3.15 or newer (brew install cmake; Linux: cmake package).',
         'ninja': 'Install Ninja (brew install ninja; Linux: ninja-build package).',
         'uv': 'Install uv, required by just setup-python.',
+        'curl': 'Install curl, required to download the embedded Python archive.',
+        'zstd': 'Install zstd (brew install zstd; Linux: zstd package) for embedded Python archives.',
+        'tar': 'Install tar, required to extract the embedded Python archive.',
         'cargo-nextest': 'Install cargo-nextest (cargo install cargo-nextest --locked).',
     }
     if host.endswith('linux'):
