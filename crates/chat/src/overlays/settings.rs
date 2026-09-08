@@ -407,7 +407,7 @@ fn widget(spec: &VarView<'_>) -> Option<RowWidget> {
 		ValueKind::Duration => {
 			Some(RowWidget::Text { secret: spec.meta_get("ui.secret") == Some("true") })
 		},
-		ValueKind::Kv => None,
+		ValueKind::Kv => Some(RowWidget::Text { secret: spec.meta_get("ui.secret") == Some("true") }),
 	}
 }
 
@@ -1158,6 +1158,19 @@ impl SettingsPanel {
 			RowValue::Scalar(value) => Ok(value.clone()),
 			RowValue::Text(value) if row.value_kind == ValueKind::Str => {
 				Ok(Str::new(Value::Str(value.clone()).to_string()))
+			},
+			RowValue::Text(value) if row.value_kind == ValueKind::Kv => {
+				let statements = omp_con::parse(&sf!("setting {value}"))
+					.map_err(|error| sf!("Invalid map: {error}"))?;
+				let [statement] = statements.as_slice() else {
+					return Err(Str::new_static("Enter one map, such as {tool deny}."));
+				};
+				let [_, map @ omp_con::Arg::Kv(_)] = statement.args.as_slice() else {
+					return Err(Str::new_static("Enter one map, such as {tool deny}."));
+				};
+				// Render the parsed value, never interpolate editable script. The
+				// normal convar validator still checks domain-specific contents.
+				Ok(map.to_script())
 			},
 			RowValue::Text(value) => Ok(value.clone()),
 			RowValue::Multi(values) => {
@@ -2467,6 +2480,49 @@ mod tests {
 			assert!(matches!(panel.key(Key::Enter), PanelEvent::RunSetting { convar: name, line }
 				if name == convar && line.contains("light") && line.ends_with("; writecfg")));
 			assert_eq!(panel.rows[0].value, RowValue::Scalar(Str::new_static("light")));
+		}
+	}
+
+	#[test]
+	fn map_settings_are_editable_and_cannot_submit_extra_commands() {
+		let ctx = Ctx::new();
+		ctx.register_dynamic_var(DynamicVarSpec {
+			name:    Str::new_static("ext::coverage::map"),
+			desc:    Str::new_static("Map fixture"),
+			ty:      TypeSpec::KV,
+			flags:   VarFlags::ARCHIVE,
+			default: Value::Kv(omp_con::Kv::new()),
+			meta:    Arc::from([
+				(Str::new_static("ui.tab"), Str::new_static("interaction")),
+				(Str::new_static("ui.group"), Str::new_static("Approvals")),
+				(Str::new_static("ui.label"), Str::new_static("Tool Overrides")),
+			]),
+		})
+		.unwrap();
+		let rows = settings_rows(&ctx);
+		let row = rows
+			.iter()
+			.find(|row| row.convar == "ext::coverage::map")
+			.unwrap();
+		assert!(matches!(row.widget, RowWidget::Text { secret: false }));
+		assert_eq!(row.editable(), "{}");
+		for source in [
+			"{bash deny}",
+			"{default [provider/first provider/second]}",
+			"{}",
+			r#"{"tool; quit" "deny; quit"}"#,
+		] {
+			let command =
+				SettingsPanel::command_value(row, &RowValue::Text(Str::new(source))).unwrap();
+			let parsed = omp_con::parse(&sf!("setting {command}")).unwrap();
+			assert_eq!(parsed.len(), 1);
+			assert!(matches!(parsed[0].args.as_slice(), [_, omp_con::Arg::Kv(_)]));
+		}
+		for invalid in ["{bash deny}; quit", "{}\nquit", "[]", "{bash}", "{} extra"] {
+			assert!(
+				SettingsPanel::command_value(row, &RowValue::Text(Str::new(invalid))).is_err(),
+				"{invalid}"
+			);
 		}
 	}
 
