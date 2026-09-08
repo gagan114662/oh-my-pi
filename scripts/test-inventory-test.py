@@ -91,6 +91,12 @@ class EvidenceTests(unittest.TestCase):
         row = inventory.target_inventory(self.target_metadata(), runs)[0]
         self.assertEqual((row['run'], row['passed'], row['failed']), (1, 0, 1))
 
+    def test_target_table_nonzero_phase_exit_cannot_claim_pass(self):
+        run = self.target_phase('failed-exit', 'a@1', ['x'], self.xml('a', [('x', '')]), run=1)
+        row = inventory.target_inventory(self.target_metadata(), [run])[0]
+        self.assertEqual(row['passed'], 1)
+        self.assertEqual(row['status'], 'incomplete evidence')
+
     def test_target_table_build_failure_is_unknown_not_zero_pass(self):
         runs = [self.target_phase('build', 'a@1', [], discovery=100, run=None)]
         row = inventory.target_inventory(self.target_metadata(), runs)[0]

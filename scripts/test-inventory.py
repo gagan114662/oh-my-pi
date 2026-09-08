@@ -230,6 +230,8 @@ def target_inventory(metadata, runs):
                 touched.append(key)
             for key in touched:
                 rows[key]['discovered'] = True
+                if run.get('run_exit') != 0:
+                    rows[key]['problems'].append(run['phase'] + ': execution phase failed or incomplete')
             for field, values in [('registered', registered), ('expected', expected)]:
                 for identity in values:
                     rows[target_keys[identity[0]]][field].add(identity)
@@ -372,6 +374,11 @@ def report(args):
             runs.append((run, path.parent))
         result = summarize(parsed_metadata, runs)
         result['targets'] = target_inventory(parsed_metadata, runs)
+        target_errors = {problem for row in result['targets'] for problem in row['problems']
+                         if ': invalid evidence:' in problem}
+        if target_errors:
+            result['status'] = 'failed'
+            result['errors'].extend(sorted(target_errors))
         result['revision'] = manifest['revision']
         result['nextest_summaries'] = []
         for run, folder in runs:
