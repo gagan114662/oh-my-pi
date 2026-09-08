@@ -2024,17 +2024,27 @@ fn oauth_custom_error(error: OAuthCustomDispatchError) -> Error {
 	}
 }
 
+/// Coordination lost a race or a lease: the credential itself was not
+/// rejected, so the next attempt may succeed (#117).
+fn refresh_failure_is_transient(kind: &crate::account::RefreshErrorKind) -> bool {
+	matches!(
+		kind,
+		crate::account::RefreshErrorKind::LeaseLost
+			| crate::account::RefreshErrorKind::CoordinationExhausted
+			| crate::account::RefreshErrorKind::LeaderCancelled
+			| crate::account::RefreshErrorKind::Store(_)
+	)
+}
+
 fn oauth_manager_error(error: OAuthCredentialManagerError) -> Error {
 	match error {
 		OAuthCredentialManagerError::OAuth(error) => oauth_error(*error),
-		OAuthCredentialManagerError::Refresh(refresh) => match refresh.kind {
-			// Coordination lost a race or a lease; the credential itself was
-			// not rejected.
-			crate::account::RefreshErrorKind::LeaseLost
-			| crate::account::RefreshErrorKind::CoordinationExhausted
-			| crate::account::RefreshErrorKind::LeaderCancelled
-			| crate::account::RefreshErrorKind::Store(_) => auth_transient(),
-			_ => auth_unavailable(),
+		OAuthCredentialManagerError::Refresh(refresh) => {
+			if refresh_failure_is_transient(&refresh.kind) {
+				auth_transient()
+			} else {
+				auth_unavailable()
+			}
 		},
 		OAuthCredentialManagerError::Expired => Error::new(
 			ErrorKind::Authentication,
@@ -2617,19 +2627,9 @@ mod refresh_classification_tests {
 
 	#[test]
 	fn a_lost_refresh_lease_is_retryable_but_a_stale_generation_is_not() {
-		let lost = oauth_manager_error(OAuthCredentialManagerError::Refresh(Box::new(
-			crate::account::RefreshError {
-				kind:    crate::account::RefreshErrorKind::LeaseLost,
-				receipt: Box::default(),
-			},
-		)));
-		assert!(matches!(lost.action, RetryAction::SameRoute { .. }), "{:?}", lost.action);
-		let stale = oauth_manager_error(OAuthCredentialManagerError::Refresh(Box::new(
-			crate::account::RefreshError {
-				kind:    crate::account::RefreshErrorKind::StaleGeneration { actual: 7 },
-				receipt: Box::default(),
-			},
-		)));
-		assert_eq!(stale.action, RetryAction::Never);
+		use crate::account::RefreshErrorKind;
+		assert!(refresh_failure_is_transient(&RefreshErrorKind::LeaseLost));
+		assert!(refresh_failure_is_transient(&RefreshErrorKind::CoordinationExhausted));
+		assert!(!refresh_failure_is_transient(&RefreshErrorKind::StaleGeneration { actual: 7 }));
 	}
 }

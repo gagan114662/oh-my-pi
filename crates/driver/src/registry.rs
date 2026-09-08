@@ -1378,6 +1378,7 @@ mod tests {
 				Some("local-file"),
 				CredentialKeySourceSetting::Unavailable,
 				false,
+				false,
 			),
 			CredentialKeyMode::LocalFile,
 		);
@@ -1385,6 +1386,7 @@ mod tests {
 			CredentialKeyMode::resolve(
 				Some("os-keychain"),
 				CredentialKeySourceSetting::LocalFile,
+				false,
 				false,
 			),
 			CredentialKeyMode::OsKeychain,
