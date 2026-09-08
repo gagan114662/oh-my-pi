@@ -25,6 +25,7 @@ fn flags(compaction: bool, goal: bool) -> RuntimeFlags {
 		recover_inline_edits:     true,
 		turn_max_requests:        0,
 		turn_max_wall:            None,
+		turn_idle:                std::time::Duration::from_secs(30 * 60),
 		loop_guard_limit:         0,
 	}
 }
@@ -83,6 +84,7 @@ async fn autolearn_flag_and_minimum_schedule_exactly_one_learn_call() {
 		recover_inline_edits:     true,
 		turn_max_requests:        0,
 		turn_max_wall:            None,
+		turn_idle:                std::time::Duration::from_secs(30 * 60),
 		loop_guard_limit:         0,
 	});
 	let mut session = fresh_session(&temp.path().join("autolearn.oms"));
@@ -119,6 +121,7 @@ async fn disabled_autolearn_never_schedules_learn_after_the_same_tool_count() {
 		recover_inline_edits:     true,
 		turn_max_requests:        0,
 		turn_max_wall:            None,
+		turn_idle:                std::time::Duration::from_secs(30 * 60),
 		loop_guard_limit:         0,
 	});
 	let mut session = fresh_session(&temp.path().join("no-autolearn.oms"));
@@ -156,6 +159,7 @@ async fn inline_recovery(flags_enabled: bool, family: &str, text: &str) -> (usiz
 		recover_inline_edits:     flags_enabled,
 		turn_max_requests:        0,
 		turn_max_wall:            None,
+		turn_idle:                std::time::Duration::from_secs(30 * 60),
 		loop_guard_limit:         0,
 	});
 	let mut session = fresh_session(&temp.path().join("inline.oms"));

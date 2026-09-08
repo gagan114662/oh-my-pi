@@ -281,3 +281,201 @@ async fn larger_caller_budget_cannot_escape_the_composed_host_cap() {
 	assert_eq!(notices(&session, "turn-limit").len(), 1);
 	assert!(notices(&session, "request-budget").is_empty());
 }
+
+#[tokio::test]
+async fn journal_idle_watchdog_cancels_a_hung_tool_and_records_its_reason() {
+	let directory = tempfile::tempdir().expect("temporary directory");
+	let path = directory.path().join("idle-tool.oms");
+	let (inference, requests) = ScriptedInference::new([
+		tool_script("sleep", "slow", serde_json::json!({})),
+		text_script("unreachable"),
+	]);
+	let mut kernel = Kernel::new(
+		inference,
+		registry([spec("slow", 1, "done").streaming("started", Duration::from_secs(30))]),
+		policy(directory.path()),
+		StaticPrompt(Str::new_static("system")),
+	)
+	.with_runtime_flags(RuntimeFlags {
+		turn_idle: Duration::from_millis(100),
+		turn_max_wall: None,
+		..RuntimeFlags::default()
+	});
+	let mut session = fresh_session(&path);
+	let control = kernel.turn_control();
+	let outcome = tokio::time::timeout(
+		Duration::from_secs(5),
+		kernel.run_turn(&mut session, input("wait"), control),
+	)
+	.await
+	.expect("idle limit must stop the hung tool")
+	.expect("normal cancellation settlement");
+	assert_eq!(outcome.stop, TurnStop::Cancelled);
+	assert_eq!(requests.lock().len(), 1);
+	let limits = notices(&session, "turn-limit");
+	assert_eq!(limits.len(), 1);
+	assert!(limits[0].1.contains("idle watchdog"));
+	assert!(
+		journal_entries(&path)
+			.iter()
+			.any(|entry| entry.data.contains("idle watchdog"))
+	);
+}
+
+struct WhitespaceInference;
+impl omp_agent::Inference for WhitespaceInference {
+	fn chat(
+		&mut self,
+		_request: omp_ai::ChatRequest,
+	) -> impl std::future::Future<Output = Result<omp_ai::ChatStream, omp_ai::Error>> + Send {
+		std::future::ready(Ok(omp_ai::ChatStream::ordinary(Box::pin(async_stream::stream! {
+			yield Ok(omp_ai::ChatEvent::Started(omp_ai::ResponseMeta {
+				request_id: omp_ai::RequestId::from("whitespace"),
+				provider: omp_ai::ProviderId::from("fixture"),
+				route: omp_ai::RouteId::from("fixture/whitespace"),
+				model: None, provider_request_id: None,
+				created_at: std::time::SystemTime::UNIX_EPOCH,
+			}));
+			yield Ok(omp_ai::ChatEvent::BlockStarted { index: 0, kind: omp_ai::BlockKind::Text });
+			loop {
+				yield Ok(omp_ai::ChatEvent::TextDelta { index: 0, text: Str::new_static(" ") });
+				tokio::time::sleep(Duration::from_millis(5)).await;
+			}
+		}))))
+	}
+}
+
+#[tokio::test]
+async fn endless_whitespace_deltas_cannot_keep_the_idle_watchdog_alive() {
+	let directory = tempfile::tempdir().expect("temporary directory");
+	let path = directory.path().join("idle-whitespace.oms");
+	let mut kernel = Kernel::new(
+		WhitespaceInference,
+		registry([]),
+		policy(directory.path()),
+		StaticPrompt(Str::new_static("system")),
+	)
+	.with_runtime_flags(RuntimeFlags {
+		turn_idle: Duration::from_millis(150),
+		turn_max_wall: None,
+		..RuntimeFlags::default()
+	});
+	let mut session = fresh_session(&path);
+	let control = kernel.turn_control();
+	let outcome = tokio::time::timeout(
+		Duration::from_secs(5),
+		kernel.run_turn(&mut session, input("stream"), control),
+	)
+	.await
+	.expect("whitespace cannot reset the durable progress timer")
+	.expect("normal cancellation");
+	assert_eq!(outcome.stop, TurnStop::Cancelled);
+	assert_eq!(notices(&session, "turn-limit").len(), 1);
+	let entries = journal_entries(&path);
+	assert!(
+		entries
+			.iter()
+			.any(|entry| entry.kind.name == "stream" && entry.data.contains(" "))
+	);
+	assert!(
+		entries
+			.iter()
+			.any(|entry| entry.data.contains("idle watchdog"))
+	);
+}
+
+struct NeverSettlingMutation {
+	started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+	dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl omp_agent::ExternalToolExecutor for NeverSettlingMutation {
+	fn invoke(
+		&self,
+		_request: omp_agent::ExternalDispatchRequest,
+	) -> omp_agent::ExternalDispatchStream {
+		let started = self.started.clone();
+		let dropped = self.dropped.clone();
+		Box::pin(async_stream::stream! {
+			struct Witness(std::sync::Arc<std::sync::atomic::AtomicBool>);
+			impl Drop for Witness {
+				fn drop(&mut self) { self.0.store(true, std::sync::atomic::Ordering::SeqCst); }
+			}
+			let _witness = Witness(dropped);
+			started.store(true, std::sync::atomic::Ordering::SeqCst);
+			std::future::pending::<()>().await;
+			yield omp_agent::ExternalDispatchEvent::Aborted(omp_tool::Abort::Interrupted {
+				reason: Str::new_static("unreachable"),
+			});
+		})
+	}
+}
+
+#[tokio::test]
+async fn idle_watchdog_retains_foreground_dispatch_until_uncertainty_is_durable_and_task_dropped() {
+	use std::sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	};
+	let directory = tempfile::tempdir().unwrap();
+	let path = directory.path().join("idle-mutating.oms");
+	let mut tool = support::tool_spec("mutate", 1);
+	tool.effects.documents = Some(omp_tool::DocEffects {
+		read:        false,
+		write_globs: Arc::from([Str::new_static("fixture/**")]),
+	});
+	assert!(tool.effects.mutates_environment());
+	let mut registry = omp_tool::Registry::new();
+	registry
+		.register_worker(tool, omp_tool::Presentation::Slot, omp_tool::Claims {
+			precedence: omp_tool::Precedence::CORE,
+			claimant:   Str::new_static("idle-test"),
+			replaces:   None,
+		})
+		.unwrap();
+	let started = Arc::new(AtomicBool::new(false));
+	let dropped = Arc::new(AtomicBool::new(false));
+	let (inference, requests) = ScriptedInference::new([
+		tool_script("mutation", "mutate", serde_json::json!({})),
+		text_script("unreachable"),
+	]);
+	let mut kernel = Kernel::new(
+		inference,
+		Arc::new(registry),
+		policy(directory.path()).with_interrupt_grace(Duration::from_millis(200)),
+		StaticPrompt(Str::new_static("system")),
+	)
+	.with_external_executor(Arc::new(NeverSettlingMutation {
+		started: started.clone(),
+		dropped: dropped.clone(),
+	}))
+	.with_runtime_flags(RuntimeFlags {
+		turn_idle: Duration::from_millis(100),
+		turn_max_wall: None,
+		..RuntimeFlags::default()
+	});
+	let mut session = fresh_session(&path);
+	let control = kernel.turn_control();
+	let result = tokio::time::timeout(
+		Duration::from_secs(5),
+		kernel.run_turn(&mut session, input("mutate"), control),
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	assert_eq!(result.stop, TurnStop::Cancelled);
+	assert!(started.load(Ordering::SeqCst), "the mutating execution actually started");
+	assert!(
+		dropped.load(Ordering::SeqCst),
+		"owned task must be aborted and joined before returning"
+	);
+	assert_eq!(requests.lock().len(), 1);
+	assert!(session.unsettled_calls().is_empty(), "no call may be left unsettled");
+	let entries = journal_entries(&path);
+	let terminals: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == "tool.result")
+		.collect();
+	assert_eq!(terminals.len(), 1);
+	assert!(terminals[0].data.contains("effects_unknown"));
+	assert_eq!(notices(&session, "turn-limit").len(), 1);
+}

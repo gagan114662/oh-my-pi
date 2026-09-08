@@ -36,6 +36,13 @@ pub enum ShareStore {
 omp_con::con_enum!(ShareStore);
 
 omp_con::var! {
+	/// Active minutes without a durable non-stream journal entry before the turn settles.
+	pub static SV_TURN_IDLE_MINUTES = sv_turn_idle_minutes: u32 {
+		default: 30,
+		min: 1,
+		max: 10_080,
+		flags: archive,
+	};
 	/// Provider requests one turn may start before it settles with a `turn-limit` notice; 0 leaves
 	/// turns unbounded. Callers with their own request budget are not loosened.
 	pub static SV_TURN_MAX_REQUESTS = sv_turn_max_requests: u32 {

@@ -312,3 +312,31 @@ async fn resumed_session_replays_the_decided_prompt() {
 	assert_eq!(journaled.len(), 1);
 	assert_eq!(journaled[0].state, TicketState::Decided);
 }
+
+#[tokio::test]
+async fn journal_idle_watchdog_settles_an_unanswered_approval() {
+	let mut harness = harness(vec![
+		tool_script("idle-approval", "gated", serde_json::json!({"command": "make build"})),
+		text_script("unreachable"),
+	]);
+	harness.kernel = harness.kernel.with_runtime_flags(omp_agent::RuntimeFlags {
+		turn_idle: Duration::from_millis(100),
+		turn_max_wall: None,
+		..omp_agent::RuntimeFlags::default()
+	});
+	let seen = run(&mut harness, |_| None).await;
+	assert_eq!(seen.len(), 1, "the fixture must really reach approval admission");
+	let reason = harness
+		.session
+		.dom()
+		.select("body turn notice")
+		.unwrap()
+		.filter_map(|handle| harness.session.dom().get(handle))
+		.any(|node| {
+			node
+				.content
+				.as_ref()
+				.is_some_and(|text| text.contains("idle watchdog"))
+		});
+	assert!(reason, "unanswered approval must carry a durable idle reason");
+}

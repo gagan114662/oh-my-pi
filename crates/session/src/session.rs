@@ -1,7 +1,7 @@
 use std::{
 	fmt::Write as _,
 	path::Path,
-	time::{SystemTime, SystemTimeError, UNIX_EPOCH},
+	time::{Instant, SystemTime, SystemTimeError, UNIX_EPOCH},
 };
 
 use flume::Receiver;
@@ -142,6 +142,7 @@ pub enum SessionError {
 
 /// The mutable controller for one journal-derived session tree.
 pub struct Session {
+	progress: tokio::sync::watch::Sender<crate::JournalProgress>,
 	pub(crate) journal: Journal,
 	pub(crate) entries: Vec<Entry>,
 	pub(crate) entry_index: FastHashMap<EntryId, usize>,
@@ -279,6 +280,17 @@ impl Session {
 			.map(|(index, entry)| (entry.id, index))
 			.collect();
 		session.rebuild_all()?;
+		if let Some(entry) = session
+			.entries
+			.iter()
+			.rev()
+			.find(|entry| entry.kind != Kind::known(KindName::Stream))
+		{
+			session.progress.send_replace(crate::JournalProgress {
+				entry:       Some(entry.id),
+				observed_at: Instant::now(),
+			});
+		}
 		Ok(session)
 	}
 
@@ -289,6 +301,7 @@ impl Session {
 
 	fn empty(journal: Journal, components: ComponentRegistry, blobs: BlobStore) -> Self {
 		Self {
+			progress: crate::progress::channel(),
 			journal,
 			blobs,
 			entries: Vec::new(),
@@ -307,6 +320,13 @@ impl Session {
 			next_sid: 0,
 			pending_prior: None,
 		}
+	}
+
+	/// Observes durable non-stream progress without borrowing the mutable
+	/// session.
+	#[must_use]
+	pub fn journal_progress(&self) -> tokio::sync::watch::Receiver<crate::JournalProgress> {
+		self.progress.subscribe()
 	}
 
 	/// Returns the authoritative materialized DOM.
@@ -1125,6 +1145,7 @@ impl Session {
 			data,
 		};
 		let entry = self.journal.append(draft)?;
+		crate::progress::committed(&self.progress, kind, entry.id, Instant::now());
 		self.pending_prior = None;
 		let id = entry.id;
 		let index = self.entries.len();

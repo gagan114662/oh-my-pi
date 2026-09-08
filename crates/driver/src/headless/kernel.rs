@@ -2009,6 +2009,9 @@ pub async fn compose_kernel(
 				_ => None,
 			})
 			.unwrap_or(true),
+		turn_idle:                Duration::from_secs(
+			u64::from(crate::settings::SV_TURN_IDLE_MINUTES.get(&ctx)).saturating_mul(60),
+		),
 		turn_max_requests:        ctx
 			.get("sv_turn_max_requests")
 			.and_then(|value| match value {

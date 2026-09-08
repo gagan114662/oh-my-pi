@@ -25,7 +25,9 @@ pub mod components {
 pub mod exit_diagnostics;
 mod fold;
 pub mod late_diagnostics;
+mod progress;
 pub mod projection;
+pub use progress::JournalProgress;
 pub mod rewind;
 mod session;
 

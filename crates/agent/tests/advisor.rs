@@ -130,6 +130,7 @@ fn kernel(inference: RoutedInference, root: &std::path::Path) -> Kernel<RoutedIn
 		recover_inline_edits:     true,
 		turn_max_requests:        0,
 		turn_max_wall:            None,
+		turn_idle:                std::time::Duration::from_secs(30 * 60),
 		loop_guard_limit:         0,
 	})
 }

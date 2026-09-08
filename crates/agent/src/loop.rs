@@ -214,7 +214,9 @@ pub struct TurnOutcome {
 /// limits.
 #[derive(Clone, Debug)]
 pub struct RunControl {
+	idle:                  Option<crate::directors::progress_watchdog::IdleWatchdog>,
 	cancellation:          CancellationToken,
+	session_cancellation:  Option<CancellationToken>,
 	deadline:              Option<Instant>,
 	max_requests:          Option<u32>,
 	request_budget_notice: bool,
@@ -231,7 +233,9 @@ impl RunControl {
 	#[must_use]
 	pub const fn new(cancellation: CancellationToken, deadline: Option<Instant>) -> Self {
 		Self {
+			idle: None,
 			cancellation,
+			session_cancellation: None,
 			deadline,
 			max_requests: None,
 			request_budget_notice: true,
@@ -320,18 +324,33 @@ impl RunControl {
 	pub fn is_expired(&self) -> bool {
 		self.cancellation.is_cancelled()
 			|| self
+				.session_cancellation
+				.as_ref()
+				.is_some_and(CancellationToken::is_cancelled)
+			|| self.idle.as_ref().is_some_and(|idle| idle.expired())
+			|| self
 				.deadline
 				.is_some_and(|deadline| Instant::now() >= deadline)
 	}
 
 	pub(crate) async fn cancelled(&self) {
-		if let Some(deadline) = self.deadline {
-			tokio::select! {
-				() = self.cancellation.cancelled() => {},
-				() = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {},
-			}
-		} else {
-			self.cancellation.cancelled().await;
+		tokio::select! {
+			() = async {
+				if let Some(deadline) = self.deadline {
+					tokio::select! {
+						() = self.cancellation.cancelled() => {},
+						() = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {},
+					}
+				} else { self.cancellation.cancelled().await; }
+			} => {},
+			() = async {
+				if let Some(session) = &self.session_cancellation { session.cancelled().await; }
+				else { std::future::pending::<()>().await; }
+			} => {},
+			() = async {
+				if let Some(idle) = &self.idle { idle.wait().await; }
+				else { std::future::pending::<()>().await; }
+			} => {},
 		}
 	}
 }
@@ -443,6 +462,15 @@ fn observed_context_window(dom: &omp_dom::Dom) -> Option<u64> {
 /// Turn-loop construction, inference, dispatch, or session failure.
 #[derive(Debug, Error)]
 pub enum KernelError {
+	/// A runtime limit stopped admission before a turn was accepted.
+	#[error(
+		"Turn admission limit reached before acceptance (journal-idle limit: {idle}); no turn was \
+		 accepted."
+	)]
+	AdmissionLimit {
+		/// Whether the durable-journal idle limit, rather than wall time, fired.
+		idle: bool,
+	},
 	/// Session journal or DOM fold failed.
 	#[error(transparent)]
 	Session(#[from] SessionError),
@@ -537,6 +565,8 @@ pub struct RuntimeFlags {
 	/// Wall-clock bound for one turn when the caller sets no deadline; `None`
 	/// leaves the turn unbounded (#124).
 	pub turn_max_wall:            Option<Duration>,
+	/// Maximum active idle time without durable non-stream journal progress.
+	pub turn_idle:                Duration,
 	/// Consecutive identical tool rounds (same calls, same results, no text)
 	/// executed before the next identical round is refused; the turn settles
 	/// after the same number of refusals. Zero disables the guard (#124).
@@ -553,6 +583,7 @@ impl Default for RuntimeFlags {
 			recover_inline_edits:     true,
 			turn_max_requests:        500,
 			turn_max_wall:            Some(Duration::from_secs(6 * 60 * 60)),
+			turn_idle:                Duration::from_secs(30 * 60),
 			loop_guard_limit:         8,
 		}
 	}
@@ -728,7 +759,9 @@ impl<C> Kernel<C> {
 	/// these limits so subsequent caller overrides cannot widen the host cap.
 	#[must_use]
 	pub fn bound_turn_control(&self, control: RunControl) -> RunControl {
-		control.bounded_by(&self.runtime_flags)
+		let mut control = control.bounded_by(&self.runtime_flags);
+		control.session_cancellation = Some(self.cancel.session_child());
+		control
 	}
 
 	/// Installs the host approval policy consulted before every native
@@ -1072,31 +1105,41 @@ impl<C: Inference> Kernel<C> {
 		author: Option<Str>,
 		mut skill_prompt: Option<SkillPrompt>,
 		mut custom_message: Option<omp_session::custom_message::CustomMessage>,
-		control: RunControl,
+		mut control: RunControl,
 	) -> Result<TurnOutcome, KernelError> {
 		if control.is_expired() || self.cancel.is_session_cancelled() {
 			return Ok(cancelled_outcome());
 		}
+		control = self.bound_turn_control(control);
+		control.idle = Some(
+			crate::directors::progress_watchdog::ProgressWatchdog::new(self.runtime_flags.turn_idle)
+				.arm(session),
+		);
 		self.flush_session_state(session)?;
 		let submission_id = session
 			.head()
 			.map_or_else(|| Str::new_static("submission"), |id| Str::new(id.to_string()));
 		if let Some(hooks) = &self.lifecycle_hooks {
-			let payload = hooks
-				.gate(
-					HookEventId::HookEventBeforeAgentStart,
-					serde_json::json!({
-						"submission_id": submission_id,
-						"text": input.text,
-						"items": [],
-						"source": "interactive",
-						"prompt_rev": "1",
-						"staged_interrupts": 0,
-						"resuming": false,
-						"schedule_id": serde_json::Value::Null,
-					}),
-				)
-				.await?;
+			let preflight = hooks.gate(
+				HookEventId::HookEventBeforeAgentStart,
+				serde_json::json!({
+					"submission_id": submission_id,
+					"text": input.text,
+					"items": [],
+					"source": "interactive",
+					"prompt_rev": "1",
+					"staged_interrupts": 0,
+					"resuming": false,
+					"schedule_id": serde_json::Value::Null,
+				}),
+			);
+			let payload = tokio::select! {
+				result = preflight => result?,
+				() = control.cancelled() => {
+					if control.cancellation.is_cancelled() || self.cancel.is_session_cancelled() { return Ok(cancelled_outcome()); }
+					return Err(KernelError::AdmissionLimit { idle: control.idle.as_ref().is_some_and(|idle| idle.fired()) });
+				},
+			};
 			if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) {
 				input.text = Str::new(text);
 				if let Some(prompt) = &mut skill_prompt {
@@ -1133,21 +1176,92 @@ impl<C: Inference> Kernel<C> {
 				} else {
 					session.user(input.text, input.attachments)?;
 				}
-				self.append_file_mentions(session, mention_paths).await?;
+				let interrupted = {
+					let preparing = self.append_file_mentions(session, mention_paths);
+					tokio::select! {
+						result = preparing => { result?; false },
+						() = control.cancelled() => true,
+					}
+				};
+				if interrupted {
+					turn_cancel.cancel_turn();
+					let turn = current_turn(session)?;
+					if control.deadline_expired()
+						|| control.idle.as_ref().is_some_and(|idle| idle.fired())
+					{
+						append_turn_limit_notice(
+							session,
+							turn,
+							Str::new_static(
+								"Turn setup limit reached while materializing file mentions; the accepted \
+								 turn was cancelled",
+							),
+						)?;
+					}
+					return self.finish_turn(session, turn, &submission_id, Ok(cancelled_outcome()));
+				}
 			},
 			(Some(_), Some(_)) => unreachable!("one explicit turn source"),
 		}
 		self.apply_live_components(session)?;
 		let turn = current_turn(session)?;
 		let _activity = TurnActivity::enter(Arc::clone(&self.turn_active));
-		let result = self
+		let mut result = self
 			.run_turn_body(session, turn, &turn_cancel, &control, None)
 			.await;
 		self.turn_active.store(false, Ordering::Release);
-		self
-			.settle_reply_obligations(session, &turn_cancel, &control)
-			.await?;
+		{
+			let settling = self.settle_reply_obligations(session, &turn_cancel, &control);
+			tokio::pin!(settling);
+			tokio::select! {
+				result = &mut settling => result?,
+				() = control.cancelled() => {
+					turn_cancel.cancel_turn();
+					match tokio::time::timeout(
+						self.dispatcher.policy().interrupt_grace, &mut settling,
+					).await {
+						Ok(result) => result?,
+						Err(_) => {
+							if let Some(idle) = &control.idle {
+								tokio::select! {
+									biased;
+									result = &mut settling => result?,
+									() = idle.calls_settled() => {},
+								}
+							}
+						},
+					}
+				},
+			}
+		}
+		if turn_cancel.is_turn_cancelled()
+			&& matches!(&result, Ok(outcome) if outcome.stop == TurnStop::Completed)
+		{
+			if control.deadline_expired() || control.idle.as_ref().is_some_and(|idle| idle.fired()) {
+				append_turn_limit_notice(
+					session,
+					turn,
+					Str::new_static(
+						"Turn limit reached while settling reply obligations; the turn was cancelled",
+					),
+				)?;
+			}
+			result = Ok(cancelled_outcome());
+		}
 		self.finish_turn(session, turn, &submission_id, result)
+	}
+
+	async fn settle_lifecycle(
+		&self,
+		session: &Session,
+		work: &omp_session::LifecycleWork,
+		run: &RunControl,
+	) {
+		// The job board's existing bounded abort-and-join ladder owns the
+		// removed tasks until cleanup finishes. Do not detach them by dropping
+		// a rewind future during outer watchdog cancellation.
+		let _settlement = run.idle.as_ref().map(|idle| idle.settling_calls());
+		self.dispatcher.jobs().apply_lifecycle(session, work).await;
 	}
 
 	async fn settle_reply_obligations(
@@ -1167,11 +1281,15 @@ impl<C: Inference> Kernel<C> {
 			self.approvals.clone(),
 		);
 		while self.reply_obligations.is_pending() {
+			if turn.is_turn_cancelled() {
+				return Ok(());
+			}
 			tokio::select! {
+				() = run.cancelled() => { turn.cancel_turn(); return Ok(()); },
 				() = self.reply_obligations.wait() => {},
 				message = control.recv() => {
 					if let Received::Rewound(work) = control.handle(session, message)? {
-						self.dispatcher.jobs().apply_lifecycle(session, &work).await;
+						self.settle_lifecycle(session, &work, run).await;
 					}
 				},
 			}
@@ -1334,6 +1452,102 @@ impl<C: Inference> Kernel<C> {
 	}
 
 	async fn run_turn_body(
+		&mut self,
+		session: &mut Session,
+		turn: Handle,
+		turn_cancel: &crate::TurnCancellation,
+		control: &RunControl,
+		replay: Option<Vec<PreparedCall>>,
+	) -> Result<TurnOutcome, KernelError> {
+		use crate::directors::progress_watchdog::{FAMILY, ProgressWatchdog};
+		let policy = ProgressWatchdog::new(self.runtime_flags.turn_idle);
+		let mut directors = DirectorStack::from_dom(session.dom(), &self.director_registry);
+		if let Some((handle, _)) = crate::find_director(session.dom(), FAMILY) {
+			let cause = session.head().ok_or(SessionError::NoActiveTurn)?;
+			session.patch(Txn {
+				cause,
+				label: Some(Str::new_static("director.idle-policy")),
+				ops: vec![Op::Set {
+					h:     handle,
+					prop:  PropKey::Custom(Str::new_static("state/idle_ms")),
+					value: Value::Int(
+						i64::try_from(self.runtime_flags.turn_idle.as_millis()).unwrap_or(i64::MAX),
+					),
+				}],
+			})?;
+		} else {
+			directors
+				.engage(session, Box::new(ProgressWatchdog::new(self.runtime_flags.turn_idle)))?;
+		}
+		let idle = control.idle.clone().unwrap_or_else(|| policy.arm(session));
+		let mut control = self.bound_turn_control(control.clone());
+		control.idle = Some(idle.clone());
+		let grace = self.dispatcher.policy().interrupt_grace;
+		let mut forced = false;
+		let mut result = {
+			let operation = self.run_turn_body_inner(session, turn, turn_cancel, &control, replay);
+			tokio::pin!(operation);
+			tokio::select! {
+				biased;
+				result = &mut operation => result,
+				() = control.cancelled() => {
+					// Wake the normal cooperative cancellation path first. A hook or
+					// admission future that never observes cancellation cannot retain
+					// the mutable session beyond the configured interrupt grace.
+					turn_cancel.cancel_turn();
+					match tokio::time::timeout(grace, &mut operation).await {
+						Ok(Err(error)) => Err(error),
+						// Once interrupted, even a racing successful future must
+						// settle as cancelled rather than report a completed turn.
+						Ok(Ok(_)) => Ok(cancelled_outcome()),
+						Err(_) => {
+							// The dispatcher owns spawned tasks and their durable
+							// effects-unknown settlement. Never drop it midway through
+							// its cancellation ladder merely because its grace timer
+							// started slightly later than the outer timer.
+							tokio::select! {
+								biased;
+								result = &mut operation => result.map(|_| cancelled_outcome()),
+								() = idle.calls_settled() => { forced = true; Ok(cancelled_outcome()) },
+							}
+						},
+					}
+				},
+			}
+		};
+		if forced && control.deadline_expired() && !idle.fired() {
+			append_turn_limit_notice(
+				session,
+				turn,
+				Str::new_static(
+					"Turn wall-clock cap reached; the unresponsive operation was dropped after \
+					 interrupt grace",
+				),
+			)?;
+			self.apply_live_components(session)?;
+		}
+		if idle.fired() {
+			turn_cancel.cancel_turn();
+			append_turn_limit_notice(
+				session,
+				turn,
+				sf!(
+					"No durable non-stream journal progress for {} seconds; idle watchdog settled the \
+					 turn",
+					self.runtime_flags.turn_idle.as_secs()
+				),
+			)?;
+			self.apply_live_components(session)?;
+		}
+		if turn_cancel.is_turn_cancelled()
+			&& matches!(&result, Ok(outcome) if outcome.stop == TurnStop::Completed)
+		{
+			result = Ok(cancelled_outcome());
+		}
+		result
+	}
+
+	async fn run_turn_body_inner(
 		&mut self,
 		session: &mut Session,
 		turn: Handle,
@@ -1619,7 +1833,7 @@ impl<C: Inference> Kernel<C> {
 								return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
 							},
 							Received::Rewound(work) => {
-								self.dispatcher.jobs().apply_lifecycle(session, &work).await;
+								self.settle_lifecycle(session, &work, control).await;
 								turn_cancel.cancel_turn();
 								return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
 							},
@@ -1689,7 +1903,7 @@ impl<C: Inference> Kernel<C> {
 										));
 									},
 									Received::Rewound(work) => {
-										self.dispatcher.jobs().apply_lifecycle(session, &work).await;
+										self.settle_lifecycle(session, &work, control).await;
 										turn_cancel.cancel_turn();
 										return Ok(outcome(
 											TurnStop::Cancelled,
@@ -1812,10 +2026,13 @@ impl<C: Inference> Kernel<C> {
 					Some(control.clone()),
 					self.approvals.clone(),
 				);
-				let reports = self
-					.dispatcher
-					.drive(session, std::mem::take(&mut driven.calls), Some(&call_control))
-					.await?;
+				let reports = {
+					let _settlement = control.idle.as_ref().map(|idle| idle.settling_calls());
+					self
+						.dispatcher
+						.drive(session, std::mem::take(&mut driven.calls), Some(&call_control))
+						.await?
+				};
 				self.apply_live_components(session)?;
 				if let Some(hooks) = &self.lifecycle_hooks {
 					for ((call_id, target), report) in settled_calls.iter().zip(&reports) {
@@ -1843,7 +2060,7 @@ impl<C: Inference> Kernel<C> {
 					})
 					.collect();
 			}
-			let steering = self.drain_mailbox(session, turn_cancel).await?;
+			let steering = self.drain_mailbox(session, turn_cancel, control).await?;
 			if steering.cancelled {
 				self.notify_interrupt(session, turn, "turn_boundary");
 				return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
@@ -2032,7 +2249,7 @@ impl<C: Inference> Kernel<C> {
 						return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
 					},
 					Received::Rewound(work) => {
-						self.dispatcher.jobs().apply_lifecycle(session, &work).await;
+						self.settle_lifecycle(session, &work, control).await;
 						turn_cancel.cancel_turn();
 						return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
 					},
@@ -2057,7 +2274,7 @@ impl<C: Inference> Kernel<C> {
 			// has pending, then re-derive the console from the tree.
 			self.flush_session_state(session)?;
 			self.resync_session_state(session);
-			let late = self.drain_mailbox(session, turn_cancel).await?;
+			let late = self.drain_mailbox(session, turn_cancel, control).await?;
 			if late.cancelled {
 				self.notify_interrupt(session, turn, "idle");
 				return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
@@ -2187,7 +2404,7 @@ impl<C: Inference> Kernel<C> {
 					Received::ToolScopedAbort(_) => {},
 					Received::Cancelled => return Ok(Awaited::Cancelled),
 					Received::Rewound(work) => {
-						self.dispatcher.jobs().apply_lifecycle(session, &work).await;
+						self.settle_lifecycle(session, &work, control).await;
 						turn_cancel.cancel_turn();
 						return Ok(Awaited::Cancelled);
 					},
@@ -2502,7 +2719,7 @@ impl<C: Inference> Kernel<C> {
 								return Ok(Fold::ToolScopedAbort(reason));
 							},
 							Received::Rewound(work) => {
-								self.dispatcher.jobs().apply_lifecycle(session, &work).await;
+								self.settle_lifecycle(session, &work, control).await;
 								turn_cancel.cancel_turn();
 								return Ok(Fold::Cancelled);
 							},
@@ -3308,6 +3525,11 @@ impl<C: Inference> Kernel<C> {
 		turn: &crate::TurnCancellation,
 		run: &RunControl,
 	) -> Result<bool, KernelError> {
+		let _idle_pause = if crate::pause_state(session.dom()).active {
+			run.idle.as_ref().map(|idle| idle.suspend())
+		} else {
+			None
+		};
 		let control = CallControl::new(
 			self.mailbox_rx.clone(),
 			turn.clone(),
@@ -3331,7 +3553,7 @@ impl<C: Inference> Kernel<C> {
 					Received::ToolScopedAbort(_) => {},
 					Received::Cancelled => return Ok(true),
 					Received::Rewound(work) => {
-						self.dispatcher.jobs().apply_lifecycle(session, &work).await;
+						self.settle_lifecycle(session, &work, run).await;
 						turn.cancel_turn();
 						return Ok(true);
 					},
@@ -3393,6 +3615,7 @@ impl<C: Inference> Kernel<C> {
 		&self,
 		session: &mut Session,
 		turn: &crate::TurnCancellation,
+		run: &RunControl,
 	) -> Result<DrainedSteering, SessionError> {
 		let mut drained = DrainedSteering::default();
 		let control = CallControl::new(
@@ -3409,7 +3632,7 @@ impl<C: Inference> Kernel<C> {
 				Received::Cancelled => drained.cancelled = true,
 				Received::Approved(_) => {},
 				Received::Rewound(work) => {
-					self.dispatcher.jobs().apply_lifecycle(session, &work).await;
+					self.settle_lifecycle(session, &work, run).await;
 					turn.cancel_turn();
 					drained.cancelled = true;
 				},

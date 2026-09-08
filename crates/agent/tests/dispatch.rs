@@ -1057,3 +1057,89 @@ async fn notrunc_keeps_transport_omission_visible_and_preserves_its_artifact() {
 			.expect("journal replays");
 	assert_eq!(result_text(&replayed, "shell-spill"), texts);
 }
+
+struct SpeculativeConsumer {
+	spec:    ToolSpec,
+	started: Arc<tokio::sync::Notify>,
+	dropped: Arc<tokio::sync::Notify>,
+}
+impl omp_tool::Tool for SpeculativeConsumer {
+	type Fault = Fault;
+	type Params = serde_json::Value;
+	type Payload = Payload;
+	type Update = Str;
+
+	fn spec(&self) -> &ToolSpec {
+		&self.spec
+	}
+
+	fn call<'c>(
+		&'c self,
+		_params: omp_tool::IncomingParams<'c>,
+	) -> impl futures::Stream<Item = omp_tool::Ev<Str, Payload, Fault>> + Send + 'c {
+		async_stream::stream! {
+			struct Witness(Arc<tokio::sync::Notify>);
+			impl Drop for Witness { fn drop(&mut self) { self.0.notify_one(); } }
+			let _witness = Witness(self.dropped.clone());
+			self.started.notify_one();
+			std::future::pending::<()>().await;
+			yield omp_tool::Ev::Update(Str::new_static("unreachable"));
+		}
+	}
+
+	fn prompt(&self, _: Result<&Payload, &Fault>, _: &PromptCaps) -> Vec<Part> {
+		Vec::new()
+	}
+}
+
+#[tokio::test]
+async fn dropped_pre_admission_call_aborts_its_speculative_native_consumer() {
+	let directory = tempfile::tempdir().unwrap();
+	let started = Arc::new(tokio::sync::Notify::new());
+	let dropped = Arc::new(tokio::sync::Notify::new());
+	let mut tools = omp_tool::Registry::new();
+	tools
+		.register(
+			SpeculativeConsumer {
+				spec:    tool_spec("preview", 1),
+				started: started.clone(),
+				dropped: dropped.clone(),
+			},
+			Presentation::Slot,
+			Claims {
+				precedence: Precedence::CORE,
+				claimant:   Str::new_static("preview-test"),
+				replaces:   None,
+			},
+		)
+		.unwrap();
+	let identity = tools.resolved_identity("preview").unwrap();
+	let dispatcher = Dispatcher::new(
+		Arc::new(tools),
+		DispatchPolicy::new(BlobStore::open(directory.path()).unwrap()),
+	);
+	let mut session = session(&directory.path().join("preview.oms"));
+	let (entry, _) = call(&mut session, &identity, "preview-1");
+	let turn = CancelTree::new().begin_turn();
+	let prepared = dispatcher
+		.prepare(
+			identity,
+			Str::new_static("preview-1"),
+			entry,
+			ToolCancellation::ReadOnly(turn.read_only_tool()),
+		)
+		.unwrap();
+	tokio::time::timeout(Duration::from_secs(1), started.notified())
+		.await
+		.unwrap();
+	drop(prepared);
+	tokio::time::timeout(Duration::from_secs(1), dropped.notified())
+		.await
+		.expect("speculative task must be aborted rather than detached");
+	assert!(
+		!journal_entries(session.journal_path())
+			.iter()
+			.any(|entry| entry.kind.name == "tool.update"
+				&& entry.data.contains("\"kernel\":\"started\""))
+	);
+}
