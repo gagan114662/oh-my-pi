@@ -1,0 +1,91 @@
+name: Eval cancellation precedence proof
+
+on:
+  push:
+    branches: [fix/eval-stop-order-proof]
+  pull_request:
+    branches: [main, omp2, fix/audit-ci-gates]
+    paths:
+      - crates/tools/**
+      - crates/con/**
+      - Cargo.toml
+      - Cargo.lock
+      - scripts/eval-stop-order/**
+      - .github/workflows/eval-stop-order.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  terminal-order:
+    name: Terminal order (${{ matrix.arm }})
+    runs-on: macos-15
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: head
+            source: 6aca9cbb8ead79a0ed04b6fdc0f6b26d2f147d9d
+          - arm: parent
+            source: fc17d7cd4282a043fcbe733aeac68b98b705ce95
+    env:
+      CARGO_BUILD_JOBS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ matrix.source }}
+      - name: Verify fixed revisions and transplant only identical fixture
+        run: python3 proof-tools/scripts/eval-stop-order/prove.py prepare --root source --output source/target/eval-stop-order --arm '${{ matrix.arm }}'
+      - name: Install documented prerequisites
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install just cmake ninja lld@22 uv zstd 2>&1 | tee target/eval-stop-order/install.log
+          rustup show active-toolchain 2>&1 | tee target/eval-stop-order/toolchain.log
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare embedded Python and check prerequisites
+        id: setup
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          just setup-python 2>&1 | tee target/eval-stop-order/python-setup.log
+          just doctor 2>&1 | tee target/eval-stop-order/doctor.log
+      - name: Run the unchanged terminal-order fixture
+        run: python3 proof-tools/scripts/eval-stop-order/prove.py execute --root source --output source/target/eval-stop-order --arm '${{ matrix.arm }}'
+      - name: Complete affected head tools and con suites plus doctests
+        if: ${{ !cancelled() && matrix.arm == 'head' && steps.setup.outcome == 'success' }}
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          failed=0
+          for package in omp-tools omp-con; do
+            just --command cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/eval-stop-order/$package-tests.log"
+            tests=("${PIPESTATUS[@]}")
+            just --command cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/eval-stop-order/$package-docs.log"
+            docs=("${PIPESTATUS[@]}")
+            printf '%s-tests,%s,%s\n' "$package" "${tests[0]}" "${tests[1]}" >> target/eval-stop-order/exits.csv || failed=1
+            printf '%s-docs,%s,%s\n' "$package" "${docs[0]}" "${docs[1]}" >> target/eval-stop-order/exits.csv || failed=1
+            for code in "${tests[@]}" "${docs[@]}"; do
+              if [ "$code" -ne 0 ]; then failed=1; fi
+            done
+          done
+          exit "$failed"
+      - name: Judge semantic outcome and publish readable evidence
+        if: always()
+        run: python3 proof-tools/scripts/eval-stop-order/prove.py summarize --root source --output source/target/eval-stop-order --arm '${{ matrix.arm }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: eval-stop-order-${{ matrix.arm }}-${{ github.sha }}
+          path: source/target/eval-stop-order
+          if-no-files-found: error

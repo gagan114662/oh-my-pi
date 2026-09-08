@@ -1,0 +1,6 @@
+{
+  "head": "6aca9cbb8ead79a0ed04b6fdc0f6b26d2f147d9d",
+  "parent": "fc17d7cd4282a043fcbe733aeac68b98b705ce95",
+  "fixture_sha256": "0a359e185a7d14f13ba584318dce497457e257f819b7580f1c481f3665ba5790",
+  "test": "eval::kernel::tests::first_stop_reason_survives_later_watchdog_or_cancel_during_native_wait"
+}
