@@ -212,15 +212,26 @@ impl CredentialKeyMode {
 	/// ones.
 	pub fn from_configuration(configured: CredentialKeySourceSetting) -> Self {
 		let interactive = io::stdin().is_terminal() && io::stderr().is_terminal();
-		Self::resolve(env::var(KEY_SOURCE_ENV).ok().as_deref(), configured, interactive)
+		Self::resolve(env::var(KEY_SOURCE_ENV).ok().as_deref(), configured, interactive, false)
+	}
+
+	/// [`Self::from_configuration`] for a concrete database: under `auto`,
+	/// an unattended process (no terminal on stdin and stderr) may still use
+	/// the owner-only key file beside `database` when an earlier interactive
+	/// login created it. It never creates one unattended (#117).
+	pub fn from_configuration_for(database: &Path, configured: CredentialKeySourceSetting) -> Self {
+		let interactive = io::stdin().is_terminal() && io::stderr().is_terminal();
+		let key_file = database.with_extension("key").is_file();
+		Self::resolve(env::var(KEY_SOURCE_ENV).ok().as_deref(), configured, interactive, key_file)
 	}
 
 	fn resolve(
 		explicit: Option<&str>,
 		configured: CredentialKeySourceSetting,
 		interactive: bool,
+		key_file_exists: bool,
 	) -> Self {
-		let auto = if interactive {
+		let auto = if interactive || key_file_exists {
 			Self::LocalFile
 		} else {
 			Self::Unavailable
@@ -266,7 +277,7 @@ pub fn open_credential_store_from_con(
 	let configured = SV_CREDENTIAL_KEY_SOURCE.get(ctx);
 	open_credential_store_with_mode(
 		database.as_ref(),
-		CredentialKeyMode::from_configuration(configured),
+		CredentialKeyMode::from_configuration_for(database.as_ref(), configured),
 	)
 }
 
@@ -1296,31 +1307,67 @@ mod tests {
 	#[test]
 	fn credential_key_mode_requires_deliberate_configuration() {
 		assert_eq!(
-			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::Unavailable, true),
+			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::Unavailable, true, false),
 			CredentialKeyMode::Unavailable,
 		);
 		assert_eq!(
-			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::LocalFile, false),
+			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::LocalFile, false, false),
 			CredentialKeyMode::LocalFile,
 		);
 		assert_eq!(
-			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::OsKeychain, false),
+			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::OsKeychain, false, false),
 			CredentialKeyMode::OsKeychain,
 		);
 	}
 	#[test]
 	fn auto_uses_a_local_key_file_only_for_interactive_processes() {
 		assert_eq!(
-			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::Auto, true),
+			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::Auto, true, false),
 			CredentialKeyMode::LocalFile,
 		);
 		assert_eq!(
-			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::Auto, false),
+			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::Auto, false, false),
 			CredentialKeyMode::Unavailable,
 		);
 		assert_eq!(
-			CredentialKeyMode::resolve(Some("auto"), CredentialKeySourceSetting::Unavailable, true),
+			CredentialKeyMode::resolve(
+				Some("auto"),
+				CredentialKeySourceSetting::Unavailable,
+				true,
+				false
+			),
 			CredentialKeyMode::LocalFile,
+		);
+	}
+
+	#[test]
+	fn auto_uses_an_existing_local_key_file_for_unattended_processes() {
+		// A key file left by an earlier interactive login is the filesystem
+		// boundary; an unattended process may read it but never creates one.
+		assert_eq!(
+			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::Auto, false, true),
+			CredentialKeyMode::LocalFile,
+		);
+		assert_eq!(
+			CredentialKeyMode::resolve(Some("auto"), CredentialKeySourceSetting::Auto, false, true),
+			CredentialKeyMode::LocalFile,
+		);
+		assert_eq!(
+			CredentialKeyMode::resolve(None, CredentialKeySourceSetting::Unavailable, false, true),
+			CredentialKeyMode::Unavailable,
+			"an explicit unavailable setting is not overridden by a key file",
+		);
+	}
+
+	#[test]
+	fn configuration_for_a_database_sees_its_key_file() {
+		let directory = tempfile::tempdir().expect("temporary directory");
+		let database = directory.path().join("credentials.db");
+		std::fs::write(database.with_extension("key"), b"not-a-real-key").expect("key file");
+		assert_eq!(
+			CredentialKeyMode::from_configuration_for(&database, CredentialKeySourceSetting::Auto),
+			CredentialKeyMode::LocalFile,
+			"with a key file present the mode is the file regardless of the test process's terminal",
 		);
 	}
 
@@ -1331,6 +1378,7 @@ mod tests {
 				Some("local-file"),
 				CredentialKeySourceSetting::Unavailable,
 				false,
+				false,
 			),
 			CredentialKeyMode::LocalFile,
 		);
@@ -1339,11 +1387,17 @@ mod tests {
 				Some("os-keychain"),
 				CredentialKeySourceSetting::LocalFile,
 				false,
+				false,
 			),
 			CredentialKeyMode::OsKeychain,
 		);
 		assert_eq!(
-			CredentialKeyMode::resolve(Some("typo"), CredentialKeySourceSetting::LocalFile, true),
+			CredentialKeyMode::resolve(
+				Some("typo"),
+				CredentialKeySourceSetting::LocalFile,
+				true,
+				false
+			),
 			CredentialKeyMode::Unavailable,
 		);
 	}
