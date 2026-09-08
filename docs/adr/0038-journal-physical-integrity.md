@@ -102,12 +102,11 @@ app/journal/session targets and doctests continue after a proof failure. The
 fixture's process owner uses bounded polling and kill/reap cleanup, retaining
 failure logs. No authentication, model call or fabricated session is used.
 
-Gap: CLI runtime validation and hosted proof execution remain pending. Explicit legacy
-migration, browser-readable production session corruption evidence, and
-operation-specific compaction/lift/import proofs are not delivered by this slice. No complete #49 acceptance
-claim follows from the implementation or from unit test existence.
+Gap: explicit legacy migration and the complete operation acceptance gate remain
+pending. The hosted results below establish some CLI and lift behavior, but no
+complete #49 acceptance claim follows from this implementation.
 
-### Operation regression coverage (runtime pending)
+### Operation regression coverage
 
 The existing production `Session::compaction` regression now verifies every
 physical frame, its summary/frame blob identities and retained boundary, and
@@ -141,8 +140,10 @@ provenance, not a claim that an unkeyed seal authenticates its author.
 
 The session regression covers both complete and streamed admission followed
 by settlement/reopen; a decoder regression preserves absent historical family.
-These additions have been formatted and source-reviewed only. Hosted runtime
-execution and explicit legacy migration remain pending.
+Local journal/session execution before the additional blob-GC assertions passed
+112 tests with three skips. This does not validate the later GC changes.
+Hosted results and their remaining gaps are recorded below; explicit legacy
+migration remains pending.
 
 ### Browser operation evidence
 
@@ -155,7 +156,7 @@ summary even if a package command reports success. Raw JUnit, logs and hashes
 of the operation test sources remain in the artifact; skipped counts are
 reported. Compaction and actual blob collection share the Session fixture,
 which checks orphan removal, retained summary/frame bytes, unchanged journal
-seal and replay state. These additions still need hosted execution.
+seal and replay state. The complete set still needs a passing hosted run.
 
 The CLI corruption fixture now records a call and terminal result via Session,
 then a successor entry. It edits one byte within that middle `tool.result@1`
@@ -164,6 +165,30 @@ frame bounds, exact mutation offset and the verifier/Session refusal results.
 This is an explicitly deterministic fixture, not evidence that a provider or
 external tool executed. Existing legacy/torn/empty and expected-tip refusal
 checks remain in place.
+
+### Hosted result at `859e0af6ba`
+
+[Run 34276417194](https://github.com/gagan114662/oh-my-pi/actions/runs/34276417194)
+failed overall. Its actual CLI corruption/refusal fixture passed. Independent
+comparison of the retained original and edited journals found exactly one
+changed byte at offset 2004, within the middle `tool.result@1` frame spanning
+1744 through 2022 (end exclusive). The CLI reported the matching entry ID and
+frame start 1744. The original and edited bytes and raw CLI reports are retained
+in the run artifact. This validates the deterministic Session/CLI fixture, not
+a real-model tool run.
+
+The full journal package passed 51 tests with three skips, the agent package
+passed 229 with zero skips, and the complete P10 target passed its one test.
+Their paired doctest commands succeeded with zero examples. The app and session
+test suites did not execute: compilation failed on a test's `CoerceIssue`
+`Debug` requirement and an iterator borrowing a session being closed. As a
+result, the operation report correctly failed rewind, pruning, GC, compaction,
+and import rows while accepting the executed lift row.
+
+Commit `5b8e359f7d` corrects both compile errors without removing assertions.
+All app/session targets then passed local `cargo check` through `just`; that is
+compilation evidence only. The replacement hosted run must execute the missing
+suites and operation rows before those requirements can be marked satisfied.
 
 ## References
 
