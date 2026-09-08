@@ -319,7 +319,7 @@ jobs:
     timeout-minutes: 120
     env:
       TEST_INVENTORY_DIR: target/test-inventory/${{ github.run_id }}-${{ github.run_attempt }}
-      OMP_OUTPUT_PROOF_DIR: target/output-proof/${{ github.run_id }}-${{ github.run_attempt }}
+      OMP_OUTPUT_PROOF_DIR: ${{ github.workspace }}/target/output-proof/${{ github.run_id }}-${{ github.run_attempt }}
       OMP_P6_PROOF_DIR: ${{ github.workspace }}/target/p6-proof/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
