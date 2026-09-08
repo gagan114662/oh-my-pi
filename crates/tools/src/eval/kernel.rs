@@ -46,7 +46,7 @@ use pyo3::{
 	ffi::c_str,
 	prelude::*,
 	pyclass, pymethods,
-	sync::PyOnceLock,
+	sync::{MutexExt as _, PyOnceLock},
 	types::{PyAnyMethods, PyByteArray, PyBytes, PyDict, PyDictMethods, PyModule, PyTuple},
 };
 use serde_json::Value;
@@ -494,16 +494,17 @@ struct Command {
 
 impl WorkerState {
 	fn begin_interrupt(&self, target: &Arc<AtomicBool>) -> bool {
-		let cell_id = {
-			let active = self.active.lock();
+		let cell_id = self.engine.attach(|py| {
+			let active = self.active.lock_py_attached(py);
 			let Some(active) = active
 				.as_ref()
 				.filter(|active| Arc::ptr_eq(&active.cancelled, target))
 			else {
-				return false;
+				return None;
 			};
-			active.cell_id.clone()
-		};
+			Some(active.cell_id.clone())
+		});
+		let Some(cell_id) = cell_id else { return false };
 		self.installer.cancel_cell(&cell_id);
 		true
 	}
@@ -533,8 +534,10 @@ impl WorkerState {
 	}
 
 	fn active_cancellation(&self) -> Option<Arc<AtomicBool>> {
-		let active = self.active.lock();
-		active.as_ref().map(|active| Arc::clone(&active.cancelled))
+		self.engine.attach(|py| {
+			let active = self.active.lock_py_attached(py);
+			active.as_ref().map(|active| Arc::clone(&active.cancelled))
+		})
 	}
 
 	fn schedule_interrupt(self: &Arc<Self>, target: Arc<AtomicBool>) {
@@ -553,23 +556,30 @@ impl WorkerState {
 	}
 
 	fn interrupt_if_active(&self, target: &Arc<AtomicBool>) -> Result<(), Fault> {
-		// Raise while holding the registration lock: the worker removes its
-		// registration under this lock before its thread can finish the cell
-		// and exit, so the loaded ident always names a live worker thread and
-		// the exception can never land on a recycled thread id.
-		let active = self.active.lock();
-		if !active
-			.as_ref()
-			.is_some_and(|active| Arc::ptr_eq(&active.cancelled, target))
-		{
-			return Ok(());
-		}
-		self.interrupt_thread()
+		// Attach before taking the registration lock. The worker also takes
+		// this lock while attached; blocking attachment with it held can
+		// deadlock interpreter synchronization against worker cleanup.
+		self.engine.attach(|py| {
+			let active = self.active.lock_py_attached(py);
+			if !active
+				.as_ref()
+				.is_some_and(|active| Arc::ptr_eq(&active.cancelled, target))
+			{
+				return Ok(());
+			}
+			// Keep the identity guard through injection: cleanup cannot retire
+			// this cell or permit the Python thread id to be recycled here.
+			self.interrupt_thread_attached(py)
+		})
 	}
 
 	fn interrupt_thread(&self) -> Result<(), Fault> {
+		self.engine.attach(|py| self.interrupt_thread_attached(py))
+	}
+
+	fn interrupt_thread_attached(&self, py: Python<'_>) -> Result<(), Fault> {
 		let id = self.thread_id.load(Ordering::Acquire);
-		let changed = self.engine.attach(|py| interrupt(py, id as u64));
+		let changed = interrupt(py, id as u64);
 		if changed {
 			return Ok(());
 		}
@@ -1488,14 +1498,14 @@ fn worker_main(
 				.events
 				.send(Ok(RunEvent::Started { cell_id: command.cell_id.clone() }));
 			{
-				let mut active = state.active.lock();
+				let mut active = state.active.lock_py_attached(py);
 				*active = Some(ActiveCell {
 					cell_id:   command.cell_id.clone(),
 					cancelled: Arc::clone(&command.cancelled),
 				});
 			}
 			if command_is_stale(state, &command) && !command.request.reset {
-				clear_active(state, &command.cancelled);
+				clear_active(py, state, &command.cancelled);
 				send_cancelled(&command);
 				continue;
 			}
@@ -1504,7 +1514,7 @@ fn worker_main(
 				{
 					Ok(fresh) => namespace = fresh,
 					Err(error) => {
-						clear_active(state, &command.cancelled);
+						clear_active(py, state, &command.cancelled);
 						let _ = command.events.send(Err(Fault::Resource {
 							operation: sf!("reset"),
 							message:   Str::new(format_python_error(py, error)),
@@ -1514,7 +1524,7 @@ fn worker_main(
 				}
 			}
 			if command_is_stale(state, &command) {
-				clear_active(state, &command.cancelled);
+				clear_active(py, state, &command.cancelled);
 				send_cancelled(&command);
 				continue;
 			}
@@ -1528,7 +1538,7 @@ fn worker_main(
 				installer,
 				&idle_sigint,
 			);
-			clear_active(state, &command.cancelled);
+			clear_active(py, state, &command.cancelled);
 			match result {
 				Ok(completion) if command.timed_out.load(Ordering::Acquire) => {
 					let _ = command
@@ -1564,8 +1574,8 @@ fn command_is_stale(state: &WorkerState, command: &Command) -> bool {
 	command.cancelled.load(Ordering::Acquire) || command.epoch != state.epoch.load(Ordering::Acquire)
 }
 
-fn clear_active(state: &WorkerState, cancelled: &Arc<AtomicBool>) {
-	let mut active = state.active.lock();
+fn clear_active(py: Python<'_>, state: &WorkerState, cancelled: &Arc<AtomicBool>) {
+	let mut active = state.active.lock_py_attached(py);
 	if active
 		.as_ref()
 		.is_some_and(|current| Arc::ptr_eq(&current.cancelled, cancelled))
@@ -2260,10 +2270,60 @@ print("right")"#
 		assert_eq!(next.result.expect("idle SIGINT preserved kernel").json, Some(Value::from(42)));
 	}
 
+	#[test]
+	fn waiting_interrupt_rechecks_retired_cell_identity() {
+		let _globals = PROCESS_GLOBALS.read();
+		let old = Arc::new(AtomicBool::new(true));
+		let replacement = Arc::new(AtomicBool::new(false));
+		let state = Arc::new(WorkerState {
+			engine:          Arc::clone(&ENGINE),
+			// No real target exists. A stale injection would fail rather than
+			// interrupting an unrelated test worker.
+			thread_id:       AtomicI64::new(0),
+			epoch:           AtomicU64::new(0),
+			alive:           AtomicBool::new(true),
+			active:          Mutex::new(Some(ActiveCell {
+				cell_id:   Bytes::from_static(b"old"),
+				cancelled: Arc::clone(&old),
+			})),
+			installer:       Arc::new(EmptyNamespaceInstaller),
+			interrupt_grace: StdDuration::from_millis(1),
+		});
+		let (enter_tx, enter_rx) = std::sync::mpsc::channel();
+		let (done_tx, done_rx) = std::sync::mpsc::channel();
+		ENGINE.attach(|py| {
+			let mut active = state.active.lock_py_attached(py);
+			let interrupting = Arc::clone(&state);
+			thread::spawn(move || {
+				enter_tx.send(()).expect("announce interruption");
+				let result = interrupting.interrupt_if_active(&old);
+				done_tx.send(result).expect("report interruption");
+			});
+			py.detach(move || enter_rx.recv_timeout(StdDuration::from_secs(2)))
+				.expect("interrupt thread entered");
+			assert!(matches!(done_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+			*active = Some(ActiveCell {
+				cell_id:   Bytes::from_static(b"replacement"),
+				cancelled: Arc::clone(&replacement),
+			});
+			drop(active);
+			py.detach(move || done_rx.recv_timeout(StdDuration::from_secs(2)))
+				.expect("interruption completed after retirement")
+				.expect("stale identity must not inject into thread zero");
+			let active = state.active.lock_py_attached(py);
+			assert!(Arc::ptr_eq(
+				&active.as_ref().expect("replacement retained").cancelled,
+				&replacement
+			));
+		});
+		assert!(!replacement.load(Ordering::Acquire));
+	}
+
 	#[tokio::test]
 	async fn cancel_before_a_queued_cell_becomes_active_is_not_lost() {
 		let _globals = PROCESS_GLOBALS.read();
 		let runtime = runtime();
+		eprintln!("queued-cancel phase: opening session");
 		let session = runtime.open_session().await.expect("session opens");
 		let mut active = runtime
 			.run(&session, RunRequest {
@@ -2276,6 +2336,7 @@ print("right")"#
 			.expect("active cell starts");
 		assert!(matches!(active.next_event().await.unwrap(), Some(RunEvent::Started { .. })));
 
+		eprintln!("queued-cancel phase: active Started observed; enqueueing second cell");
 		let mut queued = runtime
 			.run(&session, RunRequest {
 				code:    sf!("queued_effect = True"),
@@ -2285,11 +2346,16 @@ print("right")"#
 			})
 			.await
 			.expect("queued cell accepted");
+		eprintln!("queued-cancel phase: cancelling queued cell");
 		queued.cancel().await.expect("queued cell cancels");
+		eprintln!("queued-cancel phase: cancelling active cell");
 		active.cancel().await.expect("active cell interrupts");
 
+		eprintln!("queued-cancel phase: awaiting active completion");
 		assert_eq!(completion(&mut active).await.status.outcome, CellOutcome::Cancelled);
+		eprintln!("queued-cancel phase: awaiting queued completion");
 		assert_eq!(completion(&mut queued).await.status.outcome, CellOutcome::Cancelled);
+		eprintln!("queued-cancel phase: checking no queued effect");
 		let (_, observed) =
 			run_to_completion(&runtime, &session, "'queued_effect' in globals()", false).await;
 		assert_eq!(
