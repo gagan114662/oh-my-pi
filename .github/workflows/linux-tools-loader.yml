@@ -1,6 +1,10 @@
 name: Linux tools loader backend diagnosis
 
 on:
+  # Bootstrap registration: only changes to this leaf on its own proof branch.
+  push:
+    branches: [fix/read-tail-31]
+    paths: [.github/workflows/linux-tools-loader.yml]
   workflow_dispatch:
     inputs:
       source_ref:
@@ -26,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ inputs.source_ref || 'b59b952172f1f331c2a79a6bc22f6ea25a3e2135' }}
       - name: Install diagnostic prerequisites
         shell: bash
         run: |
@@ -121,7 +125,7 @@ jobs:
       - name: Report Linux discovery without treating baseline crashes as passes
         if: always()
         env:
-          REVISION_LABEL: ${{ inputs.source_ref }}
+          REVISION_LABEL: ${{ inputs.source_ref || 'b59b952172f1f331c2a79a6bc22f6ea25a3e2135' }}
         run: |
           python3 - <<'PY'
           import os
