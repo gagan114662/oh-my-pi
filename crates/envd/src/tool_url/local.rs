@@ -237,7 +237,7 @@ impl Resolve for LocalResolver {
 					output.push_str(")\n");
 				}
 			}
-			return Ok(CowBytes::from(output.into_bytes()));
+			return select_bytes(&root.lines, resource, CowBytes::from(output.into_bytes()), selector);
 		}
 		if !metadata.is_file() {
 			return Err(Fault::Invalid {

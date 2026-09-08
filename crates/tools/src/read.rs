@@ -54,6 +54,7 @@ const DESCRIPTION: &str = r"Read files, directories, archives, SQLite, images, d
 
 ## Selectors — append `:<sel>` to `path` (e.g. `src/foo.ts:50-200`, `src/foo.ts:raw`, `db.sqlite:users:42`)
 - `:50` / `:50-` — from line 50 | `:50-200` — inclusive | `:50+150` — 150 lines from 50 | `:5-16,960-973` — multiple ranges
+- `:-60` — last 60 lines | `:raw:-60` / `:-60:raw` — last 60 lines verbatim
 - `:raw` — verbatim, no anchors/prefixes | `:2-4:raw` / `:raw:2-4` — range + verbatim
 - `:conflicts` — one line per unresolved git merge conflict block
 - `:img` — rasterize a local `.svg`/`.svgz` as a PNG image; use when visual layout matters
@@ -66,6 +67,7 @@ const DESCRIPTION: &str = r"Read files, directories, archives, SQLite, images, d
 - SQLite (`.sqlite`, `.sqlite3`, `.db`, `.db3`): `file.db` (tables), `file.db:table` (schema+rows), `file.db:table:key` (by PK), `?limit=`/`?where=`/`?q=SELECT`.
 - Archives (`.zip` family incl. `.jar`/`.apk`/`.whl`, `.tar` incl. `.tar.{gz,bz2,xz,zst}`, `.rar`, `.7z`, `.iso`, `.cab`, `.deb`/`.rpm`/`.cpio`/`.ar`, `.lzh`/`.arj`, `.asar`; single-stream `.gz`/`.bz2`/`.xz`/`.zst`): `archive.ext:path/inside/archive` reads a member.
 - Documents → extracted text. Notebooks → editable cells. Images → decoded inline. SVGs read as text unless `:img` is specified. `:raw` bypasses converters.
+- Video (`.mp4`, `.mov`, `.mkv`, `.webm`, `.m4v`, `.avi`, `.wmv`) is unsupported: no preview grid, metadata, frame-number extraction, or timestamp seeking. Extract a still image or metadata with an external video tool, then read that output.
 - URLs → reader-mode clean text/markdown; `:raw` → untouched HTML. Bare `host:port` needs trailing slash.
 - Internal resources enforce owner byte/entry ceilings; path-only resolution returns metadata without content. Binary/oversized resources return selector or materialized-path guidance rather than inline bytes.
 - `ssh://host/<path>` reads remote files/directories; bare `ssh://` lists hosts; specific remote files are searchable with `grep`.
@@ -1410,9 +1412,6 @@ impl<S: ReadSources, B: ReadBlobs, R: resolver::Resolve> ReadTool<S, B, R> {
 				modified_ms:   entry.modified_ms.unwrap_or(0),
 			})
 			.collect::<Vec<_>>();
-		let (offset, limit) = parsed.offset_limit();
-		let offset = offset.and_then(|value| usize::try_from(value).ok());
-		let limit = limit.and_then(|value| usize::try_from(value).ok());
 		let now_ms = time::SystemTime::now()
 			.duration_since(time::UNIX_EPOCH)
 			.unwrap_or_default()
@@ -1422,8 +1421,7 @@ impl<S: ReadSources, B: ReadBlobs, R: resolver::Resolve> ReadTool<S, B, R> {
 			&entries,
 			source.truncated,
 			now_ms,
-			offset,
-			limit,
+			parsed,
 		);
 		Ok(ReadSection {
 			parts: vec![PayloadPart::Text { text: rendered.text }],

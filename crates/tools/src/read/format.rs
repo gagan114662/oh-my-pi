@@ -290,6 +290,8 @@ pub fn format_text(
 		split_addressable_file_lines(text)
 	};
 	let total_lines = lines.len();
+	let resolved = selector.resolve_tail(total_lines as u64);
+	let selector = resolved.as_ref();
 	let snapshot_tag = options.snapshot.map(|snapshot| Str::new(snapshot.tag));
 
 	if let ParsedSelector::Lines { ranges, .. } = selector
@@ -298,7 +300,7 @@ pub fn format_text(
 		return format_multiple_ranges(&lines, ranges, raw, options, total_lines, snapshot_tag);
 	}
 
-	let (offset, finite_limit) = selector.offset_limit();
+	let (offset, finite_limit) = selector.offset_limit(total_lines as u64);
 	let requested_start = offset
 		.and_then(|line| usize::try_from(line).ok())
 		.unwrap_or(1)

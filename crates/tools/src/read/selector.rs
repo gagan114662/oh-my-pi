@@ -2,12 +2,11 @@
 
 use std::{
 	borrow::Cow,
-	collections::HashMap,
 	env, fs, io,
 	path::{Path, PathBuf},
 };
 
-use omp_core::{IntoStr, Str};
+use omp_core::{FastHashMap, Str};
 
 use super::resolver::Scheme;
 
@@ -31,6 +30,13 @@ pub enum ParsedSelector {
 	Conflicts,
 	/// Rasterize a local SVG or SVGZ resource as a PNG image.
 	Image,
+	/// Return the last `count` lines, optionally verbatim.
+	Tail {
+		/// Positive number of lines counted from the end.
+		count: u64,
+		/// Whether numbering and hashline framing are disabled.
+		raw:   bool,
+	},
 	/// Return one or more line ranges, optionally verbatim.
 	Lines {
 		/// Sorted, merged ranges.
@@ -43,7 +49,7 @@ pub enum ParsedSelector {
 impl ParsedSelector {
 	/// Whether this selector requests verbatim output.
 	pub const fn is_raw(&self) -> bool {
-		matches!(self, Self::Raw | Self::Lines { raw: true, .. })
+		matches!(self, Self::Raw | Self::Lines { raw: true, .. } | Self::Tail { raw: true, .. })
 	}
 
 	/// Whether this selector contains more than one disjoint line range.
@@ -51,10 +57,26 @@ impl ParsedSelector {
 		matches!(self, Self::Lines { ranges, .. } if ranges.len() > 1)
 	}
 
+	/// Resolve a tail against the actual source line count before slicing.
+	/// Existing absolute selectors are borrowed without allocation.
+	pub fn resolve_tail(&self, total_lines: u64) -> Cow<'_, Self> {
+		let Self::Tail { count, raw } = self else {
+			return Cow::Borrowed(self);
+		};
+		let start = total_lines.saturating_sub(*count).saturating_add(1);
+		Cow::Owned(Self::Lines {
+			ranges: Box::from([LineRange {
+				start_line: start,
+				end_line:   Some(total_lines.max(start)),
+			}]),
+			raw:    *raw,
+		})
+	}
+
 	/// Convert the first range to the offset and optional limit used by paged
 	/// readers.
-	pub fn offset_limit(&self) -> (Option<u64>, Option<u64>) {
-		match self {
+	pub fn offset_limit(&self, total_lines: u64) -> (Option<u64>, Option<u64>) {
+		match self.resolve_tail(total_lines).as_ref() {
 			Self::Lines { ranges, .. } => {
 				let Some(first) = ranges.first().copied() else {
 					return (None, None);
@@ -68,20 +90,88 @@ impl ParsedSelector {
 }
 
 /// A selector syntax or bounds error suitable for a model-facing tool fault.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("{0}")]
-pub struct SelectorError(Str);
-
-impl SelectorError {
-	/// Constructs a selector error with model-facing text.
-	pub fn from_message(message: impl IntoStr) -> Self {
-		Self(message.into_str())
-	}
-
-	/// Model-facing error text.
-	pub fn message(&self) -> &str {
-		self.0.as_ref()
-	}
+#[derive(Debug, thiserror::Error)]
+pub enum SelectorError {
+	/// Zero is not a one-based line number.
+	#[error("Line selector 0 is invalid; lines are 1-indexed. Use :1.")]
+	ZeroLine,
+	/// A tail must request at least one line.
+	#[error("Tail selector -0 is invalid; use :-N with N >= 1 to read the last N lines.")]
+	ZeroTail,
+	/// A counted range must contain a line.
+	#[error("Invalid range {start}+0: count must be >= 1.")]
+	ZeroCount {
+		/// First requested line.
+		start: u64,
+	},
+	/// The computed end cannot fit in a line number.
+	#[error("Invalid range {start}+{count}: count is too large.")]
+	CountOverflow {
+		/// First requested line.
+		start: u64,
+		/// Requested count.
+		count: u64,
+	},
+	/// Inclusive bounds are reversed.
+	#[error("Invalid range {start}-{end}: end must be >= start.")]
+	ReversedRange {
+		/// First requested line.
+		start: u64,
+		/// Last requested line.
+		end:   u64,
+	},
+	/// A numeric component cannot be represented.
+	#[error("Line selector '{input}' is too large.")]
+	Number {
+		/// Authored numeric component.
+		input:  Str,
+		/// Integer parser failure.
+		#[source]
+		source: std::num::ParseIntError,
+	},
+	/// Recognized selector chunks were combined illegally.
+	#[error(
+		"Invalid selector ':{input}'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), a \
+		 comma-separated list of ranges, :raw, :img for SVG rendering, or a range combined with raw \
+		 (e.g. :raw:50-100)."
+	)]
+	InvalidCombination {
+		/// Authored selector.
+		input: Str,
+	},
+	/// The image selector only applies to a local SVG.
+	#[error("The ':img' selector only supports local .svg and .svgz files.")]
+	ImageRequiresSvg,
+	/// Requested starting line exceeds the source bounds.
+	#[error("Line {start} is out of bounds; resource has {total_lines} lines.")]
+	OutOfBounds {
+		/// Requested starting line.
+		start:       u64,
+		/// Source line count.
+		total_lines: usize,
+	},
+	/// Invalid JSON path-array syntax.
+	#[error("Invalid JSON path array: {source}")]
+	JsonPaths {
+		/// JSON decoder failure.
+		#[source]
+		source: serde_json::Error,
+	},
+	/// No targets were supplied.
+	#[error("JSON path array must not be empty.")]
+	EmptyPaths,
+	/// One target was empty.
+	#[error("JSON path arrays must not contain empty paths.")]
+	EmptyPath,
+	/// URI syntax cannot identify a supported resource.
+	#[error(
+		"Invalid URL '{input}': path and query must contain no whitespace or fragment; an empty \
+		 resource is allowed only for a built-in internal scheme root."
+	)]
+	InvalidUri {
+		/// Authored URI.
+		input: Str,
+	},
 }
 
 /// Parse one `N`, `N-M`, `N-`, `N+K`, `N..M`, or `N..` range chunk.
@@ -96,9 +186,7 @@ pub fn parse_line_range_chunk(input: &str) -> Result<Option<LineRange>, Selector
 	}
 	let start = parse_u64(&input[..digit_end])?;
 	if start == 0 {
-		return Err(SelectorError::from_message(
-			"Line selector 0 is invalid; lines are 1-indexed. Use :1.",
-		));
+		return Err(SelectorError::ZeroLine);
 	}
 	let rest = &input[digit_end..];
 	if rest.is_empty() {
@@ -129,19 +217,15 @@ pub fn parse_line_range_chunk(input: &str) -> Result<Option<LineRange>, Selector
 	let value = parse_u64(rhs)?;
 	if separator == '+' {
 		if value == 0 {
-			return Err(SelectorError::from_message(format!(
-				"Invalid range {start}+0: count must be >= 1."
-			)));
+			return Err(SelectorError::ZeroCount { start });
 		}
-		let end = start.checked_add(value - 1).ok_or_else(|| {
-			SelectorError::from_message(format!("Invalid range {start}+{value}: count is too large."))
-		})?;
+		let end = start
+			.checked_add(value - 1)
+			.ok_or(SelectorError::CountOverflow { start, count: value })?;
 		return Ok(Some(LineRange { start_line: start, end_line: Some(end) }));
 	}
 	if value < start {
-		return Err(SelectorError::from_message(format!(
-			"Invalid range {start}-{value}: end must be >= start."
-		)));
+		return Err(SelectorError::ReversedRange { start, end: value });
 	}
 	Ok(Some(LineRange { start_line: start, end_line: Some(value) }))
 }
@@ -149,7 +233,7 @@ pub fn parse_line_range_chunk(input: &str) -> Result<Option<LineRange>, Selector
 fn parse_u64(input: &str) -> Result<u64, SelectorError> {
 	input
 		.parse()
-		.map_err(|_| SelectorError::from_message(format!("Line selector '{input}' is too large.")))
+		.map_err(|source| SelectorError::Number { input: Str::new(input), source })
 }
 
 /// Parse, sort, and merge a comma-separated list of line ranges.
@@ -231,8 +315,12 @@ pub fn parse_selector(input: Option<&str>) -> Result<ParsedSelector, SelectorErr
 			} else {
 				None
 			};
-			if let Some(ranges) = range.map(parse_line_ranges).transpose()?.flatten() {
-				return Ok(ParsedSelector::Lines { ranges, raw: true });
+			if let Some(parsed) = range
+				.map(|range| parse_range_or_tail(range, true))
+				.transpose()?
+				.flatten()
+			{
+				return Ok(parsed);
 			}
 		}
 		let mut all_read_like = true;
@@ -256,10 +344,7 @@ pub fn parse_selector(input: Option<&str>) -> Result<ParsedSelector, SelectorErr
 	if input.eq_ignore_ascii_case("img") {
 		return Ok(ParsedSelector::Image);
 	}
-	Ok(match parse_line_ranges(input)? {
-		Some(ranges) => ParsedSelector::Lines { ranges, raw: false },
-		None => ParsedSelector::None,
-	})
+	Ok(parse_range_or_tail(input, false)?.unwrap_or(ParsedSelector::None))
 }
 
 fn selector_chunk_looks_read_like(input: &str) -> Result<bool, SelectorError> {
@@ -290,10 +375,24 @@ fn selector_chunk_looks_read_like(input: &str) -> Result<bool, SelectorError> {
 }
 
 fn invalid_selector(input: &str) -> SelectorError {
-	SelectorError::from_message(format!(
-		"Invalid selector ':{input}'. Use :N, :N-M, :N+K, :N- (open-ended), a comma-separated list \
-		 of ranges, :raw, :img for SVG rendering, or a range combined with raw (e.g. :raw:50-100)."
-	))
+	SelectorError::InvalidCombination { input: Str::new(input) }
+}
+
+fn is_tail_syntax(input: &str) -> bool {
+	input
+		.strip_prefix('-')
+		.is_some_and(|count| !count.is_empty() && count.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn parse_range_or_tail(input: &str, raw: bool) -> Result<Option<ParsedSelector>, SelectorError> {
+	if is_tail_syntax(input) {
+		let count = parse_u64(&input[1..])?;
+		if count == 0 {
+			return Err(SelectorError::ZeroTail);
+		}
+		return Ok(Some(ParsedSelector::Tail { count, raw }));
+	}
+	Ok(parse_line_ranges(input)?.map(|ranges| ParsedSelector::Lines { ranges, raw }))
 }
 
 /// Borrowed result of separating a path from a recognized trailing selector.
@@ -318,8 +417,10 @@ pub fn split_path_and_selector(raw_path: &str) -> SplitPath<'_> {
 	let mut selector = candidate;
 	if let Some(inner_colon) = path.rfind(':').filter(|colon| *colon > 0) {
 		let inner = &path[inner_colon + 1..];
-		let compound = (inner.eq_ignore_ascii_case("raw") && is_range_list(candidate))
-			|| (is_range_list(inner) && candidate.eq_ignore_ascii_case("raw"));
+		let compound = (inner.eq_ignore_ascii_case("raw")
+			&& (is_range_list(candidate) || is_tail_syntax(candidate)))
+			|| ((is_range_list(inner) || is_tail_syntax(inner))
+				&& candidate.eq_ignore_ascii_case("raw"));
 		if compound {
 			path = &path[..inner_colon];
 			selector = &raw_path[inner_colon + 1..];
@@ -333,6 +434,7 @@ fn is_simple_selector(input: &str) -> bool {
 		|| input.eq_ignore_ascii_case("conflicts")
 		|| input.eq_ignore_ascii_case("img")
 		|| is_range_list(input)
+		|| is_tail_syntax(input)
 }
 
 fn is_range_list(input: &str) -> bool {
@@ -470,17 +572,17 @@ pub fn parse_json_path_array(input: &str) -> Result<Option<Vec<Str>>, SelectorEr
 	if !input.starts_with('[') {
 		return Ok(None);
 	}
-	let paths: Vec<String> = serde_json::from_str(input)
-		.map_err(|error| SelectorError::from_message(format!("Invalid JSON path array: {error}")))?;
+	let paths: Vec<String> =
+		serde_json::from_str(input).map_err(|source| SelectorError::JsonPaths { source })?;
 	if paths.is_empty() {
-		return Err(SelectorError::from_message("JSON path array must not be empty."));
+		return Err(SelectorError::EmptyPaths);
 	}
 	let paths = paths
 		.into_iter()
 		.map(|path| Str::new(normalize_path_input(&path)))
 		.collect::<Vec<_>>();
 	if paths.iter().any(|path| path.is_empty()) {
-		return Err(SelectorError::from_message("JSON path arrays must not contain empty paths."));
+		return Err(SelectorError::EmptyPath);
 	}
 	Ok(Some(paths))
 }
@@ -583,10 +685,7 @@ pub fn parse_uri(input: &str) -> Result<Option<ParsedUri<'_>>, SelectorError> {
 				.bytes()
 				.any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control() || byte == b'#')
 		}) {
-		return Err(SelectorError::from_message(format!(
-			"Invalid URL '{input}': path and query must contain no whitespace or fragment; an empty \
-			 resource is allowed only for a built-in internal scheme root."
-		)));
+		return Err(SelectorError::InvalidUri { input: Str::new(input) });
 	}
 	let (authority, path) = resource
 		.split_once('/')
@@ -719,7 +818,7 @@ fn normalize_suffix(raw_path: &str) -> Option<String> {
 /// Per-execution memo for suffix lookups; `None` records a confirmed miss or
 /// ambiguity.
 #[derive(Debug, Default)]
-pub struct SuffixMatchCache(HashMap<Str, Option<SuffixMatch>>);
+pub struct SuffixMatchCache(FastHashMap<Str, Option<SuffixMatch>>);
 
 impl SuffixMatchCache {
 	/// Return a cached lookup when this authored path has already been scanned.
@@ -738,6 +837,48 @@ mod tests {
 	use omp_core::sf;
 
 	use super::*;
+	#[test]
+	fn tail_selectors_parse_split_and_resolve_without_widening() {
+		for (suffix, raw) in [("-60", false), ("raw:-60", true), ("-60:RAW", true)] {
+			let parsed = parse_selector(Some(suffix)).unwrap();
+			assert_eq!(parsed, ParsedSelector::Tail { count: 60, raw });
+			assert_eq!(parsed.offset_limit(200_000), (Some(199_941), Some(60)));
+			assert_eq!(parsed.offset_limit(2), (Some(1), Some(2)));
+			assert_eq!(parsed.offset_limit(0), (Some(1), Some(1)));
+			let path = format!("log.txt:{suffix}");
+			assert_eq!(split_path_and_selector(&path), SplitPath {
+				path:     "log.txt",
+				selector: Some(suffix),
+			});
+			let literal =
+				split_path_and_selector_preferring_literal(&path, |_| LiteralPathProbe::Exists);
+			assert_eq!(literal.path, path);
+			assert_eq!(literal.selector, None);
+			let uri = format!("artifact://7:{suffix}");
+			assert_eq!(parse_uri(&uri).unwrap().unwrap().selector, parsed);
+		}
+		for suffix in [
+			"-0",
+			"raw:-0",
+			"-18446744073709551616",
+			"raw:-18446744073709551616",
+			"-2:1",
+			"conflicts:-2",
+			"raw:-2:raw",
+		] {
+			assert!(parse_selector(Some(suffix)).is_err(), "{suffix}");
+		}
+		assert_eq!(
+			parse_selector(Some("-18446744073709551615"))
+				.unwrap()
+				.offset_limit(2),
+			(Some(1), Some(2))
+		);
+		for suffix in ["-", "-name", "-1,3", "table:key"] {
+			assert_eq!(parse_selector(Some(suffix)).unwrap(), ParsedSelector::None);
+		}
+	}
+
 	#[test]
 	fn parses_and_merges_ranges() {
 		let parsed = parse_selector(Some("9-10,5+4,20-")).unwrap();
@@ -760,9 +901,9 @@ mod tests {
 			parse_selector(Some("raw:conflicts"))
 				.unwrap_err()
 				.to_string(),
-			"Invalid selector ':raw:conflicts'. Use :N, :N-M, :N+K, :N- (open-ended), a \
-			 comma-separated list of ranges, :raw, :img for SVG rendering, or a range combined with \
-			 raw (e.g. :raw:50-100)."
+			"Invalid selector ':raw:conflicts'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N \
+			 lines), a comma-separated list of ranges, :raw, :img for SVG rendering, or a range \
+			 combined with raw (e.g. :raw:50-100)."
 		);
 		assert_eq!(parse_selector(Some("table:key")).unwrap(), ParsedSelector::None);
 	}

@@ -30,7 +30,12 @@ impl Resolve for DocsResolver {
 				index.push_str(name);
 				index.push('\n');
 			}
-			return Ok(CowBytes::from(index.into_bytes()));
+			return super::select_bytes(
+				&self.lines,
+				resource,
+				CowBytes::from(index.into_bytes()),
+				selector,
+			);
 		}
 		let bytes = self.docs.read(resource)?.ok_or_else(|| {
 			let mut nearby = self
@@ -57,25 +62,7 @@ impl Resolve for DocsResolver {
 			};
 			Fault::Source { message: Str::new(message) }
 		})?;
-		let ParsedSelector::Lines { ranges, .. } = selector else {
-			return Ok(bytes);
-		};
-		if ranges.len() == 1 {
-			return self
-				.lines
-				.slice(resource, &bytes, ranges[0])
-				.map(CowBytes::into_owned)
-				.map_err(|error| Fault::Invalid { message: Str::new(error.to_string()) });
-		}
-		let mut output = Vec::new();
-		for range in ranges {
-			let piece = self
-				.lines
-				.slice(resource, &bytes, *range)
-				.map_err(|error| Fault::Invalid { message: Str::new(error.to_string()) })?;
-			output.extend_from_slice(&piece);
-		}
-		Ok(CowBytes::from(output))
+		super::select_bytes(&self.lines, resource, bytes, selector)
 	}
 
 	async fn list(

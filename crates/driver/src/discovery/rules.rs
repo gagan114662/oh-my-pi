@@ -793,22 +793,17 @@ impl ContentResolver for RuleResolver {
 		selector: &ParsedSelector,
 	) -> Result<CowBytes<'static>, Fault> {
 		if resource.is_empty() {
-			return Ok(CowBytes::from(self.index()));
+			return self
+				.lines
+				.select(resource, CowBytes::from(self.index()), selector)
+				.map_err(|error| Fault::Invalid { message: Str::new(error.to_string()) });
 		}
 		let rule = self.rule(resource.trim_end_matches('/'))?;
 		let bytes = CowBytes::from(rule.content.as_bytes().to_vec());
-		let ParsedSelector::Lines { ranges, .. } = selector else {
-			return Ok(bytes);
-		};
-		let mut output = Vec::new();
-		for range in ranges {
-			let piece = self
-				.lines
-				.slice(resource, &bytes, *range)
-				.map_err(|error| Fault::Invalid { message: Str::new(error.to_string()) })?;
-			output.extend_from_slice(&piece);
-		}
-		Ok(CowBytes::from(output))
+		self
+			.lines
+			.select(resource, bytes, selector)
+			.map_err(|error| Fault::Invalid { message: Str::new(error.to_string()) })
 	}
 
 	async fn list(
