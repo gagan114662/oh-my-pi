@@ -1316,8 +1316,11 @@ mod tests {
 		let error = resolver
 			.target("claude-api/upstream/shared/token-counting.md")
 			.expect_err("missing references must fail");
-		assert!(error.to_string().contains("File not found:"));
-		assert!(error.to_string().contains("token-counting.md"));
+		let Fault::Source { message } = error else {
+			panic!("missing reference must produce a source fault")
+		};
+		assert!(message.contains("File not found:"));
+		assert!(message.contains("token-counting.md"));
 	}
 
 	#[test]
