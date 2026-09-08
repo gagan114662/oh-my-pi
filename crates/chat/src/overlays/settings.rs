@@ -64,6 +64,10 @@ struct TabSpec {
 	groups: &'static [&'static str],
 }
 
+// Every group listed here must bind at least one convar row (#55): the
+// app-level test `every_advertised_settings_group_binds_a_convar` fails
+// otherwise. Groups whose feature does not exist are not advertised; see
+// AGENTS.md "Locked Deviations" for the ones removed on 2026-09-08.
 const SETTING_TABS: &[TabSpec] = &[
 	TabSpec {
 		tab:    SettingTab::Appearance,
@@ -75,44 +79,25 @@ const SETTING_TABS: &[TabSpec] = &[
 		tab:    SettingTab::Model,
 		label:  "Model",
 		icon:   "tab.model",
-		groups: &[
-			"Thinking",
-			"Sampling",
-			"Prompt",
-			"Retry & Fallback",
-			"Advisor",
-			"Prewalk",
-			"Vision",
-		],
+		groups: &["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Prewalk"],
 	},
 	TabSpec {
 		tab:    SettingTab::Interaction,
 		label:  "Interaction",
 		icon:   "tab.interaction",
-		groups: &[
-			"Input",
-			"Approvals",
-			"Notifications",
-			"Speech",
-			"Collab",
-			"Magic Keywords",
-			"Startup & Updates",
-			"Power",
-			"Agent",
-			"Git",
-		],
+		groups: &["Input", "Approvals", "Notifications", "Speech", "Collab", "Startup & Updates"],
 	},
 	TabSpec {
 		tab:    SettingTab::Context,
 		label:  "Context",
 		icon:   "tab.context",
-		groups: &["General", "Compaction", "Rules (TTSR)", "Experimental"],
+		groups: &["General", "Compaction"],
 	},
 	TabSpec {
 		tab:    SettingTab::Memory,
 		label:  "Memory",
 		icon:   "tab.memory",
-		groups: &["General", "Auto-Learn", "Mnemopi", "Hindsight", "Sharpshooter"],
+		groups: &["General", "Auto-Learn", "Mnemopi"],
 	},
 	TabSpec {
 		tab:    SettingTab::Files,
@@ -132,7 +117,6 @@ const SETTING_TABS: &[TabSpec] = &[
 		icon:   "tab.tools",
 		groups: &[
 			"Available Tools",
-			"Todos",
 			"Grep & Browser",
 			"Computer",
 			"GitHub",
@@ -140,7 +124,6 @@ const SETTING_TABS: &[TabSpec] = &[
 			"Execution",
 			"Discovery & MCP",
 			"Extensions",
-			"Developer",
 		],
 	},
 	TabSpec {
@@ -153,7 +136,7 @@ const SETTING_TABS: &[TabSpec] = &[
 		tab:    SettingTab::Providers,
 		label:  "Providers",
 		icon:   "tab.providers",
-		groups: &["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
+		groups: &["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts"],
 	},
 ];
 
@@ -481,6 +464,48 @@ fn initial_visibility(con: &Ctx, expression: &str) -> bool {
 			.and_then(|(name, expected)| con.get(name).map(|value| (value, expected)))
 			.is_some_and(|(value, expected)| raw_scalar(&value) == expected),
 	}
+}
+
+/// Every advertised `(ui.tab, ui.group)` pair, in overlay order.
+#[must_use]
+pub fn advertised_groups() -> Vec<(&'static str, &'static str)> {
+	SETTING_TABS
+		.iter()
+		.flat_map(|spec| {
+			spec
+				.groups
+				.iter()
+				.map(move |group| (<&'static str>::from(spec.tab), *group))
+		})
+		.collect()
+}
+
+/// Whether `group` on `tab` has at least one convar the overlay would show as
+/// a row under the console `con`.
+#[must_use]
+pub fn group_is_bound(con: &Ctx, tab: &str, group: &str) -> bool {
+	con.vars().any(|spec| {
+		spec.meta_get("ui.tab") == Some(tab)
+			&& spec.meta_get("ui.group") == Some(group)
+			&& row(con, &spec).is_some()
+	})
+}
+
+/// `(name, ui.tab, ui.group)` of every archive convar that carries UI
+/// metadata for a group the overlay does not advertise: such a convar is
+/// silently dropped by [`row`], so a typo hides a setting.
+#[must_use]
+pub fn unadvertised_bindings(con: &Ctx) -> Vec<(String, String, String)> {
+	let advertised = advertised_groups();
+	con.vars()
+		.filter(|spec| spec.flags.contains(VarFlags::ARCHIVE))
+		.filter_map(|spec| {
+			let tab = spec.meta_get("ui.tab")?;
+			let group = spec.meta_get("ui.group")?;
+			(!advertised.contains(&(tab, group)))
+				.then(|| (spec.name.to_owned(), tab.to_owned(), group.to_owned()))
+		})
+		.collect()
 }
 
 fn row(con: &Ctx, spec: &VarView<'_>) -> Option<SettingRow> {

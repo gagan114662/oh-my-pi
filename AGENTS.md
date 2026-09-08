@@ -460,6 +460,12 @@ heap-grooming. Non-negotiable:
 "pi does X" is NEVER an argument for any item below. Each was decided
 explicitly; regressing to pi shape = defect, not parity. The decisions below are tracked here; the historical private audit ledger
 (`.plan/parity-regression-audit.md`) is not shipped in clones.
+- Settings overlay advertises only groups that bind at least one convar
+  (#55, 2026-09-08). Removed until their feature exists: Vision, Magic
+  Keywords, Power, Agent, Git, Rules (TTSR), Experimental, Hindsight,
+  Sharpshooter, Todos, Developer, Privacy. Re-add a group together with its
+  convars; the app test `every_advertised_settings_group_binds_a_convar`
+  fails otherwise.
 - Extensions/eval: embedded free-threaded CPython only — no JS/TS plugin
   runtime, no multi-language eval; stdlib frozen in-binary.
 - Shell: in-process bash parser/interpreter + builtin coreutils; NEVER shell

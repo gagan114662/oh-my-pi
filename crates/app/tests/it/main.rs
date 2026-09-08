@@ -11,6 +11,7 @@ mod envd_windows;
 #[cfg(unix)]
 mod envd_workspace;
 mod process_smoke;
+mod settings_groups;
 mod stock_sdk_clients;
 #[cfg(unix)]
 mod tool_worker;

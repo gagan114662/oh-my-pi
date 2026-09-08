@@ -1124,6 +1124,9 @@ omp_con::var! {
 		max: 3_600,
 		flags: archive,
 		meta: {
+			"ui.tab": "providers",
+			"ui.group": "Timeouts",
+			"ui.label": "Provider Attempt Timeout (s)",
 			"legacy.path": "provider_runtime.timeout_seconds",
 		},
 	};
@@ -1134,6 +1137,9 @@ omp_con::var! {
 		max: 3_600,
 		flags: archive,
 		meta: {
+			"ui.tab": "providers",
+			"ui.group": "Timeouts",
+			"ui.label": "Stream Idle Timeout (s)",
 			"legacy.path": "provider_runtime.stream_idle_seconds",
 		},
 	};
@@ -1144,6 +1150,9 @@ omp_con::var! {
 		max: 86_400,
 		flags: archive,
 		meta: {
+			"ui.tab": "providers",
+			"ui.group": "Timeouts",
+			"ui.label": "Overall Call Timeout (s)",
 			"legacy.path": "provider_runtime.call_timeout_seconds",
 		},
 	};
