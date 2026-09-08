@@ -215,7 +215,7 @@ jobs:
           set -euo pipefail
           mkdir -p target/read-tail-linux
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y pipx zstd gdb
+          sudo apt-get install --no-install-recommends -y pipx zstd gdb libc6-dbg binutils
           command -v uv >/dev/null || pipx install uv
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           git rev-parse HEAD > target/read-tail-linux/source-revision.txt
@@ -239,7 +239,7 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import hashlib, json, os, subprocess
+          import gzip, hashlib, json, os, shutil, subprocess
           from pathlib import Path
           out = Path('target/read-tail-linux')
           binaries = json.loads((out / 'binaries.json').read_text())['rust-binaries']
@@ -257,9 +257,18 @@ jobs:
               (out / 'list.stdout').write_bytes(error.stdout or b'')
               (out / 'list.stderr').write_bytes(error.stderr or b'')
           if report['returncode'] != 0:
+              with open(binary, 'rb') as source, gzip.open(out / 'crashing-libtest.gz', 'wb') as saved:
+                  shutil.copyfileobj(source, saved)
+              for name, command in [('elf', ['readelf', '-aW', binary]),
+                                    ('libc-packages', ['dpkg-query', '-W', 'libc6', 'libc6-dbg'])]:
+                  inspected = subprocess.run(command, capture_output=True, timeout=120)
+                  (out / (name + '.stdout')).write_bytes(inspected.stdout)
+                  (out / (name + '.stderr')).write_bytes(inspected.stderr)
+                  report[name + '_returncode'] = inspected.returncode
               try:
                   debug = subprocess.run(['gdb', '--batch', '-ex', 'set pagination off', '-ex', 'run',
                       '-ex', 'thread apply all bt full', '-ex', 'info registers', '-ex', 'info sharedlibrary',
+                      '-ex', 'info files', '-ex', 'x/16i $pc-32',
                       '--args', *report['command']], capture_output=True, timeout=120)
                   (out / 'gdb.stdout').write_bytes(debug.stdout)
                   (out / 'gdb.stderr').write_bytes(debug.stderr)
