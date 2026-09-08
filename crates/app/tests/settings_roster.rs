@@ -25,9 +25,25 @@ fn every_product_settings_group_has_renderable_bindings_in_both_directions() {
 			serde_json::to_vec_pretty(&coverage).unwrap(),
 		)
 		.unwrap();
-		let mut summary = String::from(
-			"# Linked product settings coverage\n\n| Tab | Group | Advertised | Renderable convars | \
-			 Rejected convars | Complete |\n|---|---|---|---|---|---|\n",
+		let mut summary = String::from("# Linked product settings coverage\n");
+		let advertised: Vec<_> = coverage.iter().filter(|group| group.advertised).collect();
+		let unique: std::collections::BTreeSet<_> = advertised
+			.iter()
+			.map(|group| group.group.as_str())
+			.collect();
+		{
+			use std::fmt::Write as _;
+			writeln!(
+				summary,
+				"\nObserved advertised roster: {} tab/group pairs, {} unique group names.\n",
+				advertised.len(),
+				unique.len()
+			)
+			.unwrap();
+		}
+		summary.push_str(
+			"| Tab | Group | Advertised | Renderable convars | Rejected convars | Complete \
+			 |\n|---|---|---|---|---|---|\n",
 		);
 		for group in &coverage {
 			use std::fmt::Write as _;

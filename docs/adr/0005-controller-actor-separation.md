@@ -83,6 +83,11 @@ filtered out. A declaration counts only if the existing row projector can
 produce its control; a label attached to an unrenderable variable does not close
 the gap. Host-conditional rows still count as declarations.
 
+The baseline has **56 unique group names and 57 tab/group pairs**: `General`
+appears in both Context and Memory. The corrected roster has **42 unique names
+and 43 pairs**. Coverage is checked per pair, so a binding in one tab cannot
+justify an empty group in another.
+
 Fourteen unbound declarations have been removed from the curated roster. This
 removes no convar and implements none of the missing capabilities below. The
 panel already filtered empty groups; the defect being closed here is the
@@ -121,8 +126,12 @@ For browser evidence, set `OMP_SETTINGS_ROSTER_EVIDENCE_DIR` when running
 `settings-roster.md` **before** its final assertion, retaining missing rows on
 negative runs. Run `just test-pkg omp-chat` for the negative and existing panel
 contracts. The complete affected suites/doctests and a real PTY input/resize/quit
-walk through the settings tabs are required before acceptance. A deliberate
-unbound `TabSpec` mutation must fail the product registry test; upload its
+walk through the settings tabs are required before acceptance. `scripts/settings-roster/prove.py` adds an unbound group to the actual
+`SETTING_TABS` source and reruns the unchanged product test. It requires an
+executed test report naming that group plus the assertion failure, so a compile
+error cannot count as the expected failure. It restores the source in `finally`
+and records hashes/status for each arm. `.github/workflows/settings-roster.yml`
+runs this structural proof and both complete affected suites/doctests; upload its
 failure and normal enumeration, with source/checker identities. These artifacts
 must not be described as completed until their runs actually execute.
 
