@@ -420,6 +420,9 @@ pub struct ProviderRuntimeSettings {
 	/// Overall logical-call timeout in seconds; zero leaves caller deadlines
 	/// authoritative.
 	pub call_timeout_seconds:     u64,
+	/// Maximum idle interval between decoded stream frames in seconds; zero
+	/// disables the idle watchdog and leaves only the attempt timeout.
+	pub stream_idle_seconds:      u64,
 	/// Bedrock guardrail policy keyed by provider id.
 	pub bedrock_guardrails:       BTreeMap<Str, crate::codec::bedrock::BedrockGuardrail>,
 	/// Bedrock invocation-log attribution tags keyed by provider id.
@@ -433,6 +436,7 @@ impl Default for ProviderRuntimeSettings {
 			max_queued:               64,
 			timeout_seconds:          300,
 			call_timeout_seconds:     0,
+			stream_idle_seconds:      45,
 			bedrock_guardrails:       BTreeMap::new(),
 			bedrock_request_metadata: BTreeMap::new(),
 		}
@@ -448,6 +452,12 @@ impl ProviderRuntimeSettings {
 			.get(provider.as_str())
 			.copied()
 			.filter(|limit| *limit > 0)
+	}
+
+	/// Returns the stream idle watchdog, or `None` when disabled.
+	#[must_use]
+	pub fn stream_idle_timeout(&self) -> Option<Duration> {
+		(self.stream_idle_seconds > 0).then(|| Duration::from_secs(self.stream_idle_seconds))
 	}
 
 	/// Applies the configured logical timeout without weakening a tighter caller
@@ -474,6 +484,7 @@ impl ProviderRuntimeSettings {
 			max_queued:               AI_PROVIDER_MAX_QUEUED.get(ctx) as usize,
 			timeout_seconds:          u64::from(AI_PROVIDER_TIMEOUT_SECONDS.get(ctx)),
 			call_timeout_seconds:     u64::from(AI_PROVIDER_CALL_TIMEOUT_SECONDS.get(ctx)),
+			stream_idle_seconds:      u64::from(AI_PROVIDER_STREAM_IDLE_SECONDS.get(ctx)),
 			bedrock_guardrails:       deserialize_table(AI_PROVIDER_BEDROCK_GUARDRAILS.get(ctx)),
 			bedrock_request_metadata: deserialize_table(AI_PROVIDER_BEDROCK_REQUEST_METADATA.get(ctx)),
 		}
@@ -486,6 +497,7 @@ impl ProviderRuntimeSettings {
 			&& self.timeout_seconds > 0
 			&& self.timeout_seconds <= 3_600
 			&& self.call_timeout_seconds <= 86_400
+			&& self.stream_idle_seconds <= 3_600
 			&& self
 				.max_in_flight
 				.iter()
@@ -1115,6 +1127,16 @@ omp_con::var! {
 			"legacy.path": "provider_runtime.timeout_seconds",
 		},
 	};
+	/// Maximum idle interval between decoded stream frames in seconds; zero disables the idle watchdog.
+	pub static AI_PROVIDER_STREAM_IDLE_SECONDS = ai_provider_stream_idle_seconds: u32 {
+		default: 45,
+		min: 0,
+		max: 3_600,
+		flags: archive,
+		meta: {
+			"legacy.path": "provider_runtime.stream_idle_seconds",
+		},
+	};
 	/// Overall logical-call timeout in seconds; zero preserves caller deadlines.
 	pub static AI_PROVIDER_CALL_TIMEOUT_SECONDS = ai_provider_call_timeout_seconds: u32 {
 		default: 0,
@@ -1343,6 +1365,22 @@ omp_con::var! {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn stream_idle_watchdog_defaults_on_and_zero_disables_it() {
+		let settings = ProviderRuntimeSettings::default();
+		assert_eq!(settings.stream_idle_timeout(), Some(Duration::from_secs(45)));
+		assert!(settings.validate());
+		let disabled =
+			ProviderRuntimeSettings { stream_idle_seconds: 0, ..ProviderRuntimeSettings::default() };
+		assert_eq!(disabled.stream_idle_timeout(), None);
+		assert!(disabled.validate());
+		let absurd = ProviderRuntimeSettings {
+			stream_idle_seconds: 3_601,
+			..ProviderRuntimeSettings::default()
+		};
+		assert!(!absurd.validate());
+	}
 
 	#[test]
 	fn zero_max_retry_delay_is_a_valid_uncapped_sentinel() {
