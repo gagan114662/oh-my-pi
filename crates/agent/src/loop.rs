@@ -2333,13 +2333,30 @@ impl<C: Inference> Kernel<C> {
 		let mut first_token: Option<Instant> = None;
 		let fold: Result<Fold, KernelError> = async {
 			loop {
+				let flush_deadline = content_streams
+					.pending
+					.as_ref()
+					.map(|pending| tokio::time::Instant::from_std(pending.since + COALESCE_WINDOW));
+				let flush_ready = async {
+					if let Some(deadline) = flush_deadline {
+						tokio::time::sleep_until(deadline).await;
+					} else {
+						std::future::pending::<()>().await;
+					}
+				};
 				let signal = tokio::select! {
-					biased;
-					() = control.cancelled() => StreamSignal::Cancelled,
-					message = self.mailbox_rx.recv_async() => StreamSignal::Control(message.ok()),
-					event = stream.next() => StreamSignal::Event(event),
+					 biased;
+					 () = control.cancelled() => StreamSignal::Cancelled,
+					 () = flush_ready => StreamSignal::Flush,
+					 message = self.mailbox_rx.recv_async() => StreamSignal::Control(message.ok()),
+					 event = stream.next() => StreamSignal::Event(event),
 				};
 				let event = match signal {
+					StreamSignal::Flush => {
+						content_streams.flush(session)?;
+						self.apply_live_components(session)?;
+						continue;
+					},
 					StreamSignal::Cancelled => {
 						turn_cancel.cancel_turn();
 						return Ok(Fold::Cancelled);
@@ -3744,6 +3761,7 @@ enum PreflightSignal<T> {
 }
 
 enum StreamSignal {
+	Flush,
 	Event(Option<Result<ChatEvent, omp_ai::Error>>),
 	Control(Option<Up>),
 	Cancelled,

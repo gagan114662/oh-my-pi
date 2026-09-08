@@ -103,3 +103,120 @@ async fn a_delta_past_the_byte_budget_lands_immediately() {
 	let appends = stream_appends(&journal_path);
 	assert!((2..=3).contains(&appends), "the 5000-byte delta flushes on its own, got {appends}");
 }
+
+struct StalledInference {
+	started: Option<tokio::sync::oneshot::Sender<()>>,
+	release: Option<tokio::sync::oneshot::Receiver<()>>,
+	dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl omp_agent::Inference for StalledInference {
+	fn chat(
+		&mut self,
+		_request: omp_ai::ChatRequest,
+	) -> impl std::future::Future<Output = Result<omp_ai::ChatStream, omp_ai::Error>> + Send {
+		use futures::StreamExt as _;
+		let started = self.started.take().expect("one inference request");
+		let release = self.release.take().expect("one release gate");
+		let dropped = self.dropped.clone();
+		std::future::ready(Ok(omp_ai::ChatStream::ordinary(Box::pin(async_stream::stream! {
+			struct DropGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+			impl Drop for DropGuard {
+				fn drop(&mut self) { self.0.store(true, std::sync::atomic::Ordering::Release); }
+			}
+			let _guard = DropGuard(dropped);
+			let mut initial = support::streaming(vec![
+				ChatEvent::BlockStarted { index: 0, kind: BlockKind::Text },
+				ChatEvent::TextDelta { index: 0, text: Str::new_static("stalled durable prefix") },
+			]);
+			while let Some(event) = initial.next().await { yield event; }
+			started.send(()).expect("observer remains alive");
+			if release.await.is_ok() {
+				yield Ok(ChatEvent::TextDelta { index: 0, text: Str::new_static(" released suffix") });
+				yield Ok(completed(FinishReason::Stop, 1));
+			}
+		}))))
+	}
+}
+
+async fn stalled_prefix_is_durable_before_release(cancel: bool) {
+	use std::{
+		sync::{
+			Arc,
+			atomic::{AtomicBool, Ordering},
+		},
+		time::Duration,
+	};
+	let directory = tempfile::tempdir().expect("temporary directory");
+	let path = directory.path().join("stalled.oms");
+	let (started, observed) = tokio::sync::oneshot::channel();
+	let (release, gate) = tokio::sync::oneshot::channel();
+	let dropped = Arc::new(AtomicBool::new(false));
+	let inference = StalledInference {
+		started: Some(started),
+		release: Some(gate),
+		dropped: Arc::clone(&dropped),
+	};
+	let mut kernel = Kernel::new(
+		inference,
+		registry(std::iter::empty()),
+		DispatchPolicy::new(BlobStore::open(directory.path().join("blobs")).unwrap()),
+		StaticPrompt(Str::new_static("test system")),
+	);
+	let mut session = fresh_session(&path);
+	let cancellation = tokio_util::sync::CancellationToken::new();
+	let turn =
+		kernel.run_turn(&mut session, input("stall"), RunControl::new(cancellation.clone(), None));
+	let observer = async {
+		tokio::time::timeout(Duration::from_secs(3), observed)
+			.await
+			.expect("provider started")
+			.unwrap();
+		let prefix = tokio::time::timeout(Duration::from_secs(1), async {
+			loop {
+				let bytes = std::fs::read(&path).expect("live journal exists");
+				if String::from_utf8_lossy(&bytes).contains("stalled durable prefix") {
+					break bytes;
+				}
+				tokio::time::sleep(Duration::from_millis(5)).await;
+			}
+		})
+		.await
+		.expect("idle stream flushes within the bound without another provider event");
+		assert!(!String::from_utf8_lossy(&prefix).contains("released suffix"));
+		assert_eq!(stream_appends(&path), 1, "exactly the buffered prefix was committed");
+		if cancel {
+			cancellation.cancel();
+		} else {
+			release.send(()).unwrap();
+		}
+		prefix
+	};
+	let (outcome, prefix) =
+		tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(turn, observer) })
+			.await
+			.expect("stalled turn settles after release or cancellation");
+	let outcome = outcome.expect("turn settles");
+	assert!(dropped.load(Ordering::Acquire), "provider stream dropped on both paths");
+	assert!(
+		std::fs::read(&path).unwrap().starts_with(&prefix),
+		"durable prefix remains append-only"
+	);
+	if cancel {
+		assert_eq!(outcome.stop, omp_agent::TurnStop::Cancelled);
+		assert!(!String::from_utf8_lossy(&std::fs::read(&path).unwrap()).contains("released suffix"));
+	} else {
+		assert_eq!(outcome.assistant_text.as_str(), "stalled durable prefix released suffix");
+		assert_eq!(stream_appends(&path), 2, "suffix closes as a separate entry");
+	}
+}
+
+#[tokio::test]
+async fn stalled_stream_flushes_without_another_delta() {
+	stalled_prefix_is_durable_before_release(false).await;
+}
+
+#[tokio::test]
+async fn cancelling_after_idle_flush_retains_prefix_and_drops_provider_stream() {
+	stalled_prefix_is_durable_before_release(true).await;
+}
