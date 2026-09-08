@@ -311,10 +311,12 @@ impl MemoryRuntime {
 			let path =
 				selected_database_path(&db_dir, settings.db_path.as_deref(), &scope.global, bank);
 			recall.push(
-				BankStore::open(path, bank.clone(), scope.identity_root.clone())?.with_working_policy(
-					settings.working_memory_limit,
-					settings.working_memory_ttl_hours,
-				),
+				BankStore::open(path, bank.clone(), scope.identity_root.clone())?
+					.with_working_policy(
+						settings.working_memory_limit,
+						settings.working_memory_ttl_hours,
+					)
+					.with_episodic_budget(settings.episodic_budget_bytes),
 			);
 		}
 		Ok(Arc::new(Self {
