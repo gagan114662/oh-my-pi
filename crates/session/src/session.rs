@@ -926,11 +926,14 @@ impl Session {
 			return Err(SessionError::TurnChanged);
 		}
 		let by = self.turn_cause()?;
-		for index in self
-			.chain_indices(self.head.ok_or(SessionError::NoActiveTurn)?)?
-			.into_iter()
-			.rev()
-		{
+		let head = self.head.ok_or(SessionError::NoActiveTurn)?;
+		let mut index = *self
+			.entry_index
+			.get(&head)
+			.ok_or(SessionError::UnknownEntry { id: head })?;
+		// Inspect only this turn's selected tail; older turns cannot contain its
+		// terminal record. This adds no full-history allocation at every yield.
+		loop {
 			let entry = &self.entries[index];
 			if entry.id == by {
 				break;
@@ -943,6 +946,14 @@ impl Session {
 					Err(SessionError::ConflictingTurnOutcome)
 				};
 			}
+			index = if let Some(prior) = entry.prior {
+				*self
+					.entry_index
+					.get(&prior)
+					.ok_or(SessionError::UnknownEntry { id: prior })?
+			} else {
+				index.checked_sub(1).ok_or(SessionError::TurnChanged)?
+			};
 		}
 		self.commit(KindName::TurnOutcome, Some(by), None, None, &TurnOutcome { status })
 	}
