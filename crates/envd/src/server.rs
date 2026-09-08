@@ -10879,16 +10879,9 @@ fn projected_worker_completion_json(
 	blobs: &BlobHost,
 	complete: &ExtHostCompletion,
 	request: omp_tool::OutputRequest,
-	retention_session: Option<&str>,
+	_retention_session: Option<&str>,
 ) -> Result<(Bytes, Option<thread_pb::Blob>, bool), Str> {
-	let (mut json, mut details_blob, is_error) = worker_completion_json(complete)?;
-	if details_blob.is_none() {
-		details_blob = Some(
-			blobs
-				.put_verdict_bytes(retention_session, complete.call_id.as_str(), &json)
-				.map_err(|_| sf!("worker outcome could not be durably retained"))?,
-		);
-	}
+	let (mut json, details_blob, is_error) = worker_completion_json(complete)?;
 	let inline_limit = match request {
 		omp_tool::OutputRequest::Bounded => DEFAULT_RESULT_PROJECTION_BYTES,
 		omp_tool::OutputRequest::Complete => COMPLETE_RESULT_PROJECTION_BYTES,
