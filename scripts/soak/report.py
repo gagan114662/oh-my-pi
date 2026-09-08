@@ -81,9 +81,15 @@ def main() -> None:
 			minutes = float(d.get("minutes", 0))
 	turns_started = sum(1 for d in driver if d.get("kind") == "turn_start")
 	turns_ok = sum(1 for d in driver if d.get("kind") == "turn_end" and d.get("exit") == 0)
-	row("#105", "completed turns (turn.receipt@1)", receipts, f">= {options.min_turns}", receipts >= options.min_turns)
+	# Receipts account for inference requests, not explicit user turns. A
+	# tool continuation/retry can emit several receipts; a later failure can
+	# leave them all durable. The current journal has no successful turn-end
+	# event after the Director/hook yield checks, so this criterion is unknown.
+	# Fail closed even when every driver process exited successfully.
+	row("#105", "completed distinct turns (journal)", "unknown: no durable successful turn-end event", f">= {options.min_turns}", False)
+	row("#105", "inference receipts (turn.receipt@1)", receipts, "info; not completed turns", None)
 	row("#105", "driver minutes", f"{minutes:.1f}", f">= {options.min_minutes}", minutes >= options.min_minutes)
-	row("#105", "turns started / exit 0", f"{turns_started} / {turns_ok}", "info", None)
+	row("#105", "driver attempts started / processes exiting 0", f"{turns_started} / {turns_ok}", "info", None)
 	kills = [float(p["ts"]) for p in phases if p.get("phase") == "kill" and p.get("pid") not in (None, "", "none")]
 	resumed = 0
 	for ts in kills:

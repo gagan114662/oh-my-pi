@@ -152,6 +152,7 @@ def main() -> None:
 	log(out / "driver.jsonl", {"kind": "start", "pid": os.getpid(), "argv": sys.argv})
 	session_id = None
 	turn = 0
+	successful_exits = 0
 	stop = {"flag": False}
 
 	def on_term(signum, frame):
@@ -162,12 +163,15 @@ def main() -> None:
 		elapsed_min = (time.time() - started) / 60
 		if elapsed_min >= options.max_min:
 			break
-		if elapsed_min >= options.duration_min and turn >= options.min_turns:
+		if elapsed_min >= options.duration_min and successful_exits >= options.min_turns:
 			break
 		turn += 1
-		_, session_id, _ = run_turn(options, turn, session_id, out, env)
+		code, session_id, _ = run_turn(options, turn, session_id, out, env)
+		# This is only an execution budget: the report independently fails the
+		# completed-turn gate until the journal carries authoritative outcomes.
+		successful_exits += int(code == 0)
 		time.sleep(options.pause)
-	log(out / "driver.jsonl", {"kind": "end", "turns": turn, "minutes": round((time.time() - started) / 60, 2), "session": session_id})
+	log(out / "driver.jsonl", {"kind": "end", "turns": turn, "successful_exits": successful_exits, "minutes": round((time.time() - started) / 60, 2), "session": session_id})
 
 
 if __name__ == "__main__":
