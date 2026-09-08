@@ -3926,9 +3926,9 @@ fn record_provider_tool_index(
 
 /// Deltas become one `stream@1` entry per window or byte budget instead of
 /// one fsync'd frame per token (#106): a months-long session's journal
-/// grows with flushes, not with output tokens. The buffer lands before any
-/// other event, on close, on error and on cancel, so the committed prefix
-/// a crash can lose is at most one window.
+/// grows with flushes, not with output tokens. An independent deadline flushes
+/// an idle provider's pending buffer. It also lands before any other event,
+/// on close, on error and on cancel, so a crash loses at most one window.
 const COALESCE_WINDOW: Duration = Duration::from_millis(250);
 const COALESCE_BYTES: usize = 4096;
 
