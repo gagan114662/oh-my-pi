@@ -171,7 +171,9 @@ use crate::{
 	worker::AgentsControlAuthorityBinding,
 };
 
-const MIN_SCHEMA_REV: u32 = 4;
+// Revision 19 requires complete-parts recovery before model-facing bounding.
+// Older readers would silently ignore the recovery artifact.
+const MIN_SCHEMA_REV: u32 = 19;
 const FRAME_LIMIT: usize = 64 * 1024 * 1024;
 const BLOB_CHUNK_BYTES: usize = 64 * 1024;
 const DEFAULT_TOOL_DEADLINE: Duration = Duration::from_secs(300);
@@ -9170,6 +9172,8 @@ async fn spawn_native_invocation(
 												};
 												if matches!(
 													forward_native_event(
+														&registry,
+														&name,
 														event,
 														true,
 														reason,
@@ -9226,6 +9230,8 @@ async fn spawn_native_invocation(
 											},
 											event = stream.next() => {
 												match forward_native_event(
+													&registry,
+													&name,
 													event,
 													false,
 													"",
@@ -9372,6 +9378,37 @@ fn project_wire_parts(
 	(source_bytes, inline_bytes, omitted)
 }
 
+// Retain the complete projection before clipping its bounded wire preview.
+// The driver restores this artifact before the agent's sole model-facing bound.
+fn retain_complete_parts(
+	parts: &mut Vec<thread_pb::Part>,
+	request: omp_tool::OutputRequest,
+	blobs: &BlobHost,
+	session_id: Option<&str>,
+	invocation_id: &str,
+) -> Result<Option<thread_pb::Blob>, NativeProjectionError> {
+	let limit = match request {
+		omp_tool::OutputRequest::Bounded => DEFAULT_RESULT_PROJECTION_BYTES,
+		omp_tool::OutputRequest::Complete => COMPLETE_RESULT_PROJECTION_BYTES,
+	};
+	let size = parts
+		.iter()
+		.fold(0_usize, |size, part| size.saturating_add(part.encoded_len()));
+	if size <= limit {
+		return Ok(None);
+	}
+	let complete = serde_json::to_vec(parts)?;
+	// Match the driver's bounded artifact retrieval contract. Never publish a
+	// preview whose complete source cannot be recovered within that contract.
+	if complete.len() > omp_proto::bounds::FRAME_MAX_BYTES {
+		return Err(NativeProjectionError::ProjectionTooLarge);
+	}
+	let artifact = blobs.put_verdict_bytes(session_id, invocation_id, &complete)?;
+	let (_, _, omitted) = project_wire_parts(parts, request);
+	debug_assert!(omitted);
+	Ok(Some(artifact))
+}
+
 fn output_projection(
 	request: omp_tool::OutputRequest,
 	source_bytes: u64,
@@ -9388,10 +9425,94 @@ fn output_projection(
 		inline_bytes,
 		omitted,
 		artifact,
+		complete_parts: None,
 	}
 }
 
+#[derive(Debug, Error)]
+enum NativeProjectionError {
+	#[error("native projection serialization failed")]
+	Json(#[from] serde_json::Error),
+	#[error("complete projection exceeds bounded artifact retrieval")]
+	ProjectionTooLarge,
+	#[error("native tool identity is unavailable")]
+	Identity,
+	#[error(transparent)]
+	Projection(#[from] RegistryError),
+	#[error("native tool returned an invalid media reference")]
+	InvalidMedia,
+	#[error("native JSON projection is not UTF-8")]
+	JsonUtf8(#[from] std::str::Utf8Error),
+	#[error(transparent)]
+	Blob(#[from] crate::blobs::BlobError),
+}
+
+// Native tools share the worker path's canonical media replication contract.
+// Retain the referenced bytes before publishing any success verdict so the
+// session can retrieve them through its invocation-scoped blob authority.
+fn project_native_verdict(
+	registry: &Registry,
+	name: &str,
+	verdict: &[u8],
+	useless: bool,
+	blobs: &BlobHost,
+	session_id: Option<&str>,
+	invocation_id: &str,
+) -> Result<Vec<thread_pb::Part>, NativeProjectionError> {
+	let (name, rev) = registry
+		.live_identity(name)
+		.ok_or(NativeProjectionError::Identity)?;
+	let identity = omp_tool::ToolIdentity { name: name.clone(), rev: rev.clone() };
+	let caps = omp_tool::PromptCaps::for_tool(
+		omp_tool::CapsBase {
+			maximum_parts:      u16::MAX,
+			maximum_text_bytes: u32::MAX,
+			media:              true,
+			model_class:        omp_tool::ModelClass::Standard,
+		},
+		rev,
+	);
+	let projected = registry.project_verdict(&identity, verdict, useless, &caps)?;
+	let mut parts = Vec::with_capacity(projected.parts.len());
+	for part in projected.parts.iter() {
+		let kind = match part {
+			omp_tool::Part::Text { text } => thread_pb::part::Kind::Text(text.to_string()),
+			omp_tool::Part::Json { json } => {
+				thread_pb::part::Kind::Text(std::str::from_utf8(json)?.to_owned())
+			},
+			omp_tool::Part::Blob { blob, alt } => {
+				if !valid_blob_media_type(&blob.media_type) {
+					return Err(NativeProjectionError::InvalidMedia);
+				}
+				let hash = blob
+					.hash
+					.parse::<Hash32>()
+					.map_err(|_| NativeProjectionError::InvalidMedia)?;
+				blobs.retain_verdict_blob(session_id, invocation_id, BlobId {
+					hash: hash.into_bytes(),
+					size: blob.byte_len,
+				})?;
+				if let Some(alt) = alt {
+					parts.push(thread_pb::Part {
+						kind: Some(thread_pb::part::Kind::Text(alt.to_string())),
+					});
+				}
+				thread_pb::part::Kind::Blob(thread_pb::Blob {
+					hash: Bytes::copy_from_slice(hash.as_bytes()),
+					mime: blob.media_type.to_string(),
+					size: blob.byte_len,
+					..Default::default()
+				})
+			},
+		};
+		parts.push(thread_pb::Part { kind: Some(kind) });
+	}
+	Ok(parts)
+}
+
 async fn forward_native_event(
+	registry: &Registry,
+	name: &str,
 	event: Option<Result<ErasedEv, omp_tool::RegistryError>>,
 	cancelling: bool,
 	fallback_reason: &str,
@@ -9425,7 +9546,58 @@ async fn forward_native_event(
 		},
 		Some(Ok(ErasedEv::Done(outcome))) => {
 			if lifecycle.claim_terminal() {
+				let projects_verdict = matches!(&outcome, ErasedOutcome::Done { .. });
 				let (json, is_error, useless) = erased_outcome_wire(outcome);
+				let mut parts = if projects_verdict {
+					match project_native_verdict(
+						registry,
+						name,
+						&json,
+						useless,
+						blobs,
+						retention_session,
+						invocation_id,
+					) {
+						Ok(parts) => parts,
+						Err(error) => {
+							tracing::error!(%error, %invocation_id, "native verdict projection or media retention failed");
+							send_abort_verdict(
+								responses,
+								request_id,
+								invocation_id,
+								Abort::EffectsUnknown {
+									reason: sf!("native verdict projection or media retention failed"),
+								},
+							)
+							.await;
+							return NativeForward::Terminal;
+						},
+					}
+				} else {
+					Vec::new()
+				};
+				let complete_parts = match retain_complete_parts(
+					&mut parts,
+					output_request,
+					blobs,
+					retention_session,
+					invocation_id,
+				) {
+					Ok(artifact) => artifact,
+					Err(error) => {
+						tracing::error!(%error, "native complete projection could not be retained");
+						send_abort_verdict(
+							responses,
+							request_id,
+							invocation_id,
+							omp_tool::Abort::EffectsUnknown {
+								reason: sf!("complete projection could not be retained"),
+							},
+						)
+						.await;
+						return NativeForward::Terminal;
+					},
+				};
 				let details_blob =
 					match blobs.put_verdict_bytes(retention_session, invocation_id, &json) {
 						Ok(reference) => reference,
@@ -9453,13 +9625,14 @@ async fn forward_native_event(
 				let omitted = json.len() > limit;
 				let inline = if omitted { Bytes::new() } else { json };
 				let inline_bytes = u64::try_from(inline.len()).unwrap_or(u64::MAX);
-				let projection = output_projection(
+				let mut projection = output_projection(
 					output_request,
 					source_bytes,
 					inline_bytes,
 					omitted,
 					Some(details_blob.clone()),
 				);
+				projection.complete_parts = complete_parts;
 				send_invocation_terminal_body(
 					responses,
 					request_id,
@@ -9467,7 +9640,7 @@ async fn forward_native_event(
 						invocation_id: invocation_id.to_string(),
 						json: inline,
 						details_blob: Some(details_blob),
-						parts: Vec::new(),
+						parts,
 						is_error,
 						useless,
 						terminate: None,
@@ -9693,19 +9866,41 @@ fn spawn_worker_invocation(
 						break;
 					}
 					let mut parts = complete.parts;
-					let _ = project_wire_parts(&mut parts, output_request);
+					let complete_parts = match retain_complete_parts(
+						&mut parts,
+						output_request,
+						&blobs,
+						retention_session.as_deref(),
+						&invocation_id,
+					) {
+						Ok(artifact) => artifact,
+						Err(error) => {
+							tracing::error!(%error, "worker complete projection could not be retained");
+							send_abort_verdict(
+								&responses,
+								request_id,
+								&invocation_id,
+								omp_tool::Abort::EffectsUnknown {
+									reason: sf!("complete projection could not be retained"),
+								},
+							)
+							.await;
+							break;
+						},
+					};
 					let source_bytes = details_blob.as_ref().map_or_else(
 						|| u64::try_from(json.len()).unwrap_or(u64::MAX),
 						|details| details.size,
 					);
 					let inline_bytes = u64::try_from(json.len()).unwrap_or(u64::MAX);
-					let projection = output_projection(
+					let mut projection = output_projection(
 						output_request,
 						source_bytes,
 						inline_bytes,
 						inline_bytes != source_bytes,
 						details_blob.clone(),
 					);
+					projection.complete_parts = complete_parts;
 					send_invocation_terminal_body(
 						&responses,
 						request_id,
@@ -12353,6 +12548,332 @@ mod tests {
 	};
 
 	const TEST_DAP_SESSION_ID: [u8; 16] = [0x2a; 16];
+
+	struct MediaProjectionFixture {
+		spec: omp_tool::ToolSpec,
+	}
+
+	impl omp_tool::Tool for MediaProjectionFixture {
+		type Fault = serde_json::Value;
+		type Params = serde_json::Value;
+		type Payload = Vec<omp_tool::Part>;
+		type Update = serde_json::Value;
+
+		fn spec(&self) -> &omp_tool::ToolSpec {
+			&self.spec
+		}
+
+		fn call<'c>(
+			&'c self,
+			_: IncomingParams<'c>,
+		) -> impl futures::Stream<Item = omp_tool::Ev<Self::Update, Self::Payload, Self::Fault>> + Send + 'c
+		{
+			futures::stream::empty()
+		}
+
+		fn prompt(
+			&self,
+			view: Result<&Self::Payload, &Self::Fault>,
+			caps: &omp_tool::PromptCaps,
+		) -> Vec<omp_tool::Part> {
+			assert!(caps.media, "native media must reach the canonical projection");
+			let mut parts = view.expect("successful fixture outcome").clone();
+			for part in &mut parts {
+				if let omp_tool::Part::Text { text } = part {
+					if text.as_str() == "expand" {
+						*text = Str::new("expanded\n".repeat(DEFAULT_RESULT_PROJECTION_BYTES));
+					}
+				}
+			}
+			parts
+		}
+	}
+
+	fn media_projection_registry() -> Registry {
+		let mut registry = Registry::new();
+		registry
+			.register_environment(
+				MediaProjectionFixture {
+					spec: omp_tool::ToolSpec {
+						name:            sf!("media-fixture"),
+						rev:             omp_tool::Rev { family: sf!("test"), n: 1 },
+						description:     sf!("native media projection fixture"),
+						schema:          Bytes::from_static(br#"{"type":"object","properties":{}}"#),
+						constraint:      omp_tool::Constraint::None,
+						effects:         Effects::empty(),
+						projection_code: [1; 32],
+					},
+				},
+				omp_tool::Presentation::Slot,
+				omp_tool::Claims {
+					precedence: omp_tool::Precedence::ENHANCEMENT,
+					claimant:   sf!("omp/test"),
+					replaces:   None,
+				},
+			)
+			.expect("register native fixture");
+		registry
+	}
+
+	#[tokio::test]
+	async fn complete_parts_protocol_rejects_readers_before_revision_19() {
+		let root = tempfile::tempdir().expect("workspace");
+		let state = tempfile::tempdir().expect("state");
+		let con = Arc::new(Ctx::new());
+		let convars = Arc::new(crate::exthost::ConvarControlFactory::new(Arc::clone(&con)));
+		let server = EnvServer::open_local(
+			root.path(),
+			state.path(),
+			Registry::new(),
+			ExtHostConfig::new(
+				PathBuf::from("unused"),
+				Principal::new(sf!("test-principal"), sf!("Test Principal")),
+				sf!("test-session"),
+				1,
+			),
+			&con,
+			convars,
+			RegistryBridges::default(),
+		)
+		.await
+		.expect("server");
+		let (sender, receiver) = flume::bounded(2);
+		let hello = |revision| pb::ClientFrame {
+			body: Some(client_frame::Body::Hello(pb::ClientHello {
+				schema_rev: revision,
+				client: "projection-test".into(),
+				..Default::default()
+			})),
+			..Default::default()
+		};
+		assert!(
+			server
+				.accept_hello(hello(18), &sender, &ConnectionPolicy::in_process())
+				.await
+				.is_none()
+		);
+		let rejected = receiver.try_recv().expect("rejection");
+		assert!(matches!(rejected.body, Some(server_frame::Body::Error(error))
+			if error.code == pb::ProtocolErrorCode::Unsupported as i32));
+		assert!(
+			server
+				.accept_hello(hello(omp_proto::SCHEMA_REV), &sender, &ConnectionPolicy::in_process())
+				.await
+				.is_some()
+		);
+	}
+
+	#[tokio::test]
+	async fn native_verdict_publishes_media_and_retains_exact_bytes_for_delivery() {
+		let scratch = tempfile::tempdir().expect("scratch");
+		let blobs =
+			BlobHost::open_managed(scratch.path().join("blobs"), scratch.path().join("sessions"))
+				.expect("blob host");
+		let media_bytes = b"native-media-byte-identity";
+		let media = blobs.put(media_bytes).expect("store source media");
+		let payload = vec![omp_tool::Part::Text { text: sf!("metadata") }, omp_tool::Part::Blob {
+			blob: omp_tool::BlobRef {
+				hash:       Str::new(Hash32::new(media.hash).to_hex().as_str()),
+				media_type: sf!("image/png"),
+				byte_len:   media.size,
+			},
+			alt:  None,
+		}];
+		let verdict = Bytes::from(
+			serde_json::to_vec(&CallOutcome::<_, serde_json::Value>::Ok(payload)).expect("verdict"),
+		);
+		let registry = media_projection_registry();
+		let lifecycle = NativeLifecycle::default();
+		assert!(lifecycle.commit().is_ok());
+		let (sender, receiver) = flume::bounded(2);
+		let result = forward_native_event(
+			&registry,
+			"media-fixture",
+			Some(Ok(ErasedEv::Done(ErasedOutcome::Done { verdict, useless: false }))),
+			false,
+			"",
+			7,
+			&sf!("media-call"),
+			Some("session"),
+			&lifecycle,
+			omp_tool::OutputRequest::Bounded,
+			&blobs,
+			&sender,
+		)
+		.await;
+		assert!(matches!(result, NativeForward::Terminal));
+		let frame = receiver.try_recv().expect("terminal frame");
+		let Some(server_frame::Body::Verdict(verdict)) = frame.body else {
+			panic!("expected verdict")
+		};
+		assert!(!verdict.is_error);
+		assert_eq!(verdict.parts.len(), 2);
+		let Some(thread_pb::part::Kind::Blob(blob)) = verdict.parts[1].kind.as_ref() else {
+			panic!("media was omitted")
+		};
+		assert_eq!(blob.hash.as_ref(), media.hash);
+		assert_eq!(blob.mime, "image/png");
+		assert_eq!(blob.size, media.size);
+		assert!(blob.inline.is_empty(), "transport should retain a bounded CAS reference");
+		assert_eq!(
+			blobs
+				.worker_verdict_store()
+				.get(&media.into())
+				.expect("retained media")
+				.as_ref(),
+			media_bytes
+		);
+		assert!(
+			blobs
+				.renew_verdict_delivery(Some("session"), "media-call", media)
+				.expect("invocation-scoped lease")
+		);
+		assert!(receiver.try_recv().is_err(), "one terminal only");
+	}
+
+	#[tokio::test]
+	async fn compact_native_payload_restores_expanded_parts_and_omitted_media() {
+		let scratch = tempfile::tempdir().expect("scratch");
+		let blobs =
+			BlobHost::open_managed(scratch.path().join("blobs"), scratch.path().join("sessions"))
+				.expect("blob host");
+		let media_bytes = b"native-media-byte-identity";
+		let media = blobs.put(media_bytes).expect("store source media");
+		let payload = vec![omp_tool::Part::Text { text: sf!("expand") }, omp_tool::Part::Blob {
+			blob: omp_tool::BlobRef {
+				hash:       Str::new(Hash32::new(media.hash).to_hex().as_str()),
+				media_type: sf!("image/png"),
+				byte_len:   media.size,
+			},
+			alt:  None,
+		}];
+		let verdict = Bytes::from(
+			serde_json::to_vec(&CallOutcome::<_, serde_json::Value>::Ok(payload)).expect("verdict"),
+		);
+		let registry = media_projection_registry();
+		let lifecycle = NativeLifecycle::default();
+		assert!(lifecycle.commit().is_ok());
+		let (sender, receiver) = flume::bounded(2);
+		let result = forward_native_event(
+			&registry,
+			"media-fixture",
+			Some(Ok(ErasedEv::Done(ErasedOutcome::Done { verdict, useless: false }))),
+			false,
+			"",
+			7,
+			&sf!("media-call"),
+			Some("session"),
+			&lifecycle,
+			omp_tool::OutputRequest::Bounded,
+			&blobs,
+			&sender,
+		)
+		.await;
+		assert!(matches!(result, NativeForward::Terminal));
+		let frame = receiver.try_recv().expect("terminal frame");
+		let Some(server_frame::Body::Verdict(verdict)) = frame.body else {
+			panic!("expected verdict")
+		};
+		assert!(!verdict.is_error);
+		let projection = verdict.projection.as_ref().expect("raw projection");
+		assert!(!projection.omitted, "compact raw outcome is still fully inline");
+		assert_eq!(projection.inline_bytes, verdict.json.len() as u64);
+		assert_eq!(projection.source_bytes, verdict.json.len() as u64);
+		assert!(
+			verdict
+				.parts
+				.iter()
+				.all(|part| !matches!(part.kind, Some(thread_pb::part::Kind::Blob(_)))),
+			"wire preview omits trailing media"
+		);
+		assert!(
+			verdict
+				.parts
+				.iter()
+				.map(prost::Message::encoded_len)
+				.sum::<usize>()
+				<= DEFAULT_RESULT_PROJECTION_BYTES
+		);
+		let complete = projection
+			.complete_parts
+			.as_ref()
+			.expect("recovery artifact");
+		let complete_id =
+			BlobId { hash: complete.hash.as_ref().try_into().expect("hash"), size: complete.size };
+		assert!(
+			blobs
+				.renew_verdict_delivery(Some("session"), "media-call", complete_id)
+				.expect("projection invocation lease")
+		);
+		let bytes = blobs
+			.worker_verdict_store()
+			.get(&complete_id.into())
+			.expect("complete parts");
+		let restored: Vec<thread_pb::Part> =
+			serde_json::from_slice(&bytes).expect("canonical parts JSON");
+		assert_eq!(restored.len(), 2, "no duplicated preview or alt text");
+		let Some(thread_pb::part::Kind::Text(text)) = restored[0].kind.as_ref() else {
+			panic!("text")
+		};
+		assert_eq!(text, &"expanded\n".repeat(DEFAULT_RESULT_PROJECTION_BYTES));
+		let Some(thread_pb::part::Kind::Blob(blob)) = restored[1].kind.as_ref() else {
+			panic!("complete artifact lost media")
+		};
+		assert_eq!(blob.hash.as_ref(), media.hash);
+		assert_eq!(blob.mime, "image/png");
+		assert_eq!(blob.size, media.size);
+		assert!(blob.inline.is_empty(), "transport should retain a bounded CAS reference");
+		assert_eq!(
+			blobs
+				.worker_verdict_store()
+				.get(&media.into())
+				.expect("retained media")
+				.as_ref(),
+			media_bytes
+		);
+		assert!(
+			blobs
+				.renew_verdict_delivery(Some("session"), "media-call", media)
+				.expect("invocation-scoped lease")
+		);
+		assert!(receiver.try_recv().is_err(), "one terminal only");
+	}
+
+	#[test]
+	fn native_media_projection_rejects_missing_or_malformed_references() {
+		let scratch = tempfile::tempdir().expect("scratch");
+		let blobs = BlobHost::open(scratch.path()).expect("blobs");
+		let registry = media_projection_registry();
+		for (hash, mime) in [
+			("00".repeat(32), "image/png"),
+			("not-a-digest".to_owned(), "image/png"),
+			("00".repeat(32), "bad\nmime"),
+		] {
+			let payload = vec![omp_tool::Part::Blob {
+				blob: omp_tool::BlobRef {
+					hash:       Str::new(hash),
+					media_type: Str::new(mime),
+					byte_len:   20,
+				},
+				alt:  None,
+			}];
+			let verdict =
+				serde_json::to_vec(&CallOutcome::<_, serde_json::Value>::Ok(payload)).expect("verdict");
+			assert!(
+				project_native_verdict(
+					&registry,
+					"media-fixture",
+					&verdict,
+					false,
+					&blobs,
+					None,
+					"call"
+				)
+				.is_err()
+			);
+		}
+	}
+
 	#[test]
 	fn small_worker_outcomes_retain_the_canonical_envelope() {
 		let scratch = tempfile::tempdir().expect("verdict store");

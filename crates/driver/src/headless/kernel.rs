@@ -376,6 +376,8 @@ const OUTCOME_REPLICATION_ATTEMPTS: usize = 3;
 
 #[derive(Debug, thiserror::Error)]
 enum OutcomeReplicationError {
+	#[error("environment complete projection is not valid canonical parts JSON")]
+	ProjectionJson(#[from] serde_json::Error),
 	#[error(transparent)]
 	Client(#[from] omp_env::ClientError),
 	#[error(transparent)]
@@ -417,10 +419,14 @@ async fn replicate_outcome_blob(
 	let mut transfer = omp_env::ResumableBlobTransfer::new(expected_hash, expected_size, max_bytes)?;
 
 	for attempt in 0..OUTCOME_REPLICATION_ATTEMPTS {
-		let download = match client
-			.blob_get_for_invocation(invocation_id, transfer.request())
-			.await
-		{
+		// Opening the request can itself wait for space in the bounded
+		// transport queue. Cancellation must cover admission, not only receipt.
+		let opening = tokio::select! {
+			biased;
+			() = cancel.cancelled() => return Err(OutcomeReplicationError::Interrupted),
+			result = client.blob_get_for_invocation(invocation_id, transfer.request()) => result,
+		};
+		let download = match opening {
 			Ok(download) => download,
 			Err(source)
 				if resumable_blob_error(&source) && attempt + 1 < OUTCOME_REPLICATION_ATTEMPTS =>
@@ -467,6 +473,45 @@ fn valid_blob_media_type(media_type: &str) -> bool {
 	!kind.is_empty()
 		&& !subtype.is_empty()
 		&& !essence.bytes().any(|byte| byte.is_ascii_whitespace())
+}
+
+async fn restore_complete_parts(
+	client: &omp_env::EnvClient,
+	session_store: &omp_journal::blob::BlobStore,
+	invocation_id: &str,
+	preview: Vec<omp_proto::thread::v1::Part>,
+	complete: Option<&omp_proto::thread::v1::Blob>,
+	max_bytes: u64,
+	cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Vec<omp_proto::thread::v1::Part>, OutcomeReplicationError> {
+	let Some(complete) = complete else {
+		return Ok(preview);
+	};
+	if cancel.is_cancelled() {
+		return Err(OutcomeReplicationError::Interrupted);
+	}
+	if complete.mime != "application/json" || !complete.inline.is_empty() {
+		return Err(OutcomeReplicationError::InvalidMedia);
+	}
+	let hash = Hash32::new(
+		complete
+			.hash
+			.as_ref()
+			.try_into()
+			.map_err(|_| OutcomeReplicationError::InvalidMedia)?,
+	);
+	let reference = replicate_outcome_blob(
+		client,
+		session_store,
+		invocation_id,
+		hash,
+		complete.size,
+		max_bytes,
+		cancel,
+	)
+	.await?;
+	let bytes = session_store.get(&reference)?;
+	Ok(serde_json::from_slice(&bytes)?)
 }
 
 async fn replicate_verdict_parts(
@@ -941,11 +986,28 @@ impl ExternalToolExecutor for EnvToolExecutor {
 							yield ExternalDispatchEvent::Aborted(invalid_outcome_blob());
 							return;
 						}
+						let complete_parts = match restore_complete_parts(
+							&client, &outcome_store, request.call_id.as_str(), verdict.parts,
+							projection.complete_parts.as_ref(), max_bytes, &request.cancellation,
+						).await {
+							Ok(parts) => parts,
+							Err(OutcomeReplicationError::Interrupted) => {
+								yield ExternalDispatchEvent::Aborted(Abort::Interrupted {
+									reason: Str::new_static("environment projection retrieval interrupted"),
+								});
+								return;
+							},
+							Err(source) => {
+								tracing::warn!(%source, "environment complete projection retrieval failed");
+								yield ExternalDispatchEvent::Aborted(invalid_outcome_blob());
+								return;
+							},
+						};
 						let mut parts = match replicate_verdict_parts(
 							&client,
 							&outcome_store,
 							request.call_id.as_str(),
-							verdict.parts,
+							complete_parts,
 							max_bytes,
 							&request.cancellation,
 						)
@@ -3011,6 +3073,171 @@ mod tests {
 			bytes.as_ref(),
 			"tool media resolves without the environment host"
 		);
+	}
+
+	#[tokio::test]
+	async fn complete_projection_cancellation_interrupts_a_full_request_queue() {
+		let (client, _transport) = omp_env::EnvClient::in_process(1);
+		let client = client
+			.with_principal("session-a", "kernel")
+			.expect("principal");
+		let scratch = tempfile::tempdir().expect("CAS");
+		let store = omp_journal::blob::BlobStore::open(scratch.path()).expect("store");
+		let bytes = b"[]";
+		let digest = omp_core::Hash32::sum(bytes);
+		// Leave the one-slot queue occupied; no transport task drains it.
+		let _held_download = tokio::time::timeout(
+			std::time::Duration::from_secs(1),
+			client.blob_get_for_invocation("queue-blocker", omp_env::blob_frame::GetRequest {
+				hash:   bytes::Bytes::copy_from_slice(digest.as_bytes()),
+				offset: 0,
+				length: bytes.len() as u64,
+			}),
+		)
+		.await
+		.expect("first request enters queue")
+		.expect("first download");
+		let complete = omp_proto::thread::v1::Blob {
+			hash: bytes::Bytes::copy_from_slice(digest.as_bytes()),
+			size: bytes.len() as u64,
+			mime: "application/json".into(),
+			..Default::default()
+		};
+		let cancel = tokio_util::sync::CancellationToken::new();
+		let restore = super::restore_complete_parts(
+			&client,
+			&store,
+			"cancelled-call",
+			Vec::new(),
+			Some(&complete),
+			omp_proto::bounds::FRAME_MAX_BYTES as u64,
+			&cancel,
+		);
+		tokio::pin!(restore);
+		assert!(futures::poll!(restore.as_mut()).is_pending(), "restore waits behind full queue");
+		cancel.cancel();
+		let result = tokio::time::timeout(std::time::Duration::from_secs(1), restore)
+			.await
+			.expect("cancellation must not require queue drainage");
+		assert!(matches!(result, Err(super::OutcomeReplicationError::Interrupted)));
+	}
+
+	#[tokio::test]
+	async fn complete_projection_is_restored_without_preview_duplication() {
+		let (client, transport) = omp_env::EnvClient::in_process(0);
+		let client = client
+			.with_principal("session-a", "kernel")
+			.expect("principal");
+		let scratch = tempfile::tempdir().expect("CAS");
+		let store = omp_journal::blob::BlobStore::open(scratch.path()).expect("store");
+		let text = "expanded\n".repeat(omp_agent::DispatchPolicy::DEFAULT_MAX_OUTPUT_BYTES);
+		let media = b"media bytes";
+		let media_ref = store.put(media).expect("media retained in session");
+		let canonical = vec![
+			omp_proto::thread::v1::Part {
+				kind: Some(omp_proto::thread::v1::part::Kind::Text(text.clone())),
+			},
+			omp_proto::thread::v1::Part {
+				kind: Some(omp_proto::thread::v1::part::Kind::Blob(omp_proto::thread::v1::Blob {
+					hash: bytes::Bytes::copy_from_slice(media_ref.hash.as_bytes()),
+					size: media_ref.size,
+					mime: "image/png".into(),
+					..Default::default()
+				})),
+			},
+		];
+		let bytes = bytes::Bytes::from(serde_json::to_vec(&canonical).expect("canonical JSON"));
+		let digest = omp_core::Hash32::sum(&bytes);
+		let complete = omp_proto::thread::v1::Blob {
+			hash: bytes::Bytes::copy_from_slice(digest.as_bytes()),
+			size: bytes.len() as u64,
+			mime: "application/json".into(),
+			..Default::default()
+		};
+		let server = tokio::spawn(async move {
+			let frame = transport.recv().await.expect("artifact request");
+			assert!(matches!(frame.body, Some(omp_env::frame::client_frame::Body::BlobGet(_))));
+			let scope = frame.scope.expect("invocation scope");
+			assert_eq!(scope.session_id, "session-a");
+			assert_eq!(scope.invocation_id, "expanded-call");
+			let size = bytes.len() as u64;
+			transport
+				.send(omp_env::frame::ServerFrame {
+					request_id: frame.request_id,
+					body: Some(omp_env::frame::server_frame::Body::BlobChunk(
+						omp_env::blob_frame::Chunk {
+							data: bytes,
+							hash: bytes::Bytes::copy_from_slice(digest.as_bytes()),
+							size: Some(size),
+						},
+					)),
+					..Default::default()
+				})
+				.await
+				.expect("chunk");
+			transport
+				.send(omp_env::frame::ServerFrame {
+					request_id: frame.request_id,
+					body: Some(omp_env::frame::server_frame::Body::BlobGetComplete(
+						omp_env::frame::BlobGetComplete {
+							hash: bytes::Bytes::copy_from_slice(digest.as_bytes()),
+							bytes_sent: size,
+							..Default::default()
+						},
+					)),
+					..Default::default()
+				})
+				.await
+				.expect("complete");
+		});
+		let cancel = tokio_util::sync::CancellationToken::new();
+		let restored = tokio::time::timeout(
+			std::time::Duration::from_secs(2),
+			super::restore_complete_parts(
+				&client,
+				&store,
+				"expanded-call",
+				vec![omp_proto::thread::v1::Part {
+					kind: Some(omp_proto::thread::v1::part::Kind::Text("preview".into())),
+				}],
+				Some(&complete),
+				omp_proto::bounds::FRAME_MAX_BYTES as u64,
+				&cancel,
+			),
+		)
+		.await
+		.expect("bounded restore")
+		.expect("restore");
+		assert_eq!(restored, canonical);
+		let parts = replicate_verdict_parts(
+			&client,
+			&store,
+			"expanded-call",
+			restored,
+			omp_proto::bounds::FRAME_MAX_BYTES as u64,
+			&cancel,
+		)
+		.await
+		.expect("canonical media");
+		assert_eq!(parts.len(), 2);
+		assert!(
+			matches!(&parts[0], omp_tool::Part::Text { text: restored } if restored.as_str() == text)
+		);
+		assert!(
+			matches!(&parts[1], omp_tool::Part::Blob { blob, .. } if blob.byte_len == media_ref.size)
+		);
+		server.await.expect("server");
+		let over_limit = super::restore_complete_parts(
+			&client,
+			&store,
+			"expanded-call",
+			Vec::new(),
+			Some(&complete),
+			1,
+			&cancel,
+		)
+		.await;
+		assert!(over_limit.is_err(), "oversized recovery must fail before requesting bytes");
 	}
 
 	fn gpt5_policy(catalog: &Catalog) -> &ThinkingPolicy {

@@ -3602,3 +3602,43 @@ fn projection_blob(blob: &BlobRef) -> ToolBlobRef {
 pub(crate) fn artifact_address(blob: &BlobRef) -> Str {
 	sf!("artifact://sha256/{}", blob.to_hex())
 }
+
+#[cfg(test)]
+mod recovered_projection_tests {
+	use super::*;
+
+	#[test]
+	fn recovered_expanded_parts_get_truthful_central_omission_and_complete_recovery() {
+		let scratch = tempfile::tempdir().expect("CAS");
+		let store = BlobStore::open(scratch.path()).expect("store");
+		let text = "expanded\n".repeat(DispatchPolicy::DEFAULT_MAX_OUTPUT_BYTES);
+		let media = store.put(b"retained-media").expect("media");
+		let parts = vec![Part::Text { text: Str::new(&text) }, Part::Blob {
+			blob: omp_tool::BlobRef {
+				hash:       Str::new(media.hash.to_hex().as_str()),
+				media_type: sf!("image/png"),
+				byte_len:   media.size,
+			},
+			alt:  None,
+		}];
+		let policy = DispatchPolicy::new(store.clone());
+		let bounded = bound_parts(&parts, &[], DispatchOptions::default(), &policy, &store, None)
+			.expect("central bound");
+		assert!(bounded.omitted);
+		assert_eq!(bounded.source_bytes, text.len() as u64);
+		assert!(bounded.inline_bytes <= DispatchPolicy::DEFAULT_MAX_OUTPUT_BYTES as u64);
+		let artifact = bounded.spilled.expect("complete text artifact");
+		assert_eq!(store.get(&artifact).expect("recovery").as_ref(), text.as_bytes());
+		assert_eq!(
+			bounded
+				.parts
+				.iter()
+				.filter(|part| matches!(part, Part::Blob { .. }))
+				.count(),
+			1
+		);
+		assert!(
+			matches!(bounded.parts.last(), Some(Part::Blob { blob, .. }) if blob.byte_len == media.size)
+		);
+	}
+}
