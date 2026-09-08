@@ -1,0 +1,263 @@
+# Soak and fault-injection proof (#105).
+#
+# One real `omp` session, one journal file, at least an hour and at least 500
+# completed turns, with every fault injected by a WORKFLOW STEP (kill -9, a
+# 64 MB tmpfs, a provider the workflow steers, a clock the workflow steps),
+# never by a flag inside omp. Every number in the step summary is produced by
+# stat/du/ps/pgrep/grep in the shell or by the mock provider's own log.
+#
+# The graded rows are the demos for #106-#130; they are expected to be red
+# until those issues land. The rig is the deliverable of #105.
+#
+# `schedule` only fires from the repository's default branch, so the nightly
+# trigger below is inert until this file also exists on `main`; that is a
+# separate, human-reviewed change (#41 F1). Use workflow_dispatch on omp2.
+name: Soak
+
+on:
+  # workflow_dispatch is only offered for files on the default branch, so a
+  # path-filtered push trigger is what actually runs this on omp2 branches.
+  push:
+    branches: [feat/soak-rig, fix/audit-ci-gates, omp2]
+    paths:
+      - scripts/soak/**
+      - .github/workflows/soak.yml
+  workflow_dispatch:
+    inputs:
+      duration_min:
+        description: Minimum wall-clock minutes of turns
+        default: "60"
+      min_turns:
+        description: Minimum completed turns before the driver may stop
+        default: "500"
+      max_min:
+        description: Hard cap on driver minutes
+        default: "120"
+      sample_interval:
+        description: Seconds between shell samples
+        default: "300"
+  schedule:
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    name: Soak (Linux, fault injection)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      SOAK: /home/runner/work/_temp/soak
+      DURATION_MIN: ${{ github.event.inputs.duration_min || '60' }}
+      MIN_TURNS: ${{ github.event.inputs.min_turns || '500' }}
+      MAX_MIN: ${{ github.event.inputs.max_min || '120' }}
+      SAMPLE_INTERVAL: ${{ github.event.inputs.sample_interval || '300' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select pinned Rust toolchain
+        run: |
+          test "$(uname -m)" = x86_64
+          rustup show active-toolchain
+
+      - name: Install native build tools and fault tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pipx zstd libfaketime
+          command -v uv >/dev/null || pipx install uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          ls /usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
+
+      - name: Cache embedded Python
+        id: python-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: vendor/python
+          key: python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/py/scripts/fetch-python.sh', 'crates/py/scripts/pack-pymodules.py', 'crates/py/scripts/gen-py-notices.py', 'crates/py/requirements.txt') }}
+
+      - name: Prepare embedded Python
+        if: steps.python-cache.outputs.cache-hit != 'true'
+        run: crates/py/scripts/fetch-python.sh
+
+      - name: Restore Cargo cache (shared with the Linux P7 job)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-soak-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-soak-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
+            cargo-p7-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
+            cargo-p7-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build omp
+        run: |
+          cargo build --bin omp --locked
+          test -x target/debug/omp
+          target/debug/omp --version || true
+
+      - name: Rig self-test (stub omp, proves the wiring only)
+        run: bash scripts/soak/selftest.sh | tail -30
+
+      - name: Prepare the soak directories, 64 MB tmpfs sessions dir, provider, models.toml
+        id: prep
+        run: |
+          set -euo pipefail
+          OUT="$SOAK/out"; SESS="$SOAK/sessions"; DATA="$SOAK/data"; PROJ="$SOAK/project"
+          mkdir -p "$OUT" "$SESS" "$DATA" "$PROJ"
+          sudo mount -t tmpfs -o "size=64m,uid=$(id -u),gid=$(id -g),mode=0755" tmpfs "$SESS"
+          df -h "$SESS" | tee -a "$OUT/prep.log"
+          setsid nohup python3 scripts/soak/provider.py --log "$OUT/provider.jsonl" --ready-file "$OUT/port" > "$OUT/provider.log" 2>&1 &
+          for _ in $(seq 1 100); do [ -s "$OUT/port" ] && break; sleep 0.1; done
+          PORT=$(cat "$OUT/port"); echo "provider port $PORT"
+          cat > "$DATA/models.toml" <<EOF
+          [providers.mock]
+          baseUrl = "http://127.0.0.1:$PORT/v1"
+          auth = "none"
+
+          [providers.mock.models.mock]
+          name = "Soak Mock"
+          api = "openai-completions"
+          contextWindow = 128000
+          maxTokens = 8192
+          supportsTools = true
+          supportsStreaming = true
+          EOF
+          SENTINEL="SENTINEL-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          echo "sentinel=$SENTINEL" >> "$GITHUB_OUTPUT"
+          echo "port=$PORT" >> "$GITHUB_OUTPUT"
+          echo "Sentinel for this run: \`$SENTINEL\`" >> "$GITHUB_STEP_SUMMARY"
+          printf '+0' > "$OUT/faketimerc"
+
+      - name: Start sampler and driver (the session runs from here on)
+        run: |
+          set -euo pipefail
+          OUT="$SOAK/out"; SESS="$SOAK/sessions"; DATA="$SOAK/data"; PROJ="$SOAK/project"
+          date +%s > "$OUT/start.epoch"
+          setsid nohup bash scripts/soak/sample.sh "$OUT" "$SESS" "$DATA" "$PWD/target/debug/omp" "$SAMPLE_INTERVAL" > "$OUT/sampler.log" 2>&1 &
+          bash scripts/soak/phase.sh "$OUT" baseline
+          # libfaketime reaches only the omp child (run 34224127165: preloading
+          # the Python driver broke its own sleep with EINVAL). The offset lives
+          # in a file the workflow edits later; monotonic clocks stay untouched,
+          # as an NTP step behaves.
+          setsid nohup python3 scripts/soak/driver.py --omp "$PWD/target/debug/omp" --out "$OUT" --project "$PROJ" \
+            --session-dir "$SESS" --data-dir "$DATA" --duration-min "$DURATION_MIN" --min-turns "$MIN_TURNS" \
+            --max-min "$MAX_MIN" --sentinel "${{ steps.prep.outputs.sentinel }}" \
+            --child-env LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1 \
+            --child-env "FAKETIME_TIMESTAMP_FILE=$OUT/faketimerc" --child-env FAKETIME_NO_CACHE=1 \
+            --child-env FAKETIME_DONT_FAKE_MONOTONIC=1 > "$OUT/driver.log" 2>&1 &
+          echo $! > "$OUT/driver.pid"
+          sleep 60
+          echo "--- first minute ---"; tail -5 "$OUT/driver.jsonl" || true; tail -20 "$OUT/omp-stderr.log" || true; tail -5 "$OUT/driver.log" || true
+          [ -s "$OUT/driver.jsonl" ] && grep -q turn_end "$OUT/driver.jsonl" || echo "::warning::no turn completed in the first minute"
+
+      - name: Fault 1 — kill -9 the live omp process group five times (minutes 8-16)
+        run: |
+          OUT="$SOAK/out"
+          for n in 1 2 3 4 5; do
+            bash scripts/soak/until.sh "$OUT" $((6 + n * 2))
+            # Wait for a LIVE omp print child (turns are short); a kill that
+            # hits nothing would let the resume row pass trivially.
+            pid=""
+            for _ in $(seq 1 120); do
+              p=$(cat "$OUT/omp.pid" 2>/dev/null || true)
+              if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then pid=$p; break; fi
+              sleep 0.5
+            done
+            if [ -n "$pid" ]; then kill -9 -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true; fi
+            bash scripts/soak/phase.sh "$OUT" kill n="$n" pid="${pid:-none}"
+          done
+
+      - name: Fault 2 — provider stalls mid-stream for 10 minutes once (minute 20)
+        run: |
+          OUT="$SOAK/out"; bash scripts/soak/until.sh "$OUT" 20
+          curl -sf -X POST -d '{"mode":"stall","seconds":600}' "http://127.0.0.1:${{ steps.prep.outputs.port }}/control"
+          bash scripts/soak/phase.sh "$OUT" stall
+
+      - name: Fault 3 — provider answers 529 for 15 consecutive minutes (minutes 27-42)
+        run: |
+          OUT="$SOAK/out"; bash scripts/soak/until.sh "$OUT" 27
+          curl -sf -X POST -d '{"mode":"error","status":529}' "http://127.0.0.1:${{ steps.prep.outputs.port }}/control"
+          bash scripts/soak/phase.sh "$OUT" error-start
+          bash scripts/soak/until.sh "$OUT" 42
+          curl -sf -X POST -d '{"mode":"normal"}' "http://127.0.0.1:${{ steps.prep.outputs.port }}/control"
+          bash scripts/soak/phase.sh "$OUT" error-end
+
+      - name: Fault 4 — provider context limit 30% below the catalog window (minute 43)
+        run: |
+          OUT="$SOAK/out"; bash scripts/soak/until.sh "$OUT" 43
+          # 128000 tokens x 4 bytes x 0.7
+          curl -sf -X POST -d '{"max_request_bytes":358400}' "http://127.0.0.1:${{ steps.prep.outputs.port }}/control"
+          bash scripts/soak/phase.sh "$OUT" overflow-start
+
+      - name: Fault 5 — fill the 64 MB sessions tmpfs, then free 32 MB (minutes 46-50)
+        run: |
+          OUT="$SOAK/out"; SESS="$SOAK/sessions"; bash scripts/soak/until.sh "$OUT" 46
+          dd if=/dev/zero of="$SESS/filler-a" bs=1M count=32 2>/dev/null || true
+          dd if=/dev/zero of="$SESS/filler-b" bs=1M count=64 2>/dev/null || true   # runs until ENOSPC
+          df -h "$SESS"; bash scripts/soak/phase.sh "$OUT" enospc-fill
+          bash scripts/soak/until.sh "$OUT" 50
+          rm -f "$SESS/filler-a"; df -h "$SESS"; bash scripts/soak/phase.sh "$OUT" enospc-free
+
+      - name: Fault 6 — step the wall clock back one hour for three minutes (minutes 52-55)
+        run: |
+          OUT="$SOAK/out"; bash scripts/soak/until.sh "$OUT" 52
+          printf -- '-3600' > "$OUT/faketimerc"; bash scripts/soak/phase.sh "$OUT" clock-back
+          bash scripts/soak/until.sh "$OUT" 55
+          printf -- '+0' > "$OUT/faketimerc"; bash scripts/soak/phase.sh "$OUT" clock-restore
+
+      - name: Fault 7 — SIGHUP the live omp process (minute 57)
+        run: |
+          OUT="$SOAK/out"; bash scripts/soak/until.sh "$OUT" 57
+          pid=$(cat "$OUT/omp.pid" 2>/dev/null || true)
+          [ -n "$pid" ] && kill -HUP "$pid" 2>/dev/null || true
+          bash scripts/soak/phase.sh "$OUT" sighup pid="${pid:-none}"
+
+      - name: Wait for the driver to finish (duration and turn floor, hard cap)
+        run: |
+          OUT="$SOAK/out"; DPID=$(cat "$OUT/driver.pid")
+          while kill -0 "$DPID" 2>/dev/null; do sleep 30; done
+          tail -3 "$OUT/driver.jsonl"
+
+      - name: Final counts after exit (pgrep by the shell), stop sampler
+        if: always()
+        run: |
+          OUT="$SOAK/out"; OMP="$PWD/target/debug/omp"
+          DPID=$(cat "$OUT/driver.pid" 2>/dev/null || true); [ -n "$DPID" ] && kill "$DPID" 2>/dev/null || true
+          sleep 20
+          touch "$OUT/stop-sampler"
+          bash scripts/soak/phase.sh "$OUT" final \
+            omp_print_procs="$(pgrep -f "^$OMP print" | wc -l | tr -d ' ')" \
+            envd_procs="$(pgrep -f "^$OMP envd" | wc -l | tr -d ' ')"
+          cp "$SOAK"/sessions/*.oms "$OUT/" 2>/dev/null || true
+          ls -la "$OUT"
+
+      - name: Report (graded rows to the step summary; red until #106-#130 land)
+        if: always()
+        run: |
+          python3 scripts/soak/report.py --out "$SOAK/out" --session-dir "$SOAK/sessions" \
+            --min-turns "$MIN_TURNS" --min-minutes "$DURATION_MIN" --sentinel "${{ steps.prep.outputs.sentinel }}" --strict
+
+      - name: Upload soak evidence (journal, provider log, samples, driver log, report)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: soak-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /home/runner/work/_temp/soak/out
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        run: |
+          pkill -f "target/debug/omp" || true
+          pkill -f scripts/soak/provider.py || true
+          sudo umount "$SOAK/sessions" || true

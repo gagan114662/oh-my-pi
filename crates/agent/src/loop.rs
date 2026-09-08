@@ -200,13 +200,16 @@ pub enum TurnStop {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TurnOutcome {
 	/// Terminal control reason.
-	pub stop:           TurnStop,
+	pub stop:            TurnStop,
+	/// Durable settlement status; bounded early returns are incomplete even when
+	/// the legacy control stop is `Completed`.
+	pub terminal_status: omp_journal::data::TurnStatus,
 	/// Visible assistant text accumulated across tool continuations.
-	pub assistant_text: Str,
+	pub assistant_text:  Str,
 	/// Total input tokens across inference attempts.
-	pub tokens_in:      u64,
+	pub tokens_in:       u64,
 	/// Total output tokens across inference attempts.
-	pub tokens_out:     u64,
+	pub tokens_out:      u64,
 }
 
 /// Caller-owned cancellation and limits for one turn. Production callers use
@@ -1160,95 +1163,103 @@ impl<C: Inference> Kernel<C> {
 		}
 		let turn_cancel = self.cancel.begin_turn();
 		session.begin_turn()?;
-		self.apply_live_components(session)?;
-		match (skill_prompt, custom_message) {
-			(Some(prompt), None) => {
-				session.skill_prompt(prompt)?;
-			},
-			(None, Some(message)) => {
-				let turn = current_turn(session)?;
-				append_custom_message(session, turn, message)?;
-			},
-			(None, None) => {
-				let mention_paths = parse_file_mentions(&input.text);
-				if let Some(author) = author {
-					session.user_authored(input.text, input.attachments, author)?;
-				} else {
-					session.user(input.text, input.attachments)?;
-				}
-				let interrupted = {
-					let preparing = self.append_file_mentions(session, mention_paths);
-					tokio::select! {
-						result = preparing => { result?; false },
-						() = control.cancelled() => true,
-					}
-				};
-				if interrupted {
-					turn_cancel.cancel_turn();
-					let turn = current_turn(session)?;
-					if control.deadline_expired()
-						|| control.idle.as_ref().is_some_and(|idle| idle.fired())
-					{
-						append_turn_limit_notice(
-							session,
-							turn,
-							Str::new_static(
-								"Turn setup limit reached while materializing file mentions; the accepted \
-								 turn was cancelled",
-							),
-						)?;
-					}
-					return self.finish_turn(session, turn, &submission_id, Ok(cancelled_outcome()));
-				}
-			},
-			(Some(_), Some(_)) => unreachable!("one explicit turn source"),
-		}
-		self.apply_live_components(session)?;
 		let turn = current_turn(session)?;
-		let _activity = TurnActivity::enter(Arc::clone(&self.turn_active));
-		let mut result = self
-			.run_turn_body(session, turn, &turn_cancel, &control, None)
-			.await;
-		self.turn_active.store(false, Ordering::Release);
-		{
-			let settling = self.settle_reply_obligations(session, &turn_cancel, &control);
-			tokio::pin!(settling);
-			tokio::select! {
-				result = &mut settling => result?,
-				() = control.cancelled() => {
-					turn_cancel.cancel_turn();
-					match tokio::time::timeout(
-						self.dispatcher.policy().interrupt_grace, &mut settling,
-					).await {
-						Ok(result) => result?,
-						Err(_) => {
-							if let Some(idle) = &control.idle {
-								tokio::select! {
-									biased;
-									result = &mut settling => result?,
-									() = idle.calls_settled() => {},
-								}
-							}
-						},
+		let result = async {
+			self.apply_live_components(session)?;
+			match (skill_prompt, custom_message) {
+				(Some(prompt), None) => {
+					session.skill_prompt(prompt)?;
+				},
+				(None, Some(message)) => {
+					let turn = current_turn(session)?;
+					append_custom_message(session, turn, message)?;
+				},
+				(None, None) => {
+					let mention_paths = parse_file_mentions(&input.text);
+					if let Some(author) = author {
+						session.user_authored(input.text, input.attachments, author)?;
+					} else {
+						session.user(input.text, input.attachments)?;
+					}
+					let interrupted = {
+						let preparing = self.append_file_mentions(session, mention_paths);
+						tokio::select! {
+							result = preparing => { result?; false },
+							() = control.cancelled() => true,
+						}
+					};
+					if interrupted {
+						turn_cancel.cancel_turn();
+						let turn = current_turn(session)?;
+						if control.deadline_expired()
+							|| control.idle.as_ref().is_some_and(|idle| idle.fired())
+						{
+							append_turn_limit_notice(
+								session,
+								turn,
+								Str::new_static(
+									"Turn setup limit reached while materializing file mentions; the \
+									 accepted turn was cancelled",
+								),
+							)?;
+						}
+						return Ok(cancelled_outcome());
 					}
 				},
+				(Some(_), Some(_)) => unreachable!("one explicit turn source"),
 			}
-		}
-		if turn_cancel.is_turn_cancelled()
-			&& matches!(&result, Ok(outcome) if outcome.stop == TurnStop::Completed)
-		{
-			if control.deadline_expired() || control.idle.as_ref().is_some_and(|idle| idle.fired()) {
-				append_turn_limit_notice(
-					session,
-					turn,
-					Str::new_static(
-						"Turn limit reached while settling reply obligations; the turn was cancelled",
-					),
-				)?;
+			self.apply_live_components(session)?;
+			let turn = current_turn(session)?;
+			let _activity = TurnActivity::enter(Arc::clone(&self.turn_active));
+			let mut result = self
+				.run_turn_body(session, turn, &turn_cancel, &control, None)
+				.await;
+			self.turn_active.store(false, Ordering::Release);
+			{
+				let settling = self.settle_reply_obligations(session, &turn_cancel, &control);
+				tokio::pin!(settling);
+				tokio::select! {
+					result = &mut settling => result?,
+					() = control.cancelled() => {
+						turn_cancel.cancel_turn();
+						match tokio::time::timeout(
+							self.dispatcher.policy().interrupt_grace, &mut settling,
+						).await {
+							Ok(result) => result?,
+							Err(_) => {
+								if let Some(idle) = &control.idle {
+									tokio::select! {
+										biased;
+										result = &mut settling => result?,
+										() = idle.calls_settled() => {},
+									}
+								}
+							},
+						}
+					},
+				}
 			}
-			result = Ok(cancelled_outcome());
+			if turn_cancel.is_turn_cancelled()
+				&& matches!(&result, Ok(outcome) if outcome.stop == TurnStop::Completed)
+			{
+				if current_turn(session).ok() == Some(turn)
+					&& (control.deadline_expired()
+						|| control.idle.as_ref().is_some_and(|idle| idle.fired()))
+				{
+					append_turn_limit_notice(
+						session,
+						turn,
+						Str::new_static(
+							"Turn limit reached while settling reply obligations; the turn was cancelled",
+						),
+					)?;
+				}
+				result = Ok(cancelled_outcome());
+			}
+			result
 		}
-		self.finish_turn(session, turn, &submission_id, result)
+		.await;
+		self.finish_turn(session, turn, &submission_id, result, &turn_cancel, &control)
 	}
 
 	async fn settle_lifecycle(
@@ -1289,7 +1300,11 @@ impl<C: Inference> Kernel<C> {
 				() = self.reply_obligations.wait() => {},
 				message = control.recv() => {
 					if let Received::Rewound(work) = control.handle(session, message)? {
+						// Even a rewind within this same turn abandons its accepted
+						// yield. Identity equality alone cannot authorize completion.
+						turn.cancel_turn();
 						self.settle_lifecycle(session, &work, run).await;
+
 					}
 				},
 			}
@@ -1305,7 +1320,19 @@ impl<C: Inference> Kernel<C> {
 		turn: Handle,
 		submission_id: &Str,
 		result: Result<TurnOutcome, KernelError>,
+		turn_cancel: &crate::TurnCancellation,
+		control: &RunControl,
 	) -> Result<TurnOutcome, KernelError> {
+		let mut result = result;
+		// A rewind may have abandoned this turn while final obligations settled.
+		// Never attach the old result to the newly selected turn.
+		if current_turn(session).ok() != Some(turn) {
+			self.resync_session_state(session);
+			self
+				.events
+				.publish(KernelEvent::TurnEnded { stop: TurnStop::Cancelled });
+			return Ok(cancelled_outcome());
+		}
 		match &result {
 			Err(error) => self.journal_turn_failure(session, turn, error),
 			Ok(outcome) if outcome.stop == TurnStop::Cancelled => {
@@ -1313,37 +1340,58 @@ impl<C: Inference> Kernel<C> {
 			},
 			Ok(_) => {},
 		}
-		self.events.publish(KernelEvent::TurnEnded {
-			stop: match &result {
-				Ok(outcome) => outcome.stop,
-				Err(_) => TurnStop::Failed,
-			},
-		});
-		self.flush_session_state(session)?;
-		self.resync_session_state(session);
-		if let Some(hooks) = &self.lifecycle_hooks {
-			let (stop, interrupted, error) = match &result {
-				Ok(outcome) => (
-					format!("{:?}", outcome.stop).to_ascii_lowercase(),
-					outcome.stop == TurnStop::Cancelled,
-					None,
-				),
-				Err(_) => ("error".to_owned(), false, Some("agent turn failed")),
-			};
-			hooks.notify(
-				HookEventId::HookEventAgentEnd,
-				serde_json::json!({
-					"submission_id": submission_id,
-					"summary": {
-						"committed_turns": committed_requests(session, turn),
-						"interrupted": interrupted,
-						"stop": stop,
-					},
-					"continued": false,
-					"error": error,
-				}),
-			)?;
+		let finalized = (|| -> Result<(), KernelError> {
+			self.flush_session_state(session)?;
+			self.resync_session_state(session);
+			if let Some(hooks) = &self.lifecycle_hooks {
+				let (stop, interrupted, error) = match &result {
+					Ok(outcome) => (
+						format!("{:?}", outcome.stop).to_ascii_lowercase(),
+						outcome.stop == TurnStop::Cancelled,
+						None,
+					),
+					Err(_) => ("error".to_owned(), false, Some("agent turn failed")),
+				};
+				hooks.notify(
+					HookEventId::HookEventAgentEnd,
+					serde_json::json!({
+						"submission_id": submission_id,
+						"summary": {
+							"committed_turns": committed_requests(session, turn),
+							"interrupted": interrupted,
+							"stop": stop,
+						},
+						"continued": false,
+						"error": error,
+					}),
+				)?;
+			}
+			Ok(())
+		})();
+		if let Err(error) = finalized {
+			self.journal_turn_failure(session, turn, &error);
+			result = Err(error);
 		}
+		if result
+			.as_ref()
+			.is_ok_and(|outcome| outcome.stop != TurnStop::Cancelled)
+			&& (control.is_expired()
+				|| turn_cancel.is_turn_cancelled()
+				|| self.cancel.is_session_cancelled())
+		{
+			self.journal_turn_interrupt(session, turn);
+			result = Ok(cancelled_outcome());
+		}
+		let stop = result
+			.as_ref()
+			.map_or(TurnStop::Failed, |outcome| outcome.stop);
+		let status = result
+			.as_ref()
+			.map_or(omp_journal::data::TurnStatus::Failed, |outcome| outcome.terminal_status);
+		// This synced journal append is the success boundary. A crash before it
+		// leaves no completion; a crash after it cannot duplicate the turn ID.
+		session.finish_turn(turn, status)?;
+		self.events.publish(KernelEvent::TurnEnded { stop });
 		result
 	}
 
@@ -1361,6 +1409,14 @@ impl<C: Inference> Kernel<C> {
 		if control.is_expired() || self.cancel.is_session_cancelled() {
 			return Ok(cancelled_outcome());
 		}
+		// Keep one bounded control through replay preparation, the body and
+		// terminal settlement; a caller-supplied unbounded control cannot make
+		// final obligations outlive the runtime's effective limits.
+		let mut control = self.bound_turn_control(control);
+		control.idle = Some(
+			crate::directors::progress_watchdog::ProgressWatchdog::new(self.runtime_flags.turn_idle)
+				.arm(session),
+		);
 		let turn = current_turn(session).map_err(|_| KernelError::NothingToRetry)?;
 		if !aborted_tool_tail(session.dom(), turn) {
 			return Err(KernelError::NothingToRetry);
@@ -1411,7 +1467,14 @@ impl<C: Inference> Kernel<C> {
 		let result = self
 			.run_turn_body(session, turn, &turn_cancel, &control, Some(calls))
 			.await;
-		self.finish_turn(session, turn, &submission_id, result)
+		let result = match self
+			.settle_reply_obligations(session, &turn_cancel, &control)
+			.await
+		{
+			Ok(()) => result,
+			Err(error) => Err(error),
+		};
+		self.finish_turn(session, turn, &submission_id, result, &turn_cancel, &control)
 	}
 
 	/// Records an interrupted turn in the tree (ADR 0004: lifecycle derives
@@ -1515,7 +1578,8 @@ impl<C: Inference> Kernel<C> {
 				},
 			}
 		};
-		if forced && control.deadline_expired() && !idle.fired() {
+		let selected_turn = current_turn(session).ok() == Some(turn);
+		if selected_turn && forced && control.deadline_expired() && !idle.fired() {
 			append_turn_limit_notice(
 				session,
 				turn,
@@ -1528,6 +1592,8 @@ impl<C: Inference> Kernel<C> {
 		}
 		if idle.fired() {
 			turn_cancel.cancel_turn();
+		}
+		if selected_turn && idle.fired() {
 			append_turn_limit_notice(
 				session,
 				turn,
@@ -2309,7 +2375,11 @@ impl<C: Inference> Kernel<C> {
 					} else {
 						TurnStop::Completed
 					};
-					return Ok(outcome(stop, total_text, tokens_in, tokens_out));
+					let mut accepted = outcome(stop, total_text, tokens_in, tokens_out);
+					if stop == TurnStop::Completed {
+						accepted.terminal_status = omp_journal::data::TurnStatus::Completed;
+					}
+					return Ok(accepted);
 				},
 			}
 		}
@@ -4674,7 +4744,18 @@ pub(crate) fn outcome(
 	tokens_in: u64,
 	tokens_out: u64,
 ) -> TurnOutcome {
-	TurnOutcome { stop, assistant_text: Str::new(text), tokens_in, tokens_out }
+	TurnOutcome {
+		stop,
+		terminal_status: match stop {
+			TurnStop::Completed => omp_journal::data::TurnStatus::Incomplete,
+			TurnStop::Cancelled => omp_journal::data::TurnStatus::Cancelled,
+			TurnStop::Failed => omp_journal::data::TurnStatus::Failed,
+			TurnStop::Steered => omp_journal::data::TurnStatus::Steered,
+		},
+		assistant_text: Str::new(text),
+		tokens_in,
+		tokens_out,
+	}
 }
 
 #[cfg(test)]
@@ -4808,10 +4889,118 @@ mod streaming_edit_tests {
 
 pub(crate) const fn cancelled_outcome() -> TurnOutcome {
 	TurnOutcome {
-		stop:           TurnStop::Cancelled,
-		assistant_text: Str::new_static(""),
-		tokens_in:      0,
-		tokens_out:     0,
+		terminal_status: omp_journal::data::TurnStatus::Cancelled,
+		stop:            TurnStop::Cancelled,
+		assistant_text:  Str::new_static(""),
+		tokens_in:       0,
+		tokens_out:      0,
+	}
+}
+
+#[cfg(test)]
+mod terminal_settlement_tests {
+	use std::time::Duration;
+
+	use super::*;
+
+	struct NeverInference;
+	impl Inference for NeverInference {
+		fn chat(
+			&mut self,
+			_: ChatRequest,
+		) -> impl Future<Output = Result<ChatStream, omp_ai::Error>> + Send {
+			async { panic!("settlement regression must not make an inference") }
+		}
+	}
+
+	#[tokio::test]
+	async fn same_turn_checkpoint_rewind_while_reply_pending_invalidates_accepted_yield() {
+		let directory = tempfile::tempdir().expect("directory");
+		let path = directory.path().join("settlement.oms");
+		let mut session =
+			Session::create(&path, omp_session::ComponentRegistry::default()).expect("session");
+		session.begin_turn().expect("turn");
+		session.user("before checkpoint", Vec::new()).expect("user");
+		let handle = current_turn(&session).expect("turn handle");
+		crate::dispatch::journal_env_event(&mut session, crate::EnvEvent::CheckpointOpened {
+			token:        Str::new_static("checkpoint"),
+			label:        Str::new_static("baseline"),
+			goal:         Str::new_static("inspect"),
+			parent_token: None,
+			started_at:   1,
+			workspace:    omp_proto::env::v1::WorkspaceSnapshot {
+				snapshot_id: "snapshot".to_owned(),
+				wire_revision: omp_proto::SCHEMA_REV,
+				..Default::default()
+			},
+		})
+		.expect("checkpoint opens");
+		session
+			.user("abandoned tail", Vec::new())
+			.expect("later tail");
+		let mut kernel = Kernel::new(
+			NeverInference,
+			Arc::new(Registry::new()),
+			crate::DispatchPolicy::new(
+				omp_journal::blob::BlobStore::open(directory.path().join("blobs")).expect("blobs"),
+			),
+			crate::StaticPrompt(Str::new_static("test")),
+		);
+		let obligation = kernel.reply_obligations().begin();
+		let turn = kernel.cancel.begin_turn();
+		let observer = turn.read_only_tool().token();
+		let control = kernel.turn_control();
+		kernel
+			.mailbox()
+			.send(Up::Env(crate::EnvEvent::CheckpointRewind {
+				token:      Str::new_static("checkpoint"),
+				report:     Str::new_static("kept finding"),
+				receipt:    Str::new_static("rewind"),
+				rewound_at: 2,
+				workspace:  omp_proto::env::v1::WorkspaceRestored {
+					snapshot_id: "snapshot".to_owned(),
+					undo_snapshot_id: "undo".to_owned(),
+					wire_revision: omp_proto::SCHEMA_REV,
+					..Default::default()
+				},
+			}))
+			.expect("queue rewind");
+		let (settled, ()) =
+			tokio::join!(kernel.settle_reply_obligations(&mut session, &turn, &control), async {
+				tokio::time::timeout(Duration::from_secs(2), observer.cancelled())
+					.await
+					.expect("same-turn rewind must invalidate accepted result");
+				drop(obligation);
+			});
+		settled.expect("obligations settle");
+		assert_eq!(
+			current_turn(&session).expect("selected turn"),
+			handle,
+			"regression requires unchanged turn identity"
+		);
+		assert!(turn.is_turn_cancelled());
+		let mut accepted = outcome(TurnStop::Completed, "abandoned answer".to_owned(), 1, 1);
+		accepted.terminal_status = omp_journal::data::TurnStatus::Completed;
+		let outcome = kernel
+			.finish_turn(
+				&mut session,
+				handle,
+				&Str::new_static("submission"),
+				Ok(accepted),
+				&turn,
+				&control,
+			)
+			.expect("cancelled terminal settlement");
+		assert_eq!(outcome.terminal_status, omp_journal::data::TurnStatus::Cancelled);
+		let terminal = session
+			.entry(session.head().expect("terminal head"))
+			.expect("terminal entry");
+		assert_eq!(
+			serde_json::from_str::<omp_journal::data::TurnOutcome>(terminal.data.as_str())
+				.expect("typed terminal")
+				.status,
+			omp_journal::data::TurnStatus::Cancelled
+		);
 	}
 }
 

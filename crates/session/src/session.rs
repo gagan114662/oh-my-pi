@@ -12,8 +12,8 @@ use omp_journal::{
 	blob::{BlobRef, BlobStore},
 	data::{
 		Attachment, Compaction, FileMentions, Genesis, MsgAssistantEnd, MsgAssistantStart, MsgUser,
-		Patch, SkillPrompt, Stream, StreamOp, ToolCall, ToolResult, ToolUpdate, TurnReceipt,
-		TurnStart,
+		Patch, SkillPrompt, Stream, StreamOp, ToolCall, ToolResult, ToolUpdate, TurnOutcome,
+		TurnReceipt, TurnStart, TurnStatus,
 	},
 };
 use omp_tool::{Abort, CallOutcome, Part as ToolPart};
@@ -97,6 +97,12 @@ pub enum SessionError {
 	/// A turn-scoped write was attempted outside an explicit turn.
 	#[error("turn-scoped entry requires an active turn")]
 	NoActiveTurn,
+	/// Terminal settlement no longer refers to the selected turn after rewind.
+	#[error("terminal outcome refers to a turn outside the selected lifecycle")]
+	TurnChanged,
+	/// One selected turn cannot acquire conflicting terminal outcomes.
+	#[error("turn already has a different terminal outcome")]
+	ConflictingTurnOutcome,
 	/// An assistant completion was attempted before an assistant start.
 	#[error("assistant completion requires an active assistant message")]
 	NoActiveAssistant,
@@ -925,6 +931,51 @@ impl Session {
 	pub fn receipt(&mut self, receipt: TurnReceipt) -> Result<EntryId, SessionError> {
 		let by = self.turn_cause()?;
 		self.commit(KindName::TurnReceipt, Some(by), None, None, &receipt)
+	}
+
+	/// Commits one durable terminal outcome for the selected turn. Repeating the
+	/// same outcome is idempotent; a conflicting outcome requires a rewind that
+	/// abandons the old outcome. This never creates a success for an abandoned
+	/// turn.
+	pub fn finish_turn(
+		&mut self,
+		turn: Handle,
+		status: TurnStatus,
+	) -> Result<EntryId, SessionError> {
+		if self.current_turn_handle()? != turn {
+			return Err(SessionError::TurnChanged);
+		}
+		let by = self.turn_cause()?;
+		let head = self.head.ok_or(SessionError::NoActiveTurn)?;
+		let mut index = *self
+			.entry_index
+			.get(&head)
+			.ok_or(SessionError::UnknownEntry { id: head })?;
+		// Inspect only this turn's selected tail; older turns cannot contain its
+		// terminal record. This adds no full-history allocation at every yield.
+		loop {
+			let entry = &self.entries[index];
+			if entry.id == by {
+				break;
+			}
+			if entry.kind == Kind::known(KindName::TurnOutcome) && entry.by == Some(by) {
+				let existing: TurnOutcome = serde_json::from_str(entry.data.as_str())?;
+				return if existing.status == status {
+					Ok(entry.id)
+				} else {
+					Err(SessionError::ConflictingTurnOutcome)
+				};
+			}
+			index = if let Some(prior) = entry.prior {
+				*self
+					.entry_index
+					.get(&prior)
+					.ok_or(SessionError::UnknownEntry { id: prior })?
+			} else {
+				index.checked_sub(1).ok_or(SessionError::TurnChanged)?
+			};
+		}
+		self.commit(KindName::TurnOutcome, Some(by), None, None, &TurnOutcome { status })
 	}
 
 	/// Journals and applies a caller-built DOM transaction.

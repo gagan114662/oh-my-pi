@@ -320,6 +320,7 @@ async fn journal_idle_watchdog_cancels_a_hung_tool_and_records_its_reason() {
 			.iter()
 			.any(|entry| entry.data.contains("idle watchdog"))
 	);
+	assert_cancelled_terminal(&path);
 }
 
 struct WhitespaceInference;
@@ -382,6 +383,7 @@ async fn endless_whitespace_deltas_cannot_keep_the_idle_watchdog_alive() {
 			.iter()
 			.any(|entry| entry.data.contains("idle watchdog"))
 	);
+	assert_cancelled_terminal(&path);
 }
 
 struct NeverSettlingMutation {
@@ -478,4 +480,26 @@ async fn idle_watchdog_retains_foreground_dispatch_until_uncertainty_is_durable_
 	assert_eq!(terminals.len(), 1);
 	assert!(terminals[0].data.contains("effects_unknown"));
 	assert_eq!(notices(&session, "turn-limit").len(), 1);
+	assert_cancelled_terminal(&path);
+}
+
+fn assert_cancelled_terminal(path: &std::path::Path) {
+	let entries = journal_entries(path);
+	let starts: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == "turn.start")
+		.collect();
+	let terminals: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == "turn.outcome")
+		.collect();
+	assert_eq!(starts.len(), 1);
+	assert_eq!(terminals.len(), 1, "one accepted watchdog cancellation gets one terminal");
+	assert_eq!(terminals[0].by, Some(starts[0].id));
+	assert_eq!(
+		serde_json::from_str::<omp_journal::data::TurnOutcome>(terminals[0].data.as_str())
+			.unwrap()
+			.status,
+		omp_journal::data::TurnStatus::Cancelled
+	);
 }

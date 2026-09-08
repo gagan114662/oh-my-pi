@@ -699,7 +699,7 @@ async fn pre_admission_hang_is_bounded_without_inventing_an_accepted_turn() {
 		assert!(
 			!journal_entries(&path)
 				.iter()
-				.any(|entry| entry.kind.name == "turn.start")
+				.any(|entry| entry.kind.name == "turn.start" || entry.kind.name == "turn.outcome")
 		);
 	}
 }
@@ -766,5 +766,16 @@ async fn idle_watchdog_preserves_actual_tool_terminal_when_result_hook_never_ans
 		entries
 			.iter()
 			.any(|entry| entry.data.contains("idle watchdog"))
+	);
+	let outcome_entries: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == "turn.outcome")
+		.collect();
+	assert_eq!(outcome_entries.len(), 1);
+	assert_eq!(
+		serde_json::from_str::<omp_journal::data::TurnOutcome>(outcome_entries[0].data.as_str())
+			.unwrap()
+			.status,
+		omp_journal::data::TurnStatus::Cancelled
 	);
 }
