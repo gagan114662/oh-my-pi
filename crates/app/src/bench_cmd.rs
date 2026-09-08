@@ -243,7 +243,10 @@ struct BenchReport {
 
 /// Executes one bounded benchmark runner through production credentials,
 /// routing, retries, and final accounting receipts.
-pub async fn run(args: BenchArgs) -> miette::Result<()> {
+pub async fn run(mut args: BenchArgs) -> miette::Result<()> {
+	if let Some(command) = args.command.take() {
+		return crate::bench_harness_cmd::run(command).await;
+	}
 	let config = BenchConfig::resolve(&args)?;
 	let data_dir = omp_core::dirs::data_dir(args.data_dir).into_diagnostic()?;
 	let store = omp_driver::registry::open_credential_store(data_dir.join("credentials.db"))
@@ -251,7 +254,11 @@ pub async fn run(args: BenchArgs) -> miette::Result<()> {
 	let registry = omp_driver::registry::production_registry(&data_dir, store)
 		.await
 		.into_diagnostic()?;
-	let model = ModelKey::from(args.model);
+	let model = ModelKey::from(
+		args
+			.model
+			.ok_or_else(|| miette!("bench requires a model or subcommand"))?,
+	);
 	let batch_nonce = cli::turn_id();
 	let challenges = (0..config.runs)
 		.map(|run| config.challenge(run, &batch_nonce))
@@ -497,7 +504,8 @@ mod tests {
 
 	fn args(profile: BenchProfile) -> BenchArgs {
 		BenchArgs {
-			model: Str::new_static("provider/model"),
+			command: None,
+			model: Some(Str::new_static("provider/model")),
 			data_dir: None,
 			runs: None,
 			max_tokens: None,

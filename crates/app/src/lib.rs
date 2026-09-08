@@ -9,6 +9,7 @@ pub mod auth_broker_cmd;
 pub mod auth_cli;
 pub mod auth_gateway_cmd;
 pub mod bench_cmd;
+mod bench_harness_cmd;
 pub mod browser_relay_cmd;
 pub mod chat_cmd;
 /// Session-owning controller behind `omp chat`.
