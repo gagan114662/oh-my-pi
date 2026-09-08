@@ -789,7 +789,10 @@ impl RouteComposer for ProductionRouteComposer {
 			auth: AuthLeaseLayer::new(leases),
 			retry: TransportRetryLayer::new(retry.max_attempts().saturating_sub(1))
 				.with_backoff(retry.backoff()),
-			rate: RateLayer::new(PoolRateLimiter { pool: self.dependencies.accounts.clone() }),
+			rate: RateLayer::new(PoolRateLimiter {
+				pool:    self.dependencies.accounts.clone(),
+				breaker: retry.breaker_policy(),
+			}),
 			encode: EncodeLayer::new(encoder, false),
 			credential_apply: CredentialApplyLayer::new(RouteCredentialApplier {
 				auth:     auth_specs.into_iter().map(|(_, auth)| auth).collect(),
@@ -2454,7 +2457,19 @@ impl CredentialApplier<RouteAccount, Option<CredentialLease>> for RouteCredentia
 
 #[derive(Clone)]
 struct PoolRateLimiter {
-	pool: AccountPool,
+	pool:    AccountPool,
+	breaker: crate::account::BreakerPolicy,
+}
+
+/// Whether an attempt's failure says nothing about the credential or the
+/// request and the same route would be retried: the breaker's signal.
+fn is_transient(error: &Error) -> bool {
+	error.phase != ErrorPhase::Admission
+		&& !error.committed
+		&& matches!(
+			error.action,
+			RetryAction::SameRoute { .. } | RetryAction::SameRouteLimited { .. }
+		)
 }
 
 impl<R> RateLimiter<R> for PoolRateLimiter {
@@ -2471,11 +2486,23 @@ impl<R> RateLimiter<R> for PoolRateLimiter {
 			else {
 				return Ok(());
 			};
-			match self
-				.pool
-				.rate_state(&account)
-				.availability(SystemTime::now())
+			let now = SystemTime::now();
+			// The breaker is consulted before the provider's own rate windows: an
+			// open breaker means the endpoint, not this account's quota, is down.
+			if let crate::account::BreakerAdmission::Open { until } =
+				self.pool.breaker_admission(&account, now, &self.breaker)
 			{
+				return Err(
+					Error::new(
+						ErrorKind::ResourceExhausted,
+						ErrorPhase::Admission,
+						RetryAction::SameRoute { after: until.duration_since(now).unwrap_or_default() },
+						context.receipt(),
+					)
+					.code(Str::new_static("breaker-open")),
+				);
+			}
+			match self.pool.rate_state(&account).availability(now) {
 				RateAvailability::Available => Ok(()),
 				RateAvailability::Delayed { until } => Err(Error::new(
 					ErrorKind::RateLimited,
@@ -2494,6 +2521,32 @@ impl<R> RateLimiter<R> for PoolRateLimiter {
 			}
 		});
 		ready(result)
+	}
+
+	fn observe(&self, context: &ExecutionContext, outcome: Result<(), &Error>) {
+		let Some(account) = context
+			.account_routing()
+			.and_then(|routing| routing.account)
+		else {
+			return;
+		};
+		match outcome {
+			Ok(()) => self.pool.record_success(&account),
+			Err(error) if is_transient(error) => {
+				if let Some(until) =
+					self
+						.pool
+						.record_transient_failure(account.clone(), SystemTime::now(), &self.breaker)
+				{
+					tracing::warn!(
+						account = %account,
+						until = ?until,
+						"provider breaker open: consecutive transient failures; attempts on this account wait"
+					);
+				}
+			},
+			Err(_) => {},
+		}
 	}
 }
 

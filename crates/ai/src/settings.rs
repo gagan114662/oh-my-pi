@@ -100,6 +100,15 @@ pub struct RetrySettings {
 	pub fallback_revert:      FallbackRevertPolicy,
 	/// Enables the explicit Anthropic server-side safety fallback header.
 	pub server_side_fallback: bool,
+	/// Consecutive transient failures on one account that open its breaker;
+	/// zero disables the breaker (#119).
+	pub breaker_failures:     u32,
+	/// First breaker window in milliseconds.
+	pub breaker_base_ms:      u64,
+	/// Largest breaker window in milliseconds; windows double up to it while
+	/// probes keep failing. Kept within `max_delay_ms` so the retry ladder
+	/// accepts the wait.
+	pub breaker_max_ms:       u64,
 }
 
 impl Default for RetrySettings {
@@ -116,6 +125,9 @@ impl Default for RetrySettings {
 			fallback_chains:      BTreeMap::new(),
 			fallback_revert:      FallbackRevertPolicy::CooldownExpiry,
 			server_side_fallback: false,
+			breaker_failures:     5,
+			breaker_base_ms:      30_000,
+			breaker_max_ms:       300_000,
 		}
 	}
 }
@@ -236,6 +248,20 @@ impl RetrySettings {
 			fallback_chains:      deserialize_table(AI_RETRY_FALLBACK_CHAINS.get(ctx)),
 			fallback_revert:      AI_RETRY_FALLBACK_REVERT.get(ctx),
 			server_side_fallback: AI_RETRY_SERVER_SIDE_FALLBACK.get(ctx),
+			breaker_failures:     AI_RETRY_BREAKER_FAILURES.get(ctx),
+			breaker_base_ms:      u64::from(AI_RETRY_BREAKER_BASE_MS.get(ctx)),
+			breaker_max_ms:       u64::from(AI_RETRY_BREAKER_MAX_MS.get(ctx)),
+		}
+	}
+
+	/// The per-account breaker thresholds.
+	#[must_use]
+	pub fn breaker_policy(&self) -> crate::account::BreakerPolicy {
+		crate::account::BreakerPolicy {
+			failures:    self.breaker_failures,
+			base:        Duration::from_millis(self.breaker_base_ms),
+			max:         Duration::from_millis(self.breaker_max_ms.max(self.breaker_base_ms)),
+			probe_grace: Duration::from_secs(5),
 		}
 	}
 
@@ -764,6 +790,45 @@ omp_con::var! {
 		},
 	};
 	/// Maximum retry attempts on API errors
+	/// Consecutive transient failures on one account that open its breaker; 0 disables it.
+	pub static AI_RETRY_BREAKER_FAILURES = ai_retry_breaker_failures: u32 {
+		default: 5,
+		min: 0,
+		max: 100,
+		flags: archive,
+		meta: {
+			"ui.tab": "model",
+			"ui.group": "Retry & Fallback",
+			"ui.label": "Breaker Failures",
+			"legacy.path": "retry.breakerFailures",
+		},
+	};
+	/// First breaker window in milliseconds.
+	pub static AI_RETRY_BREAKER_BASE_MS = ai_retry_breaker_base_ms: u32 {
+		default: 30_000,
+		min: 1_000,
+		max: 3_600_000,
+		flags: archive,
+		meta: {
+			"ui.tab": "model",
+			"ui.group": "Retry & Fallback",
+			"ui.label": "Breaker Window (ms)",
+			"legacy.path": "retry.breakerBaseMs",
+		},
+	};
+	/// Largest breaker window in milliseconds.
+	pub static AI_RETRY_BREAKER_MAX_MS = ai_retry_breaker_max_ms: u32 {
+		default: 300_000,
+		min: 1_000,
+		max: 3_600_000,
+		flags: archive,
+		meta: {
+			"ui.tab": "model",
+			"ui.group": "Retry & Fallback",
+			"ui.label": "Breaker Max Window (ms)",
+			"legacy.path": "retry.breakerMaxMs",
+		},
+	};
 	pub static AI_RETRY_MAX_RETRIES = ai_retry_max_retries: u32 {
 		default: 10,
 		min: 0,

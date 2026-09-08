@@ -22,6 +22,10 @@ pub trait RateLimiter<R>: Clone + Send + 'static {
 	/// Waits for capacity; implementations must be cancellation-aware through
 	/// the execution context.
 	fn reserve<'a>(&'a self, request: &'a R, context: &'a ExecutionContext) -> Self::Future<'a>;
+
+	/// Observes how the reserved attempt ended, so a limiter can adapt
+	/// (breakers, adaptive windows). Default: ignore.
+	fn observe(&self, _context: &ExecutionContext, _outcome: Result<(), &Error>) {}
 }
 
 /// Adds rate reservation.
@@ -71,7 +75,10 @@ where
 			request.context.checkpoint(ErrorPhase::Readiness)?;
 			limiter.reserve(&request.payload, &request.context).await?;
 			request.context.checkpoint(ErrorPhase::Readiness)?;
-			ready_inner.call(request).await
+			let context = request.context.clone();
+			let outcome = ready_inner.call(request).await;
+			limiter.observe(&context, outcome.as_ref().map(|_| ()));
+			outcome
 		}
 	}
 }

@@ -325,6 +325,8 @@ struct PoolState {
 	rejections:      BTreeMap<AccountId, Rejection>,
 	rate:            BTreeMap<AccountId, RateState>,
 	quota:           BTreeMap<AccountId, QuotaState>,
+	/// Process-local transient-failure breakers (#119).
+	breakers:        BTreeMap<AccountId, super::breaker::Breaker>,
 	quota_reserve:   QuotaReservePolicy,
 	affinities:      BTreeMap<AffinityScope, AccountAffinity>,
 }
@@ -689,6 +691,44 @@ impl AccountPool {
 			provenance: QuotaProvenance::Error,
 			observed_at,
 		})
+	}
+
+	/// Whether an attempt on `account` may start now under the breaker.
+	pub fn breaker_admission(
+		&self,
+		account: &AccountId<str>,
+		now: SystemTime,
+		policy: &super::breaker::BreakerPolicy,
+	) -> super::breaker::Admission {
+		let mut state = self.state.write();
+		let Some(breaker) = state.breakers.get_mut(account) else {
+			return super::breaker::Admission::Closed;
+		};
+		breaker.admission(now, policy)
+	}
+
+	/// Records a transient failure on `account`; returns the window end when
+	/// the breaker opened.
+	pub fn record_transient_failure(
+		&self,
+		account: AccountId,
+		now: SystemTime,
+		policy: &super::breaker::BreakerPolicy,
+	) -> Option<SystemTime> {
+		self
+			.state
+			.write()
+			.breakers
+			.entry(account)
+			.or_default()
+			.record_failure(now, policy)
+	}
+
+	/// Records a successful attempt on `account`: its breaker closes.
+	pub fn record_success(&self, account: &AccountId<str>) {
+		if let Some(breaker) = self.state.write().breakers.get_mut(account) {
+			breaker.record_success();
+		}
 	}
 
 	/// Returns an independent rate-state snapshot.

@@ -1,5 +1,6 @@
 //! Account identity, selection, throttling, quota, and refresh coordination.
 
+mod breaker;
 mod pool;
 mod quota;
 mod rate;
@@ -8,6 +9,7 @@ mod store;
 
 use std::time::SystemTime;
 
+pub use breaker::{Admission as BreakerAdmission, Breaker, BreakerPolicy};
 pub use pool::{
 	AccountPool, AccountPoolError, AccountPoolEvent, AccountRecord, AccountRegistrationError,
 	AccountSelection, AccountSelectionRequest, CandidateEvidence, CooldownReason, Eligibility,
