@@ -1,7 +1,7 @@
 {
   "model": "docs/adr/0034/ElasticSlots.tla",
   "model_sha256": "54a6c37ca406b53d6d51a2eba3007d77903600fa16142a331819694c573e55d6",
-  "tlc_sha256": "b658b4e504fdf0b721caf7066320f6b6fe5805f4dd2f717d0e47baba4097205e",
+  "tlc_sha256": "4c7bb1f6b050d56c197ee9ddd6e57fe521eae175f5043c9fb98b169f7b2d5407",
   "scope": "Wide unwrapped rows; admitted blocks; mutable FIFO and append-only prefix; no resize/failure refinement claim",
   "cases": [
     {

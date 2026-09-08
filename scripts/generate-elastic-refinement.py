@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = ROOT / 'docs/adr/0034/ElasticSlots.tla'
-JAR_SHA = 'b658b4e504fdf0b721caf7066320f6b6fe5805f4dd2f717d0e47baba4097205e'
+JAR_SHA = '4c7bb1f6b050d56c197ee9ddd6e57fe521eae175f5043c9fb98b169f7b2d5407'
 # Schedules select ORIGINAL model actions. Expected states come only from TLC.
 SCENARIOS = {
  'mutable_fifo': {'height': 2, 'blocks': 2, 'actions': [
