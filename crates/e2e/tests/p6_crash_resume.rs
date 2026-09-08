@@ -10,14 +10,20 @@ use std::{
 	os::{fd, unix::net::UnixStream},
 	path::Path,
 	pin::Pin,
-	sync::Arc,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
 	task::{Context, Poll},
+	thread,
 	time::{Duration, Instant},
 };
 
 use flume::{Receiver, Sender};
 use futures::StreamExt as _;
 use nix::{
+	errno::Errno,
+	fcntl::{FcntlArg, OFlag, fcntl},
 	pty::{Winsize, openpty},
 	sys::signal,
 	unistd::{Pid, ttyname},
@@ -189,9 +195,57 @@ impl CrashGateway {
 	}
 }
 
+struct PtyDrain {
+	stop:   Arc<AtomicBool>,
+	reader: Option<thread::JoinHandle<Result<usize, Errno>>>,
+}
+
+impl PtyDrain {
+	fn start(master: fd::OwnedFd) -> Self {
+		fcntl(&master, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).expect("nonblocking crash PTY");
+		let stop = Arc::new(AtomicBool::new(false));
+		let reader_stop = Arc::clone(&stop);
+		let reader = thread::spawn(move || {
+			let mut buffer = [0_u8; 16 * 1024];
+			let mut bytes = 0;
+			while !reader_stop.load(Ordering::Acquire) {
+				match nix::unistd::read(&master, &mut buffer) {
+					Ok(0) | Err(Errno::EAGAIN) => thread::sleep(Duration::from_millis(5)),
+					Ok(count) => bytes += count,
+					Err(Errno::EINTR) => {},
+					Err(Errno::EIO) => break,
+					Err(error) => return Err(error),
+				}
+			}
+			Ok(bytes)
+		});
+		Self { stop, reader: Some(reader) }
+	}
+
+	fn finish(&mut self) -> usize {
+		self.stop.store(true, Ordering::Release);
+		self
+			.reader
+			.take()
+			.expect("PTY reader owned")
+			.join()
+			.expect("PTY reader joins")
+			.expect("PTY output read succeeds")
+	}
+}
+
+impl Drop for PtyDrain {
+	fn drop(&mut self) {
+		self.stop.store(true, Ordering::Release);
+		if let Some(reader) = self.reader.take() {
+			let _ = reader.join();
+		}
+	}
+}
+
 struct ChatProcess {
 	process: OwnedProcess,
-	_master: fd::OwnedFd,
+	drain:   PtyDrain,
 	_slave:  fd::OwnedFd,
 }
 
@@ -209,6 +263,9 @@ fn spawn_chat(
 	let window = Winsize { ws_row: 40, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0 };
 	let pty = openpty(Some(&window), None).expect("open chat PTY");
 	let device = ttyname(&pty.slave).expect("PTY slave path");
+	// A real terminal consumes rendered bytes. Leaving this unread can fill
+	// the PTY and block repaint, including the debug frame response.
+	let drain = PtyDrain::start(pty.master);
 	let mut command = Command::new(binary);
 	command
 		.arg("chat")
@@ -244,7 +301,7 @@ fn spawn_chat(
 		.env("OMP_TTY", &device)
 		.env("OMP_TUI_DEBUG", debug);
 	let process = OwnedProcess::spawn(command).expect("spawn real OMP chat");
-	ChatProcess { process, _master: pty.master, _slave: pty.slave }
+	ChatProcess { process, drain, _slave: pty.slave }
 }
 
 fn debug_request(path: &Path, request: &Value) -> Result<Value, String> {
@@ -350,6 +407,7 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 		.expect("reap crashed OMP");
 	use std::os::unix::process::ExitStatusExt as _;
 	assert_eq!(status.signal(), Some(libc::SIGKILL), "OMP was not killed by SIGKILL");
+	println!("crashed terminal drained {} bytes", crashed.drain.finish());
 	gateway
 		.release
 		.send(())
@@ -383,6 +441,7 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 		.await
 		.expect("resumed OMP exits");
 	assert!(status.success(), "resumed OMP did not exit cleanly: {status}");
+	println!("resumed terminal drained {} bytes", resumed.drain.finish());
 }
 
 #[test]
