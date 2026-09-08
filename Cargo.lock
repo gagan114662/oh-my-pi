@@ -7753,6 +7753,7 @@ dependencies = [
  "tonic-health",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "url",
  "windows-sys 0.61.2",
  "xutf",
@@ -8182,6 +8183,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -8377,8 +8379,11 @@ dependencies = [
 name = "omp-http"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "reqwest 0.13.4",
  "rustls",
+ "thiserror 2.0.20",
+ "tokio",
  "tracing",
 ]
 
@@ -8925,6 +8930,7 @@ dependencies = [
  "libc",
  "parking_lot",
  "rayon",
+ "tempfile",
  "thiserror 2.0.20",
  "tracing",
  "windows-sys 0.61.2",

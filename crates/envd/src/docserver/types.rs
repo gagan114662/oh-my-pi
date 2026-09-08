@@ -677,8 +677,6 @@ impl ServerConfig {
 
 	/// Acquires process authority on the opened project directory.
 	pub fn try_lock_authority(&self) -> Result<AuthorityLock> {
-		use cap_std::fs;
-
 		if self
 			.authority_held
 			.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -694,15 +692,11 @@ impl ServerConfig {
 			});
 		}
 		let result = (|| {
-			let root = self
-				.root
-				.try_clone()
-				.map(fs::Dir::into_std_file)
-				.map_err(|source| Error::Io {
-					operation: sf!("clone Environment authority handle"),
-					path: self.environment_root.clone(),
-					source,
-				})?;
+			let root = super::fs::open_directory_for_io(&self.root).map_err(|source| Error::Io {
+				operation: sf!("open Environment authority handle"),
+				path: self.environment_root.clone(),
+				source,
+			})?;
 			root.try_lock().map_err(|source| Error::Io {
 				operation: sf!("lock Environment authority"),
 				path:      self.environment_root.clone(),
@@ -939,6 +933,36 @@ mod tests {
 		assert!(config.try_lock_authority().is_err());
 		drop(lock);
 		let _reacquired_authority = config.try_lock_authority().expect("released authority");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn authority_acquisition_ignores_replaced_root_path() {
+		use std::os::unix::fs::symlink;
+
+		let parent = TempDir::new().expect("temporary directory");
+		let original = parent.path().join("original");
+		let moved = parent.path().join("moved");
+		let other = parent.path().join("other");
+		fs::create_dir(&original).expect("create original");
+		fs::create_dir(&other).expect("create other");
+		let config = ServerConfig::new(&original).expect("original config");
+		fs::rename(&original, &moved).expect("move before acquisition");
+		symlink(&other, &original).expect("replace original path with symlink");
+
+		let lock = config
+			.try_lock_authority()
+			.expect("lock retained directory");
+		let moved_config = ServerConfig::new(&moved).expect("moved config");
+		assert!(moved_config.try_lock_authority().is_err());
+		let other_config = ServerConfig::new(&other).expect("other config");
+		let _other_lock = other_config
+			.try_lock_authority()
+			.expect("other directory stays independent");
+		drop(lock);
+		let _moved_lock = moved_config
+			.try_lock_authority()
+			.expect("retained directory released");
 	}
 
 	#[cfg(unix)]

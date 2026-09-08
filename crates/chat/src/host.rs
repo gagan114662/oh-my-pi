@@ -1886,6 +1886,10 @@ impl Presenter {
 	/// [`Self::route_chord`] so a physical release and exact modifiers
 	/// survive through the command stream.
 	fn route_key(&mut self, key: Key) -> Result<Routed, HostError> {
+		self.route_key_at(key, self.clock.elapsed())
+	}
+
+	fn route_key_at(&mut self, key: Key, now: Duration) -> Result<Routed, HostError> {
 		if self.overlays.approval().is_some() {
 			return self.route_approval_key(key);
 		}
@@ -1895,10 +1899,10 @@ impl Presenter {
 		if matches!(key, Key::Ctrl('c') | Key::Copy | Key::FollowUp)
 			&& matches!(self.overlays.active(), Some(Overlay::History(_)))
 		{
-			return self.route_unbound_key(key);
+			return self.route_unbound_key_at(key, now);
 		}
 		if key == Key::Esc && self.ask_open.is_some() {
-			return self.route_unbound_key(key);
+			return self.route_unbound_key_at(key, now);
 		}
 		if let Some(chord) = crate::input::chord(key)
 			&& self.con.bound(chord.as_str()).is_some()
@@ -1910,7 +1914,7 @@ impl Presenter {
 		if key == Key::Ctrl('c') {
 			return self.act(HostAction::Clear);
 		}
-		self.route_unbound_key(key)
+		self.route_unbound_key_at(key, now)
 	}
 
 	/// Routes one exact physical edge through the live con bind table.
@@ -1973,6 +1977,10 @@ impl Presenter {
 	/// Routes a key after bind lookup. Bound editor commands re-enter here,
 	/// allowing one command to drive composers, pickers, and panels.
 	fn route_unbound_key(&mut self, key: Key) -> Result<Routed, HostError> {
+		self.route_unbound_key_at(key, self.clock.elapsed())
+	}
+
+	fn route_unbound_key_at(&mut self, key: Key, now: Duration) -> Result<Routed, HostError> {
 		let had_notice = self.overlays.notice().is_some();
 		self.overlays.clear_notice();
 		if key == Key::Ctrl('c') && self.ask_open.is_some() {
@@ -2011,7 +2019,7 @@ impl Presenter {
 				return self.apply_panel_event(event);
 			}
 		}
-		if let Some(routed) = self.gesture(key)? {
+		if let Some(routed) = self.gesture(key, now)? {
 			return Ok(routed);
 		}
 		let routed = self.composer_key(key)?;
@@ -2169,8 +2177,7 @@ impl Presenter {
 	/// Composer-bound gestures that run before the editor sees the key:
 	/// the space-hold push-to-talk cadence and the double-Left subagent
 	/// unfocus. `None` hands the key on.
-	fn gesture(&mut self, key: Key) -> Result<Option<Routed>, HostError> {
-		let now = self.clock.elapsed();
+	fn gesture(&mut self, key: Key, now: Duration) -> Result<Option<Routed>, HostError> {
 		let enabled = CL_STT_HOLD.get(&self.con) && !self.composer.popup_open();
 		match self.space_hold.observe(key, now, enabled) {
 			SpaceHoldEvent::Pass => {},
@@ -4751,6 +4758,17 @@ impl NativeHost {
 
 	/// Applies queued controller events, returning whether a repaint is needed.
 	pub fn poll(&mut self) -> Result<NativeEffect, HostError> {
+		self.poll_inner(None)
+	}
+
+	/// Applies queued controller events and native deadlines at a presentation
+	/// timestamp relative to [`Self::clock`]. Replay callers supply monotonic
+	/// times.
+	pub fn poll_at(&mut self, now: Duration) -> Result<NativeEffect, HostError> {
+		self.poll_inner(Some(now))
+	}
+
+	fn poll_inner(&mut self, timestamp: Option<Duration>) -> Result<NativeEffect, HostError> {
 		let mut changed = false;
 		while let Ok(event) = self.presenter.dom_events.try_recv() {
 			self.presenter.apply_dom_event(&event)?;
@@ -4776,7 +4794,7 @@ impl NativeHost {
 			self.presenter.local.set_git(&git);
 			changed |= self.presenter.sync_status();
 		}
-		let now = self.presenter.clock.elapsed();
+		let now = timestamp.unwrap_or_else(|| self.presenter.clock.elapsed());
 		changed |= self.presenter.composer.tick(now);
 		// Retry animation and the retained wall-clock label advance only at
 		// their shared earliest deadline.
@@ -4873,7 +4891,14 @@ impl NativeHost {
 
 	/// Routes one real native key through the chat input path.
 	pub fn key(&mut self, key: Key) -> Result<NativeEffect, HostError> {
-		let routed = self.presenter.route_key(key)?;
+		self.key_at(key, self.presenter.clock.elapsed())
+	}
+
+	/// Routes a semantic key with its unbound gesture timestamp relative to
+	/// [`Self::clock`]. Replay callers supply monotonic times, as for
+	/// [`Self::poll_at`].
+	pub fn key_at(&mut self, key: Key, now: Duration) -> Result<NativeEffect, HostError> {
+		let routed = self.presenter.route_key_at(key, now)?;
 		Ok(self.finish_native_input(routed))
 	}
 

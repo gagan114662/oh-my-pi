@@ -26,7 +26,7 @@ pub enum CallbackAbi {
 /// One canonical public runtime symbol and its enforcement metadata.
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeSymbolSpec {
-	/// Documentation file that owns the public symbol definition.
+	/// Documentation or source file that owns the public symbol definition.
 	pub owner:        &'static str,
 	/// Publisher-visible, fully qualified symbol name.
 	pub public_name:  &'static str,
@@ -81,6 +81,21 @@ const OPEN_METERED: OperationSpec = OperationSpec {
 	durability:    Durability::Ephemeral,
 	cost:          CostClass::Metered,
 	authority:     Authority::Core,
+};
+// Declared context CONTROL contract (docs/py/08-context.md): pins and
+// compaction are durable before DATA authorization. This table does not wire
+// an owner; the production router's context domain is still missing.
+const DECLARED_CONTEXT_CONTROL: OperationSpec = OperationSpec {
+	minimum_phase: InvocationPhase::Open,
+	durability:    Durability::Durable,
+	cost:          CostClass::Metered,
+	authority:     Authority::Core,
+};
+const OPEN_ENV: OperationSpec = OperationSpec {
+	minimum_phase: InvocationPhase::Open,
+	durability:    Durability::Ephemeral,
+	cost:          CostClass::Metered,
+	authority:     Authority::Environment,
 };
 const CORE_EFFECT: OperationSpec = OperationSpec {
 	minimum_phase: InvocationPhase::EffectsAuthorized,
@@ -739,14 +754,6 @@ pub static RUNTIME_SYMBOLS: &[RuntimeSymbolSpec] = &[
 	),
 	symbol!(
 		"docs/py/12-agents.md",
-		"omp.env.workspace.snapshot",
-		"(*, root=None) -> WorkspaceSnapshot",
-		CallbackAbi::None,
-		ENV_WRITE,
-		"await omp.env.workspace.snapshot()"
-	),
-	symbol!(
-		"docs/py/12-agents.md",
 		"omp.agents.abort",
 		"() -> None",
 		CallbackAbi::None,
@@ -1200,6 +1207,406 @@ pub static RUNTIME_SYMBOLS: &[RuntimeSymbolSpec] = &[
 		CallbackAbi::PayloadContext,
 		OPEN_LOCAL,
 		"@omp.renderer(\"tool\")\ndef render(view, ctx): return None"
+	),
+	// Runtime CONTROL and DATA arms. Owners above define signatures and semantics.
+	symbol!(
+		"docs/py/08-context.md",
+		"omp.context.MessageRef.parts",
+		"() -> list[Part]",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await message.parts()",
+		Some("omp.context.message.parts")
+	),
+	symbol!(
+		"docs/py/08-context.md",
+		"omp.context.MessageRef.verdict",
+		"() -> Payload | Fault",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await message.verdict()",
+		Some("omp.context.message.verdict")
+	),
+	symbol!(
+		"docs/py/08-context.md",
+		"omp.context.MessageRef.raw_args",
+		"() -> bytes | None",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await message.raw_args()",
+		Some("omp.context.message.raw_args")
+	),
+	symbol!(
+		"docs/py/08-context.md",
+		"omp.context.view",
+		"() -> ContextView",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await omp.context.view()"
+	),
+	symbol!(
+		"docs/py/08-context.md",
+		"omp.context.usage",
+		"() -> ContextUsage",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await omp.context.usage()"
+	),
+	symbol!(
+		"docs/py/08-context.md",
+		"omp.context.epoch",
+		"() -> int",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await omp.context.epoch()"
+	),
+	symbol!(
+		"docs/py/08-context.md",
+		"omp.context.pin",
+		"(ids: Iterable[str], *, reason: str) -> int",
+		CallbackAbi::None,
+		DECLARED_CONTEXT_CONTROL,
+		"await omp.context.pin([message.id], reason=\"keep evidence\")"
+	),
+	symbol!(
+		"docs/py/08-context.md",
+		"omp.context.unpin",
+		"(ids: Iterable[str]) -> int",
+		CallbackAbi::None,
+		DECLARED_CONTEXT_CONTROL,
+		"await omp.context.unpin([message.id])"
+	),
+	symbol!(
+		"docs/py/08-context.md",
+		"omp.context.compact",
+		"(*, tier=None, focus=\"\") -> CompactionOutcome",
+		CallbackAbi::None,
+		DECLARED_CONTEXT_CONTROL,
+		"await omp.context.compact(focus=\"retain decisions\")"
+	),
+	symbol!(
+		"docs/py/08-context.md",
+		"omp.prompts.invalidate",
+		"(slot: str) -> int",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await omp.prompts.invalidate(\"memory\")"
+	),
+	symbol!(
+		"crates/py/python/omp/convars.py",
+		"omp.convars.declare",
+		"(key: str, *, kind: str, default: object, description=None, values=(), ui=None) -> Snapshot",
+		CallbackAbi::None,
+		OPEN_LOCAL,
+		"await omp.convars.declare(\"enabled\", kind=\"bool\", default=True)"
+	),
+	symbol!(
+		"crates/py/python/omp/convars.py",
+		"omp.convars.get",
+		"(name: str) -> Snapshot",
+		CallbackAbi::None,
+		OPEN_LOCAL,
+		"await omp.convars.get(\"sv_interrupt_grace\")"
+	),
+	symbol!(
+		"crates/py/python/omp/convars.py",
+		"omp.convars.observe",
+		"(name: str) -> Observation",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"async for change in omp.convars.observe(\"sv_interrupt_grace\"): print(change.value)"
+	),
+	symbol!(
+		"crates/py/python/omp/devices.py",
+		"omp.devices.DynamicDeviceParent.mount_many",
+		"(*specs: MountSpec) -> tuple[str, ...]",
+		CallbackAbi::None,
+		CORE_EFFECT,
+		"await parent.mount_many(spec)",
+		Some("omp.devices.dynamic_mount")
+	),
+	symbol!(
+		"crates/py/python/omp/devices.py",
+		"omp.devices.set_availability",
+		"(*deltas: AvailabilityDelta) -> None",
+		CallbackAbi::None,
+		CORE_EFFECT,
+		"await omp.devices.set_availability(delta)"
+	),
+	symbol!(
+		"crates/py/python/omp/devices.py",
+		"omp.devices.refresh",
+		"() -> tuple[DeviceInfo, ...]",
+		CallbackAbi::None,
+		CORE_EFFECT,
+		"await omp.devices.refresh()"
+	),
+	symbol!(
+		"crates/py/python/omp/devices.py",
+		"omp.devices.invoke",
+		"(path: str, args: Mapping[str, object], *, deadline=None) -> object",
+		CallbackAbi::None,
+		CORE_EFFECT,
+		"await omp.devices.invoke(\"search/files\", {\"pattern\": \"*.rs\"})"
+	),
+	symbol!(
+		"crates/py/python/omp/hooks.py",
+		"omp.dispatch_hook",
+		"(event: str, payload=None) -> HookDecision",
+		CallbackAbi::None,
+		CORE_EFFECT,
+		"await omp.dispatch_hook(\"before_agent_start\", payload)",
+		Some("omp.hooks.dispatch")
+	),
+	symbol!(
+		"crates/py/python/omp/mcp.py",
+		"omp.mcp.mount",
+		"(spec: McpMount) -> tuple[Device, ...]",
+		CallbackAbi::None,
+		OPEN_ENV,
+		"await omp.mcp.mount(spec)"
+	),
+	symbol!(
+		"crates/py/python/omp/mcp.py",
+		"omp.mcp.unmount",
+		"(server: str) -> None",
+		CallbackAbi::None,
+		OPEN_ENV,
+		"await omp.mcp.unmount(\"search\")"
+	),
+	symbol!(
+		"crates/py/python/omp/mcp.py",
+		"omp.mcp.servers",
+		"() -> tuple[McpServer, ...]",
+		CallbackAbi::None,
+		OPEN_ENV,
+		"await omp.mcp.servers()"
+	),
+	symbol!(
+		"crates/envd/src/mcp/control.rs",
+		"omp.mcp.invoke",
+		"(*, server: str, tool: str, arguments: object) -> object",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"control.dispatch(\"omp.mcp.invoke\", arguments).await?"
+	),
+	symbol!(
+		"docs/py/13-inference.md",
+		"omp.ProviderHandle.retract",
+		"() -> None",
+		CallbackAbi::None,
+		CORE_EFFECT,
+		"await provider.retract()",
+		Some("omp.provider.retract")
+	),
+	symbol!(
+		"docs/py/13-inference.md",
+		"omp.ProviderHandle.replace",
+		"(spec: ProviderSpec) -> None",
+		CallbackAbi::None,
+		CORE_EFFECT,
+		"await provider.replace(spec)",
+		Some("omp.provider.replace")
+	),
+	symbol!(
+		"docs/py/13-inference.md",
+		"omp.ProviderHandle.is_authenticated",
+		"() -> bool",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await provider.is_authenticated()",
+		Some("omp.provider.is_authenticated")
+	),
+	symbol!(
+		"docs/py/13-inference.md",
+		"omp.ProviderHandle.request",
+		"(operation: Operation, request) -> ImageResult | SpeechResult | TranscriptionResult | \
+		 RealtimeSession",
+		CallbackAbi::None,
+		CORE_DURABLE,
+		"await provider.request(operation, request)",
+		Some("omp.provider.request")
+	),
+	symbol!(
+		"docs/py/13-inference.md",
+		"omp.provider.models",
+		"() -> tuple[ModelCard, ...]",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await omp.provider.models()"
+	),
+	symbol!(
+		"docs/py/13-inference.md",
+		"omp.provider.watch_models",
+		"(since=None) -> WatchModels",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"async for event in omp.provider.watch_models(): print(event)"
+	),
+	symbol!(
+		"docs/py/10-telemetry.md",
+		"omp.telemetry.ExportHandle.stop",
+		"() -> None",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await export.stop()",
+		Some("omp.telemetry.export.stop")
+	),
+	symbol!(
+		"docs/py/10-telemetry.md",
+		"omp.telemetry.ExportHandle.stats",
+		"() -> ExportStats",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await export.stats()",
+		Some("omp.telemetry.export.stats")
+	),
+	symbol!(
+		"docs/py/10-telemetry.md",
+		"omp.telemetry.flush",
+		"(*, timeout=Duration(\"10s\")) -> bool",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await omp.telemetry.flush()"
+	),
+	symbol!(
+		"docs/py/10-telemetry.md",
+		"omp.telemetry.query",
+		"(q: Query) -> QueryResult",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await omp.telemetry.query(query)"
+	),
+	symbol!(
+		"docs/py/10-telemetry.md",
+		"omp.telemetry.rev_metrics",
+		"(tool: str, *, family=None, since=None, scope=Scope.PROJECT) -> tuple[RevMetrics, ...]",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await omp.telemetry.rev_metrics(\"read\")"
+	),
+	symbol!(
+		"docs/py/10-telemetry.md",
+		"omp.telemetry.Span.__aenter__",
+		"() -> Span",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await span.__aenter__()",
+		Some("omp.telemetry.span.open")
+	),
+	symbol!(
+		"docs/py/10-telemetry.md",
+		"omp.telemetry.Span.__aexit__",
+		"(exc_type, exc, traceback) -> bool",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await span.__aexit__(None, None, None)",
+		Some("omp.telemetry.span.close")
+	),
+	symbol!(
+		"docs/py/07-ui.md",
+		"omp.ui.dynamic_mount",
+		"(*specs: CommandMountSpec) -> tuple[str, ...]",
+		CallbackAbi::None,
+		OPEN_METERED,
+		"await omp.ui.dynamic_mount(command_spec)"
+	),
+	symbol!(
+		"docs/py/11-env.md",
+		"omp.env.Process.info",
+		"() -> ProcessInfo",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"await process.info()"
+	),
+	symbol!(
+		"crates/proto/proto/omp/env/v1/env.proto",
+		"omp.env.workspace.list",
+		"(request: ListWorkspaceSnapshots) -> WorkspaceSnapshotList",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"environment.list_workspace_snapshots(request).await?"
+	),
+	symbol!(
+		"crates/py/python/omp/env.py",
+		"omp.env.worktree",
+		"() -> WorktreeInfo | None",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"await omp.env.worktree()"
+	),
+	symbol!(
+		"crates/proto/proto/omp/env/v1/env.proto",
+		"omp.env.fs.privileged_mutation",
+		"(request: PrivilegedMutationIntent) -> PrivilegedMutationResult",
+		CallbackAbi::None,
+		ENV_WRITE,
+		"environment.privileged_mutation(request).await?"
+	),
+	symbol!(
+		"crates/proto/proto/omp/env/v1/env.proto",
+		"omp.env.mcp.status",
+		"(request: McpStatusRequest) -> McpStatusResult",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"environment.mcp_status(request).await?"
+	),
+	symbol!(
+		"crates/proto/proto/omp/env/v1/env.proto",
+		"omp.env.mcp.subscribe",
+		"(request: McpSubscribeRequest) -> stream[McpNotification]",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"environment.mcp_subscribe(request).await?"
+	),
+	symbol!(
+		"crates/proto/proto/omp/env/v1/env.proto",
+		"omp.env.mcp.reset",
+		"(request: McpResetRequest) -> McpResetResult",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"environment.mcp_reset(request).await?"
+	),
+	symbol!(
+		"crates/proto/proto/omp/env/v1/env.proto",
+		"omp.env.mcp.live_header",
+		"(request: McpLiveHeaderRequest) -> McpLiveHeader",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"environment.mcp_live_header(request).await?",
+		Some("omp.env.mcp.live-header")
+	),
+	symbol!(
+		"crates/proto/proto/omp/env/v1/env.proto",
+		"omp.env.mcp.resource",
+		"(request: McpResourceRequest) -> McpResourceResult",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"environment.mcp_resource(request).await?"
+	),
+	symbol!(
+		"crates/proto/proto/omp/env/v1/env.proto",
+		"omp.env.mcp.prompt",
+		"(request: McpPromptRequest) -> McpPromptResult",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"environment.mcp_prompt(request).await?"
+	),
+	symbol!(
+		"crates/proto/proto/omp/env/v1/env.proto",
+		"omp.env.mcp.invoke",
+		"(request: McpInvokeRequest) -> McpInvokeResult",
+		CallbackAbi::None,
+		ENV_EPHEMERAL,
+		"environment.mcp_invoke(request).await?"
+	),
+	symbol!(
+		"crates/proto/proto/omp/env/v1/env.proto",
+		"omp.env.mcp.config",
+		"(request: McpConfigRequest) -> McpConfigResult",
+		CallbackAbi::None,
+		ENV_WRITE,
+		"environment.mcp_config(request).await?"
 	),
 ];
 

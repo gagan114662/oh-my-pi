@@ -58,20 +58,25 @@ fn generate_docs_manifest(manifest: &Path) -> io::Result<()> {
 	let output_root = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
 	let mut paths = Vec::new();
 	collect_markdown(&docs_root, &docs_root, &mut paths)?;
-	paths.sort();
+	// Runtime lookup compares serialized names, not Path components. For
+	// example, "topic.md" sorts before "topic/page.md" as a string.
+	let mut paths = paths
+		.into_iter()
+		.map(|path| (path.to_string_lossy().replace('\\', "/"), path))
+		.collect::<Vec<_>>();
+	paths.sort_by(|left, right| left.0.cmp(&right.0));
 
 	let mut generated = String::from(
 		"/// Sorted packaged documentation entries: `(relative path, gzip bytes)`.\npub static \
 		 PACKAGED_DOCS: &[(&str, &[u8])] = &[\n",
 	);
-	for (index, relative) in paths.iter().enumerate() {
-		let source = docs_root.join(relative);
+	for (index, (relative, path)) in paths.iter().enumerate() {
+		let source = docs_root.join(path);
 		let body = fs::read(&source)?;
 		let compressed_path = output_root.join(format!("omp-doc-{index}.gz"));
 		let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
 		encoder.write_all(&body)?;
 		fs::write(&compressed_path, encoder.finish()?)?;
-		let relative = relative.to_string_lossy().replace('\\', "/");
 		let _ = writeln!(
 			generated,
 			"\t({relative:?}, include_bytes!({compressed:?})),",

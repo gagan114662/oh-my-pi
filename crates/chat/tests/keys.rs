@@ -1477,18 +1477,25 @@ fn space_hold_recognizes_a_metronomic_repeat_and_tracks_back_typed_spaces() {
 fn a_held_space_bar_starts_recording_and_release_stops_it() {
 	let mut h = harness(idle_session());
 	type_text(&mut h.host, "hi");
-	// Feed the gesture on the real clock: repeats 30ms apart.
-	for _ in 0..5 {
-		h.host.key(Key::Space).expect("space");
-		std::thread::sleep(Duration::from_millis(30));
+	// Replay the input cadence independently of runner scheduling and repaint cost.
+	let start = h.host.clock().elapsed();
+	for offset in [0, 30, 60, 90, 120] {
+		h.host
+			.key_at(Key::Space, start + Duration::from_millis(offset))
+			.expect("space");
 	}
 	assert!(h.host.recording(), "metronomic repeat begins push-to-talk");
 	assert_eq!(h.host.composer_text(), "hi", "pre-burst spaces are tracked back");
 	assert!(matches!(h.commands.try_recv(), Ok(HostCommand::PushToTalk { active: true })));
 	// Release: native polling advances the same presentation-clock deadline
 	// as the terminal host even when no controller event wakes the actor.
-	std::thread::sleep(SPACE_HOLD_RELEASE + Duration::from_millis(20));
-	assert_eq!(h.host.poll().expect("poll release"), NativeEffect::Consumed);
+	let release = start + Duration::from_millis(120) + SPACE_HOLD_RELEASE;
+	h.host
+		.poll_at(release - Duration::from_millis(1))
+		.expect("poll before release");
+	assert!(h.host.recording(), "recording survives until the release deadline");
+	assert!(h.commands.try_recv().is_err(), "no premature stop command");
+	assert_eq!(h.host.poll_at(release).expect("poll release"), NativeEffect::Consumed);
 	assert!(!h.host.recording());
 	assert!(matches!(h.commands.try_recv(), Ok(HostCommand::PushToTalk { active: false })));
 	// The recognizer's text lands at the caret.
@@ -1496,6 +1503,21 @@ fn a_held_space_bar_starts_recording_and_release_stops_it() {
 		.act(HostAction::SttEvent(SttUiEvent::Segment(Str::new_static(" there"))))
 		.expect("insert");
 	assert_eq!(h.host.composer_text(), "hi there");
+}
+
+#[test]
+fn uneven_space_taps_do_not_start_native_recording() {
+	let mut h = harness(idle_session());
+	type_text(&mut h.host, "hi");
+	let start = h.host.clock().elapsed();
+	for offset in [0, 60, 150, 200, 300] {
+		h.host
+			.key_at(Key::Space, start + Duration::from_millis(offset))
+			.expect("space");
+		assert!(!h.host.recording(), "uneven taps remain ordinary spaces");
+	}
+	assert_eq!(h.host.composer_text(), "hi     ");
+	assert!(h.commands.try_recv().is_err(), "no recording command for uneven taps");
 }
 
 #[test]

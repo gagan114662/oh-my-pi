@@ -1028,6 +1028,9 @@ pub struct TransportAttempt {
 	pub timeout:             Duration,
 	/// Maximum wait after response headers for the first decoded commit event.
 	pub first_event_timeout: Option<Duration>,
+	/// Maximum idle interval between decoded stream frames once the body is
+	/// open; `None` leaves only the attempt deadline.
+	pub idle_timeout:        Option<Duration>,
 	/// Maximum sanitized capture bytes for observability or cassettes.
 	pub capture_limit:       u64,
 }

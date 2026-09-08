@@ -932,12 +932,15 @@ mod tests {
 
 	#[test]
 	fn repeated_sloppy_sections_merge_in_authored_order() {
-		let operations =
-			parse_operations(FreeformKind::Sloppy, "§a\nx\n»\ny\n§a\ny\n»\nz").expect("parse");
+		let input = concat!(
+			"<SM:EDIT path=\"a\">\n<SM:FIND>x</SM:FIND>\n<SM:PUT>y</SM:PUT>\n</SM:EDIT>\n",
+			"<SM:EDIT path=\"a\">\n<SM:FIND>y</SM:FIND>\n<SM:PUT>z</SM:PUT>\n</SM:EDIT>",
+		);
+		let operations = parse_operations(FreeformKind::Sloppy, input).expect("parse");
 		assert_eq!(operations.len(), 1);
 		let AuthoredOperation::Sloppy { input, .. } = &operations[0] else {
 			panic!("sloppy")
 		};
-		assert!(input.contains("y\n»\nz"));
+		assert_eq!(input.as_str(), "«\nx\n»\ny\n«\ny\n»\nz");
 	}
 }

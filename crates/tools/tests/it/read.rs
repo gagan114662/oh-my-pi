@@ -1551,11 +1551,26 @@ async fn ordinary_conflict_warning_requires_a_complete_emitted_marker_block() {
 	let sources = Sources::default();
 	sources.file("window.txt", SOURCE);
 
-	let hidden = text(sources.clone(), r#"{"path":"window.txt:10"}"#).await;
+	let (hidden, hidden_diags) =
+		text_with_diags(sources.clone(), r#"{"path":"window.txt:10"}"#).await;
 	assert!(!hidden.contains("unresolved conflict"), "{hidden}");
+	assert!(
+		hidden_diags
+			.iter()
+			.all(|diag| diag.native_kind() != Some(DiagKind::Conflicts))
+	);
 
-	let visible = text(sources, r#"{"path":"window.txt:3-7"}"#).await;
-	assert!(visible.contains("\n⚠ 1 unresolved conflict detected"), "{visible}");
+	let (visible, visible_diags) = text_with_diags(sources, r#"{"path":"window.txt:3-7"}"#).await;
+	assert!(visible.contains("<<<<<<< HEAD") && visible.contains(">>>>>>> feature"), "{visible}");
+	assert!(!visible.contains("unresolved conflict"), "warning must not contaminate file text");
+	let conflicts = visible_diags
+		.iter()
+		.filter(|diag| diag.native_kind() == Some(DiagKind::Conflicts))
+		.collect::<Vec<_>>();
+	assert_eq!(conflicts.len(), 1);
+	assert_eq!(conflicts[0].severity, Severity::Warn);
+	assert_eq!(conflicts[0].text.as_str(), "1 unresolved conflict detected.");
+	assert_eq!(conflicts[0].continuation.as_deref(), Some("window.txt:conflicts"));
 }
 
 const fn png_fixture() -> Bytes {
@@ -2053,7 +2068,9 @@ async fn multi_target_read_warns_for_failed_sections_and_preserves_successful_co
 	let sources = Sources::default();
 	sources.file("one.txt", "alpha");
 	let (output, diags) =
-		text_with_diags(sources, r#"{"path":"one.txt:raw;missing.txt:raw"}"#).await;
+		// An explicit array remains a multi-target request when a member is missing;
+		// ambiguous delimiter text is intentionally preserved as a literal path.
+		text_with_diags(sources, r#"{"path":"[\"one.txt:raw\",\"missing.txt:raw\"]"}"#).await;
 	assert!(output.contains("alpha"), "{output}");
 	assert!(output.contains("Could not read missing.txt:raw"), "{output}");
 	assert!(

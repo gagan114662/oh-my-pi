@@ -44,8 +44,9 @@ rewrite of `pi`: port observable behavior, not TS shape.
   client protocol APIs go to `omp-env`.
   `crates/edit|ast|walker`: multi-paradigm edit engine, syntax, fs discovery.
   `crates/shell|shell-builtins`: in-process Bash parser/runtime, built-ins.
-- `crates/tui`+`macros`: retained declarative UI; `crates/chat`: terminal
-  and native chat actor/projections; `crates/gui`: native window host.
+- `crates/tui`: retained declarative UI (`crates/macros` is the workspace-wide
+  proc-macro crate, `omp-macros`); `crates/chat`: terminal and native chat
+  actor/projections; `crates/gui`: native window host.
   None owns agent/provider policy.
 - `crates/e2e/tests`: authoritative joined-system proofs P1-P10.
 - `docs/adr`: tracked architecture decisions and implementation status.
@@ -560,7 +561,7 @@ generated inputs.
   `vendor/python/pyo3-config.txt`, fast dev links). Release links
   `vendor/python-release` (`just build-release`); its pgo+lto pbs variant =
   LLVM-22 LTO bitcode, auto-routes through Homebrew LLD 22
-  (`brew install lld`, via `crates/py/scripts/ld64.lld`; `needs-lld` marker).
+  (`brew install lld@22`, via `crates/py/scripts/ld64.lld`; `needs-lld` marker).
   Enforced loudly by omp-py's build script:
   1. `PYO3_CONFIG_FILE` MUST point at `vendor/python/pyo3-config.txt` before
      cargo runs (repo `.cargo/config.toml` covers members; external crates set

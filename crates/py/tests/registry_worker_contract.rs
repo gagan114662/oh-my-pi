@@ -160,7 +160,7 @@ assert skill_evaluations == 1
     },
 )
 async def contract_device(args, ctx):
-    return {"details": {"value": args["value"], "has_context": ctx is marker}}
+    return {"details": {"value": args["value"], "has_context": isinstance(ctx, omp.Context) and ctx.invocation == marker.invocation}}
 
 
 @omp.tool(
@@ -207,15 +207,25 @@ def contract_memory(context):
     return f"{context.session_id}:{context.cls.value}"
 
 
-class Marker:
-    def __init__(self):
-        self.updates = []
+from _omp import _principal_from_host
+from omp._host import _dispatch_progress
 
-    def update(self, value):
-        self.updates.append(value)
+updates = []
+marker = omp.Context(
+    extension="registry-contract",
+    session="registry-session",
+    invocation="registry-invocation",
+    principal=_principal_from_host("test", "Test"),
+    generation=1,
+)
 
+async def invoke_with_live_updates(row, arguments):
+    token = _dispatch_progress.set(updates.append)
+    try:
+        return await row.handler(arguments, marker)
+    finally:
+        _dispatch_progress.reset(token)
 
-marker = Marker()
 snapshot = registry_module.freeze_declarations()
 tools = registry_module.registry.worker_tool_definitions()
 publication = registry_module.project_control_registry()
@@ -262,14 +272,20 @@ assert tool_row.schema == {
     "additionalProperties": False,
     "required": ["count"],
 }
-assert asyncio.run(device_row.handler({"value": 11}, marker)) == {
+assert asyncio.run(invoke_with_live_updates(device_row, {"value": 11})) == {
     "details": {"value": 11, "has_context": True}
 }
-assert asyncio.run(tool_row.handler({"count": 4}, marker)) == {
-    "updates": [{"streamed": 4}],
+assert updates == []
+assert asyncio.run(invoke_with_live_updates(tool_row, {"count": 4})) == {
     "details": {"count": 4}
 }
-assert marker.updates == [{"count": 4}]
+assert updates == [{"count": 4}, {"streamed": 4}]
+try:
+    asyncio.run(device_row.handler({"value": 11}, marker))
+except RuntimeError as error:
+    assert str(error) == "no live CONTROL device update sink"
+else:
+    raise AssertionError("device dispatch invented a missing update sink")
 
 metadata = publication
 assert metadata["skills"] == [{

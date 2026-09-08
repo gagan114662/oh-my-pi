@@ -795,7 +795,7 @@ mod tests {
 	}
 
 	fn tips_list_has_no_blanks() -> bool {
-		tips().count() == 27 && tips().all(|tip| !tip.is_empty())
+		!TIPS_TEXT.is_empty() && TIPS_TEXT.lines().all(|tip| !tip.trim().is_empty())
 	}
 
 	#[test]

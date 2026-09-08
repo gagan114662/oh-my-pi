@@ -331,6 +331,13 @@ impl<D: EditDocuments, P: ReplaceArguments> Tool for ReplaceTool<D, P> {
 					Ok(result) => result,
 					Err(error) => { yield done_fault(Fault::invalid(error.to_string())); return; },
 				};
+				if result.count == 0 {
+					yield done_fault(Fault::invalid(format!(
+						"No matching text found in {} under the allowed edit policy. Re-read the file and provide matching source text.",
+						work.prepared.display_path()
+					)));
+					return;
+				}
 				let resolved = span_edits(&authored.text, &result.content)
 					.into_iter()
 					.map(|edit| ResolvedEdit {
@@ -681,6 +688,7 @@ mod tests {
 		assert!(ambiguous.to_string().contains("Found 2 occurrences"));
 		let noop = replace_text("same\n", "same", "same", false, false, None)
 			.expect("identical replacement is represented by unchanged content");
+		assert_eq!(noop.count, 1, "a matched no-op is different from no match");
 		assert_eq!(noop.content, "same\n");
 	}
 }

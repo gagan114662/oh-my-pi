@@ -10,14 +10,20 @@ use std::{
 	os::{fd, unix::net::UnixStream},
 	path::Path,
 	pin::Pin,
-	sync::Arc,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
 	task::{Context, Poll},
+	thread,
 	time::{Duration, Instant},
 };
 
 use flume::{Receiver, Sender};
 use futures::StreamExt as _;
 use nix::{
+	errno::Errno,
+	fcntl::{FcntlArg, OFlag, fcntl},
 	pty::{Winsize, openpty},
 	sys::signal,
 	unistd::{Pid, ttyname},
@@ -51,9 +57,57 @@ use tokio::{process::Command, time};
 use tower::Service;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+const JOURNAL_TIMEOUT: Duration = Duration::from_secs(3);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const PREFIX: &str = "durable streamed prefix";
 const LOST_SUFFIX: &str = " suffix that must not appear";
+
+// Written even during a failed proof: missing/unfinished phases must never
+// become zero-duration successes in the published evidence.
+struct P6Timings {
+	data:   Value,
+	active: Option<(&'static str, Instant)>,
+}
+
+impl P6Timings {
+	fn new() -> Self {
+		Self { data: json!({"completed": false, "journal": null, "resume": null}), active: None }
+	}
+
+	fn begin(&mut self, phase: &'static str, bound: Duration) {
+		assert!(self.active.is_none(), "timing phases cannot overlap");
+		self.data[phase] = json!({"bound_ms": bound.as_secs_f64() * 1000.0, "completed": false});
+		self.active = Some((phase, Instant::now()));
+	}
+
+	fn end(&mut self, completed: bool) {
+		let (phase, started) = self.active.take().expect("active timing phase");
+		self.data[phase]["elapsed_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
+		self.data[phase]["completed"] = json!(completed);
+	}
+}
+
+impl Drop for P6Timings {
+	fn drop(&mut self) {
+		if thread::panicking() {
+			self.data["completed"] = json!(false);
+		}
+		if self.active.is_some() {
+			self.end(false);
+		}
+		println!("P6 timings: {}", self.data);
+		if let Some(path) = std::env::var_os("OMP_P6_LATENCY_PATH") {
+			let result = fs::write(path, serde_json::to_vec_pretty(&self.data).expect("timing JSON"));
+			if thread::panicking() {
+				if let Err(error) = result {
+					eprintln!("could not retain failed P6 timings: {error}");
+				}
+			} else {
+				result.expect("publish P6 timings");
+			}
+		}
+	}
+}
 
 #[derive(Clone)]
 struct CrashRoute {
@@ -189,9 +243,57 @@ impl CrashGateway {
 	}
 }
 
+struct PtyDrain {
+	stop:   Arc<AtomicBool>,
+	reader: Option<thread::JoinHandle<Result<usize, Errno>>>,
+}
+
+impl PtyDrain {
+	fn start(master: fd::OwnedFd) -> Self {
+		fcntl(&master, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).expect("nonblocking crash PTY");
+		let stop = Arc::new(AtomicBool::new(false));
+		let reader_stop = Arc::clone(&stop);
+		let reader = thread::spawn(move || {
+			let mut buffer = [0_u8; 16 * 1024];
+			let mut bytes = 0;
+			while !reader_stop.load(Ordering::Acquire) {
+				match nix::unistd::read(&master, &mut buffer) {
+					Ok(0) | Err(Errno::EAGAIN) => thread::sleep(Duration::from_millis(5)),
+					Ok(count) => bytes += count,
+					Err(Errno::EINTR) => {},
+					Err(Errno::EIO) => break,
+					Err(error) => return Err(error),
+				}
+			}
+			Ok(bytes)
+		});
+		Self { stop, reader: Some(reader) }
+	}
+
+	fn finish(&mut self) -> usize {
+		self.stop.store(true, Ordering::Release);
+		self
+			.reader
+			.take()
+			.expect("PTY reader owned")
+			.join()
+			.expect("PTY reader joins")
+			.expect("PTY output read succeeds")
+	}
+}
+
+impl Drop for PtyDrain {
+	fn drop(&mut self) {
+		self.stop.store(true, Ordering::Release);
+		if let Some(reader) = self.reader.take() {
+			let _ = reader.join();
+		}
+	}
+}
+
 struct ChatProcess {
 	process: OwnedProcess,
-	_master: fd::OwnedFd,
+	drain:   PtyDrain,
 	_slave:  fd::OwnedFd,
 }
 
@@ -209,6 +311,9 @@ fn spawn_chat(
 	let window = Winsize { ws_row: 40, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0 };
 	let pty = openpty(Some(&window), None).expect("open chat PTY");
 	let device = ttyname(&pty.slave).expect("PTY slave path");
+	// A real terminal consumes rendered bytes. Leaving this unread can fill
+	// the PTY and block repaint, including the debug frame response.
+	let drain = PtyDrain::start(pty.master);
 	let mut command = Command::new(binary);
 	command
 		.arg("chat")
@@ -244,37 +349,63 @@ fn spawn_chat(
 		.env("OMP_TTY", &device)
 		.env("OMP_TUI_DEBUG", debug);
 	let process = OwnedProcess::spawn(command).expect("spawn real OMP chat");
-	ChatProcess { process, _master: pty.master, _slave: pty.slave }
+	ChatProcess { process, drain, _slave: pty.slave }
 }
 
-fn debug_request(path: &Path, request: &Value) -> Result<Value, String> {
-	let stream = UnixStream::connect(path).map_err(|error| error.to_string())?;
+#[derive(Debug, thiserror::Error)]
+enum DebugRequestError {
+	#[error("debug socket connection failed: {0}")]
+	Connect(#[source] std::io::Error),
+	#[error("debug socket configuration failed: {0}")]
+	Configure(#[source] std::io::Error),
+	#[error("debug request encoding failed: {0}")]
+	Encode(#[source] serde_json::Error),
+	#[error("debug request write failed: {0}")]
+	Write(#[source] std::io::Error),
+	#[error("debug socket connected, but response read failed: {0}")]
+	Read(#[source] std::io::Error),
+	#[error("debug response decoding failed: {0}")]
+	Decode(#[source] serde_json::Error),
+	#[error("debug server rejected request: {0}")]
+	Rejected(Value),
+}
+
+fn debug_request(path: &Path, request: &Value) -> Result<Value, DebugRequestError> {
+	let stream = UnixStream::connect(path).map_err(DebugRequestError::Connect)?;
 	stream
 		.set_read_timeout(Some(IO_TIMEOUT))
-		.map_err(|error| error.to_string())?;
+		.map_err(DebugRequestError::Configure)?;
 	stream
 		.set_write_timeout(Some(IO_TIMEOUT))
-		.map_err(|error| error.to_string())?;
-	let mut writer = stream.try_clone().map_err(|error| error.to_string())?;
-	serde_json::to_writer(&mut writer, request).map_err(|error| error.to_string())?;
-	writer.write_all(b"\n").map_err(|error| error.to_string())?;
-	writer.flush().map_err(|error| error.to_string())?;
+		.map_err(DebugRequestError::Configure)?;
+	let mut writer = stream.try_clone().map_err(DebugRequestError::Configure)?;
+	serde_json::to_writer(&mut writer, request).map_err(DebugRequestError::Encode)?;
+	writer.write_all(b"\n").map_err(DebugRequestError::Write)?;
+	writer.flush().map_err(DebugRequestError::Write)?;
 	let mut line = String::new();
 	BufReader::new(stream)
 		.read_line(&mut line)
-		.map_err(|error| error.to_string())?;
-	let response: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
+		.map_err(DebugRequestError::Read)?;
+	let response: Value = serde_json::from_str(&line).map_err(DebugRequestError::Decode)?;
 	if response.get("ok").and_then(Value::as_bool) == Some(true) {
 		Ok(response)
 	} else {
-		Err(format!("debug request failed: {response}"))
+		Err(DebugRequestError::Rejected(response))
 	}
 }
 
-fn wait_for_resumed_frame(path: &Path) -> String {
-	let deadline = Instant::now() + READY_TIMEOUT;
+fn wait_for_resumed_frame(path: &Path, process: &mut OwnedProcess) -> String {
+	let started = Instant::now();
+	let deadline = started + READY_TIMEOUT;
 	let mut problem;
 	loop {
+		if let Some(status) = process.try_wait().expect("inspect resumed process") {
+			panic!(
+				"resumed OMP exited before its frame became ready after {:?}: {status}",
+				started.elapsed()
+			);
+		}
+
 		match debug_request(path, &json!({ "op": "frame" })) {
 			Ok(response) => {
 				let frame = response
@@ -290,15 +421,22 @@ fn wait_for_resumed_frame(path: &Path) -> String {
 				}
 				problem = format!("resumed frame did not contain durable blocks:\n{frame}");
 			},
-			Err(error) => problem = error,
+			Err(error) => problem = error.to_string(),
 		}
-		assert!(Instant::now() < deadline, "resumed chat never became ready: {problem}");
+		assert!(
+			Instant::now() < deadline,
+			"resumed process was running at last check; elapsed {:?}; frame readiness bound {:?}; \
+			 last observation: {problem}",
+			started.elapsed(),
+			READY_TIMEOUT
+		);
 		std::thread::sleep(Duration::from_millis(20));
 	}
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
+	let mut timings = P6Timings::new();
 	install_omp_binary_env().expect("install real OMP binary");
 	let scratch = tempfile::tempdir().expect("P6 scratch");
 	let project = scratch.path().join("project");
@@ -330,7 +468,8 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 		.await
 		.expect("prefix timeout")
 		.expect("prefix gate remains open");
-	within("stream prefix reaches journal", Duration::from_secs(3), async {
+	timings.begin("journal", JOURNAL_TIMEOUT);
+	let journal_result = within("stream prefix reaches journal", JOURNAL_TIMEOUT, async {
 		loop {
 			if fs::read_to_string(&session).is_ok_and(|journal| journal.contains(PREFIX)) {
 				break;
@@ -338,8 +477,9 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 			time::sleep(Duration::from_millis(5)).await;
 		}
 	})
-	.await
-	.expect("journal prefix timeout");
+	.await;
+	timings.end(journal_result.is_ok());
+	journal_result.expect("journal prefix timeout");
 	let group = crashed.process.process_group().expect("OMP process group");
 	signal::killpg(Pid::from_raw(group), Some(signal::Signal::SIGKILL))
 		.expect("crash OMP process group");
@@ -350,6 +490,7 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 		.expect("reap crashed OMP");
 	use std::os::unix::process::ExitStatusExt as _;
 	assert_eq!(status.signal(), Some(libc::SIGKILL), "OMP was not killed by SIGKILL");
+	println!("crashed terminal drained {} bytes", crashed.drain.finish());
 	gateway
 		.release
 		.send(())
@@ -362,6 +503,7 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 	assert!(!journal.contains("event: msg.assistant.end@1"));
 	assert!(!journal.contains("event: turn.receipt@1"));
 
+	timings.begin("resume", READY_TIMEOUT);
 	let mut resumed = spawn_chat(
 		&binary,
 		&project,
@@ -373,7 +515,8 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 		&resume_debug,
 		true,
 	);
-	let frame = wait_for_resumed_frame(&resume_debug);
+	let frame = wait_for_resumed_frame(&resume_debug, &mut resumed.process);
+	timings.end(true);
 	assert!(!frame.contains(LOST_SUFFIX), "resumed host displayed an uncommitted suffix\n{frame}");
 	debug_request(&resume_debug, &json!({ "op": "keys", "keys": "ctrl+c ctrl+c" }))
 		.expect("quit resumed chat through its real input path");
@@ -383,6 +526,8 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 		.await
 		.expect("resumed OMP exits");
 	assert!(status.success(), "resumed OMP did not exit cleanly: {status}");
+	println!("resumed terminal drained {} bytes", resumed.drain.finish());
+	timings.data["completed"] = json!(true);
 }
 
 #[test]

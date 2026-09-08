@@ -326,25 +326,33 @@ async fn coalesce_backfill_and_overlap_are_projected_durably() {
 	let overlap = open_durable_scheduler_manual(&overlap_path, delivery.clone())
 		.expect("open overlap scheduler");
 	let overlap_id = schedule_id(&overlap, every_schedule("overlap", "coalesce", "skip")).await;
+	let overlap_info = overlap
+		.request(caller(), "omp.agents.schedule.info", object(json!({"schedule_id": overlap_id})))
+		.await
+		.expect("overlap schedule info");
+	let second_occurrence = overlap_info
+		.get("next_ms")
+		.and_then(Value::as_u64)
+		.expect("first overlap occurrence")
+		.checked_add(1)
+		.expect("second overlap occurrence");
+	// Make both occurrences due, but process exactly two clock ticks. Using
+	// wall time as the processing horizon can produce over 100 skipped rows
+	// on a busy runner and push the first delivery out of the history window.
 	time::sleep(Duration::from_millis(5)).await;
 	overlap
-		.process_due(
-			SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("clock")
-				.as_millis()
-				.try_into()
-				.expect("epoch millis"),
-		)
+		.process_due(second_occurrence)
 		.await
 		.expect("process overlap");
 	let overlap_history = history(&overlap, &overlap_id).await;
+	assert_eq!(overlap_history.len(), 2, "both controlled occurrences are journaled");
 	assert_eq!(
 		overlap_history
 			.iter()
 			.filter(|row| row.get("outcome").and_then(Value::as_str) == Some("injected"))
 			.count(),
-		1
+		1,
+		"overlap history: {overlap_history:?}",
 	);
 	assert!(
 		overlap_history

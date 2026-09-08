@@ -1,0 +1,124 @@
+name: Environment host contracts
+
+on:
+  push:
+    branches: [fix/audit-ci-gates, omp2]
+    paths:
+      - crates/envd/**
+      - crates/py/**
+      - crates/app/**
+      - .github/workflows/envd-contracts.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  envd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: never
+      OMP_ENVD_CONTRACT_DIR: ${{ github.workspace }}/target/envd-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select pinned Rust toolchain
+        run: |
+          test "$(uname -m)" = x86_64
+          rustup show active-toolchain
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pipx zstd
+          command -v uv >/dev/null || pipx install uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache embedded Python
+        id: python-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: vendor/python
+          key: python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/py/scripts/fetch-python.sh', 'crates/py/scripts/pack-pymodules.py', 'crates/py/scripts/gen-py-notices.py', 'crates/py/requirements.txt') }}
+
+      - name: Prepare embedded Python
+        if: steps.python-cache.outputs.cache-hit != 'true'
+        run: crates/py/scripts/fetch-python.sh
+
+      - name: Verify embedded Python toolchain
+        run: |
+          test -f vendor/python/pyo3-config.txt
+          test -x vendor/python/install/bin/python3.14td
+
+      - name: Restore Cargo build cache
+        id: cargo-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-p7-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-p7-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
+            cargo-p7-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Run environment, startup, application cancellation, and doctest contracts
+        shell: bash
+        run: |
+          mkdir -p "$OMP_ENVD_CONTRACT_DIR"
+          set +e
+          cargo nextest run --profile ci --locked -p omp-envd --lib --tests --no-tests fail 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/nextest.log"
+          test_status=${PIPESTATUS[0]}
+          cargo nextest run --profile ci --locked -p omp-py --test control_registration_contract --no-tests fail 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/startup.log"
+          startup_status=${PIPESTATUS[0]}
+          cargo nextest run --profile ci --locked -p omp-app --test it --no-tests fail -E 'test(worker_cancel_forwards_effects_unknown_once_and_respawn_serves_next_request) | test(same_worker_invocation_id_on_two_connections_cancels_only_its_owner) | test(control_cancellation_restarts_only_the_owning_extension_host)' 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/application.log"
+          application_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-envd -p omp-py -p omp-app 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/doctests.log"
+          doc_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > "$OMP_ENVD_CONTRACT_DIR/nextest.exit"
+          printf '%s\n' "$startup_status" > "$OMP_ENVD_CONTRACT_DIR/startup.exit"
+          printf '%s\n' "$doc_status" > "$OMP_ENVD_CONTRACT_DIR/doctests.exit"
+          printf '%s\n' "$application_status" > "$OMP_ENVD_CONTRACT_DIR/application.exit"
+          if [ "$application_status" -ne 0 ] || [ "$test_status" -ne 0 ] || [ "$startup_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+      - name: Publish environment host result
+        if: always()
+        run: |
+          python3 - <<'PYREPORT'
+          import os, re
+          from pathlib import Path
+          root = Path(os.environ['OMP_ENVD_CONTRACT_DIR'])
+          summaries = {}
+          for name in ('nextest', 'startup', 'application'):
+              log = (root/(name+'.log')).read_text(errors='replace') if (root/(name+'.log')).exists() else ''
+              summaries[name] = re.findall(r'Summary[^\n]*', log)
+          exits = {name: int((root/(name+'.exit')).read_text()) if (root/(name+'.exit')).exists() else None for name in ('nextest', 'startup', 'application', 'doctests')}
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write('## Environment host execution\n\nRevision: `' + os.environ['GITHUB_SHA'] + '`\n\n')
+              out.write('\n'.join(name + ': ' + ' '.join(rows) for name, rows in summaries.items()) + '\n\nExit codes: `' + str(exits) + '`\n')
+          if not re.search(r'\b3 tests run: 3 passed\b', ' '.join(summaries['application'])):
+              raise SystemExit('Expected all three application cancellation cases to execute and pass')
+          if any(not rows for rows in summaries.values()) or any(code != 0 for code in exits.values()):
+              raise SystemExit('Missing or failed environment host evidence')
+          PYREPORT
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: environment-host-contracts
+          path: ${{ env.OMP_ENVD_CONTRACT_DIR }}/
+          if-no-files-found: error
+      - name: Preserve Cargo build cache after checks
+        if: ${{ always() && !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}

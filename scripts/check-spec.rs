@@ -12,7 +12,9 @@ toml = "1.1"
 
 use std::{
 	collections::{BTreeMap, BTreeSet},
-	env, fs,
+	env,
+	ffi::{OsStr, OsString},
+	fs,
 	path::{Path, PathBuf},
 };
 
@@ -32,6 +34,10 @@ const PYTHON_SPEC_BASELINE: &[&str] =
 	&["omp.state.cas_get", "omp.state.cas_put", "omp.state_dir", "omp.urls.read"];
 
 fn main() {
+	let output = requested_output(env::args_os().skip(1)).unwrap_or_else(|message| {
+		eprintln!("spec check: {message}");
+		std::process::exit(2);
+	});
 	let root = workspace_root();
 	let mut failures = Vec::new();
 	check_symbols(&root, &mut failures);
@@ -45,7 +51,7 @@ fn main() {
 		std::process::exit(1);
 	}
 
-	if let Some(output) = env::args_os().nth(1) {
+	if let Some(output) = output {
 		let output = root.join(output);
 		if let Some(parent) = output.parent() {
 			fs::create_dir_all(parent)
@@ -54,6 +60,21 @@ fn main() {
 		fs::write(&output, generated_spec_json())
 			.unwrap_or_else(|error| panic!("cannot write {}: {error}", output.display()));
 	}
+}
+
+fn requested_output(
+	mut arguments: impl Iterator<Item = OsString>,
+) -> Result<Option<OsString>, &'static str> {
+	let first = arguments.next();
+	let output = if first.as_deref() == Some(OsStr::new("--")) {
+		arguments.next()
+	} else {
+		first
+	};
+	if output.as_deref() == Some(OsStr::new("--")) || arguments.next().is_some() {
+		return Err("expected at most one output path after an optional -- separator");
+	}
+	Ok(output)
 }
 
 fn workspace_root() -> PathBuf {
@@ -68,6 +89,40 @@ fn workspace_root() -> PathBuf {
 		}
 	}
 	panic!("run the spec checker from inside the OMP workspace");
+}
+
+// Decorator factories have their own registration arguments. Their examples
+// carry the callback signature; the payload's name may describe its type
+// (message/query/view), but the context must remain the second argument.
+fn has_payload_context_callback(signature: &str, examples: &[&str]) -> bool {
+	if signature.trim_start().starts_with("(payload, ctx)") {
+		return true;
+	}
+	if !signature.trim_end().ends_with("-> Decorator") || examples.is_empty() {
+		return false;
+	}
+	examples.iter().all(|example| {
+		let Some((_, function)) = example.split_once("def ") else {
+			return false;
+		};
+		let Some((_, arguments)) = function.split_once('(') else {
+			return false;
+		};
+		let Some((arguments, _)) = arguments.split_once(')') else {
+			return false;
+		};
+		let mut arguments = arguments.split(',').map(str::trim);
+		let Some(payload) = arguments.next() else {
+			return false;
+		};
+		!payload.is_empty()
+			&& payload != "ctx"
+			&& payload
+				.bytes()
+				.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+			&& arguments.next() == Some("ctx")
+			&& arguments.next().is_none()
+	})
 }
 
 fn check_symbols(root: &Path, failures: &mut Vec<String>) {
@@ -108,7 +163,7 @@ fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 			failures.push(format!("{} has no concrete example", symbol.public_name));
 		}
 		if symbol.callback_abi == CallbackAbi::PayloadContext
-			&& !symbol.signature.trim_start().starts_with("(payload, ctx)")
+			&& !has_payload_context_callback(symbol.signature, symbol.examples)
 		{
 			failures.push(format!("{} violates the (payload, ctx) callback ABI", symbol.public_name));
 		}
@@ -136,7 +191,7 @@ fn check_symbols(root: &Path, failures: &mut Vec<String>) {
 			&& !token.ends_with('.')
 			&& token
 				.bytes()
-				.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
+				.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 	}) {
 		if operation_spec(operation).is_none() {
 			failures
@@ -275,7 +330,7 @@ fn check_python_surface_specs(root: &Path, failures: &mut Vec<String>) {
 					&& !operation.ends_with('.')
 					&& operation
 						.bytes()
-						.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
+						.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 					&& !PYTHON_SPEC_BASELINE.contains(&operation)
 					&& operation_spec(operation).is_none()
 				{
@@ -361,9 +416,12 @@ fn check_policy_list(policy: &TomlValue, key: &str, expected: &[&str], failures:
 fn parse_toml(path: &Path) -> TomlValue {
 	let text = fs::read_to_string(path)
 		.unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-	text
+	// toml 1.x: `Value: FromStr` parses a single *value*; a manifest is a
+	// document and must go through `Table`.
+	let table: toml::Table = text
 		.parse()
-		.unwrap_or_else(|error| panic!("cannot parse {}: {error}", path.display()))
+		.unwrap_or_else(|error| panic!("cannot parse {}: {error}", path.display()));
+	TomlValue::Table(table)
 }
 
 fn generated_spec_json() -> String {
@@ -423,4 +481,49 @@ fn generated_spec_json() -> String {
 		"phase_legality": legality,
 	}))
 	.expect("runtime symbol spec is serializable")
+}
+
+#[cfg(test)]
+mod tests {
+	use std::ffi::OsString;
+
+	use super::{has_payload_context_callback, requested_output};
+
+	#[test]
+	fn output_path_accepts_one_optional_separator_and_rejects_extra_arguments() {
+		for args in [vec!["target/spec.json"], vec!["--", "target/spec.json"]] {
+			assert_eq!(
+				requested_output(args.into_iter().map(OsString::from)),
+				Ok(Some(OsString::from("target/spec.json")))
+			);
+		}
+		assert_eq!(requested_output(std::iter::empty()), Ok(None));
+		for args in [vec!["one.json", "two.json"], vec!["--", "--", "one.json"]] {
+			assert!(requested_output(args.into_iter().map(OsString::from)).is_err());
+		}
+	}
+
+	#[test]
+	fn callback_and_decorator_signatures_are_distinct() {
+		assert!(has_payload_context_callback("(payload, ctx) -> None", &[]));
+		for name in ["payload", "message", "query", "view"] {
+			let example = format!("@ui.command(\"hello\")\nasync def callback({name}, ctx): pass");
+			assert!(has_payload_context_callback("(name: str) -> Decorator", &[&example]));
+		}
+	}
+
+	#[test]
+	fn decorator_callbacks_still_require_payload_then_context() {
+		for example in [
+			"def callback(ctx, payload): pass",
+			"def callback(payload): pass",
+			"def callback(payload, ctx, extra): pass",
+			"def callback(*payload, ctx): pass",
+			"register(callback)",
+		] {
+			assert!(!has_payload_context_callback("(name: str) -> Decorator", &[example]));
+		}
+		assert!(!has_payload_context_callback("(name: str) -> Decorator", &[]));
+		assert!(!has_payload_context_callback("(ctx, payload) -> None", &[]));
+	}
 }

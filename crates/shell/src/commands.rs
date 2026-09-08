@@ -203,6 +203,9 @@ pub fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
 	empty_env: bool,
 ) -> Result<process::Command, error::Error> {
 	let wrapper = context.params.spawn_wrapper();
+	if let Some(wrapper) = wrapper {
+		wrapper.validate()?;
+	}
 	let mut cmd = if let Some((launcher, prefix_args)) = wrapper.and_then(|w| w.launcher()) {
 		let mut cmd = process::Command::new(launcher);
 		cmd.args(prefix_args);
@@ -1136,7 +1139,10 @@ pub const fn child_session_action(
 mod sandbox_tests {
 	use std::{
 		ffi::{OsStr, OsString},
-		sync::Arc,
+		sync::{
+			Arc,
+			atomic::{AtomicBool, Ordering},
+		},
 	};
 
 	use super::*;
@@ -1144,9 +1150,18 @@ mod sandbox_tests {
 
 	struct EnvWrapper {
 		prefix: Vec<OsString>,
+		valid:  AtomicBool,
 	}
 
 	impl SpawnWrapper for EnvWrapper {
+		fn validate(&self) -> std::io::Result<()> {
+			if self.valid.load(Ordering::Acquire) {
+				Ok(())
+			} else {
+				Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "authority changed"))
+			}
+		}
+
 		fn launcher(&self) -> Option<(&OsStr, &[OsString])> {
 			Some((OsStr::new("/usr/bin/env"), &self.prefix))
 		}
@@ -1160,7 +1175,10 @@ mod sandbox_tests {
 	fn compose_std_command_prefixes_spawn_wrapper() -> crate::TestResult<()> {
 		let mut shell: Shell = Shell::default();
 		let mut params = ExecutionParameters::default();
-		params.set_spawn_wrapper(Arc::new(EnvWrapper { prefix: vec![OsString::from("--")] }));
+		params.set_spawn_wrapper(Arc::new(EnvWrapper {
+			prefix: vec![OsString::from("--")],
+			valid:  AtomicBool::new(true),
+		}));
 		let context = ExecutionContext { shell: &mut shell, command_name: "echo".into(), params };
 
 		let cmd = compose_std_command(&context, "/bin/echo", "custom-argv0", &["hello"], true)?;
@@ -1171,6 +1189,25 @@ mod sandbox_tests {
 			OsStr::new("hello")
 		]);
 
+		Ok(())
+	}
+	#[test]
+	fn command_composition_revalidates_wrapper_authority() -> crate::TestResult<()> {
+		let mut shell: Shell = Shell::default();
+		let wrapper =
+			Arc::new(EnvWrapper { prefix: vec![OsString::from("--")], valid: AtomicBool::new(true) });
+		let mut params = ExecutionParameters::default();
+		params.set_spawn_wrapper(wrapper.clone());
+		let context = ExecutionContext { shell: &mut shell, command_name: "echo".into(), params };
+		let command = compose_std_command(&context, "/bin/echo", "echo", &["hello"], true)?;
+		assert_eq!(command.get_program(), OsStr::new("/usr/bin/env"));
+		wrapper.valid.store(false, Ordering::Release);
+		let error = compose_std_command(&context, "/bin/echo", "echo", &["hello"], true)
+			.expect_err("changed authority must prevent constructing an external command");
+		assert_eq!(
+			error.as_io_error().expect("I/O rejection").kind(),
+			std::io::ErrorKind::PermissionDenied
+		);
 		Ok(())
 	}
 }

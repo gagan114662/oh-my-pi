@@ -1,9 +1,75 @@
-//! Minimal extended-attribute probes used by `ls` and `mkdir`.
+//! Extended-attribute probes and preservation for filesystem builtins.
 
-#[cfg(all(unix, not(any(target_os = "android", target_os = "macos"))))]
+#[cfg(all(unix, not(target_os = "macos")))]
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::{ffi, io, ptr};
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
+type Attributes = omp_core::FastHashMap<std::ffi::OsString, Vec<u8>>;
+
+/// Read the attributes before a cross-filesystem move removes its source.
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
+pub(crate) fn retrieve_xattrs(path: impl AsRef<Path>) -> std::io::Result<Attributes> {
+	#[cfg(target_os = "linux")]
+	{
+		use std::os::unix::ffi::OsStrExt;
+		let path = path.as_ref();
+		let mut attributes = Attributes::default();
+		for name in list_xattrs(path)?.split_inclusive(|byte| *byte == 0) {
+			if name.len() > 1 {
+				let value = get_xattr(path, name)?;
+				attributes.insert(ffi::OsStr::from_bytes(&name[..name.len() - 1]).to_owned(), value);
+			}
+		}
+		Ok(attributes)
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		let _ = path;
+		Err(std::io::Error::from_raw_os_error(libc::EOPNOTSUPP))
+	}
+}
+
+/// Apply every saved attribute, propagating permission and I/O failures.
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
+pub(crate) fn apply_xattrs(path: impl AsRef<Path>, attributes: Attributes) -> std::io::Result<()> {
+	#[cfg(target_os = "linux")]
+	{
+		for (name, value) in attributes {
+			set_xattr(path.as_ref(), &name, &value)?;
+		}
+		Ok(())
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		let _ = (path, attributes);
+		Err(std::io::Error::from_raw_os_error(libc::EOPNOTSUPP))
+	}
+}
+
+/// Preserve attributes without deleting or modifying the source.
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
+pub(crate) fn copy_xattrs(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()> {
+	apply_xattrs(to, retrieve_xattrs(from)?)
+}
+
+#[cfg(target_os = "linux")]
+fn set_xattr(path: &Path, name: &ffi::OsStr, value: &[u8]) -> io::Result<()> {
+	use std::os::unix::ffi::OsStrExt;
+	let path = path_cstring(path)?;
+	let name = ffi::CString::new(name.as_bytes())
+		.map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid attribute name"))?;
+	// SAFETY: both C strings and the value buffer remain live for this call.
+	let result = unsafe {
+		libc::setxattr(path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0)
+	};
+	if result < 0 {
+		Err(io::Error::last_os_error())
+	} else {
+		Ok(())
+	}
+}
 
 /// Returns whether a path has at least one extended ACL or attribute.
 #[cfg(all(unix, not(any(target_os = "android", target_os = "macos"))))]
@@ -125,6 +191,33 @@ fn parse_default_acl_permissions(value: &[u8]) -> Option<u32> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn copies_binary_and_empty_attributes_without_changing_source() {
+		let dir = tempfile::tempdir().unwrap();
+		let source = dir.path().join("source");
+		let destination = dir.path().join("destination");
+		std::fs::write(&source, b"source").unwrap();
+		std::fs::write(&destination, b"destination").unwrap();
+		set_xattr(&source, ffi::OsStr::new("user.omp.binary"), &[0, 255, 1]).unwrap();
+		set_xattr(&source, ffi::OsStr::new("user.omp.empty"), &[]).unwrap();
+		let before = retrieve_xattrs(&source).unwrap();
+		copy_xattrs(&source, &destination).unwrap();
+		assert_eq!(retrieve_xattrs(&destination).unwrap(), before);
+		assert_eq!(retrieve_xattrs(&source).unwrap(), before);
+		assert_eq!(std::fs::read(&destination).unwrap(), b"destination");
+	}
+
+	#[test]
+	fn missing_destination_propagates_error_and_preserves_source_attributes() {
+		let dir = tempfile::tempdir().unwrap();
+		let source = dir.path().join("source");
+		std::fs::write(&source, b"source").unwrap();
+		set_xattr(&source, ffi::OsStr::new("user.omp.keep"), b"evidence").unwrap();
+		let error = copy_xattrs(&source, dir.path().join("missing")).unwrap_err();
+		assert_eq!(error.kind(), io::ErrorKind::NotFound);
+		assert_eq!(get_xattr(&source, b"user.omp.keep\0").unwrap(), b"evidence");
+	}
 
 	#[test]
 	fn parses_default_acl_mode_bits() {

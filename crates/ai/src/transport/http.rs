@@ -1695,6 +1695,11 @@ fn decode_stream(
 		let mut capture_remaining = capture_limit;
 		let mut ordinal = 0_u64;
 		let mut emitted = false;
+		// Idle watchdog: re-armed on every body chunk, so a body that goes
+		// silent is cut at the idle interval instead of living until the
+		// whole-attempt deadline.
+		let idle_timeout = attempt.idle_timeout;
+		let mut idle_deadline = idle_timeout.map(|timeout| Instant::now() + timeout);
 		'response: loop {
 			let next = tokio::select! {
 				next = incoming.frame() => next,
@@ -1705,6 +1710,11 @@ fn decode_stream(
 				() = sleep_until(deadline) => {
 					cancel.cancel();
 					yield Err(record_failure(deadline_exceeded(emitted, started, "stream.body"), &attempt, &evidence, Some(status), provider_request_id.as_ref(), started, emitted));
+					break;
+				},
+				() = sleep_until(idle_deadline.unwrap_or(deadline)), if idle_deadline.is_some_and(|idle| idle < deadline) => {
+					cancel.cancel();
+					yield Err(record_failure(deadline_exceeded(emitted, started, "stream.idle-timeout"), &attempt, &evidence, Some(status), provider_request_id.as_ref(), started, emitted));
 					break;
 				},
 			};
@@ -1745,6 +1755,10 @@ fn decode_stream(
 				},
 			};
 			if !chunk.is_empty() {
+				// Any body bytes are progress: `Raw` framing buffers a whole
+				// response before it yields a frame, and SSE keep-alives are
+				// bytes from a live provider. The stall this cuts is silence.
+				idle_deadline = idle_timeout.map(|timeout| Instant::now() + timeout);
 				response_bytes = response_bytes.saturating_add(chunk.len() as u64);
 				if response_bytes > response_limit {
 					let error = protocol_error(if emitted { ErrorPhase::Streaming } else { ErrorPhase::Handshake }, emitted, "response-body-limit");

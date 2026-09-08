@@ -5418,13 +5418,18 @@ impl EnvServer {
 				.await;
 			},
 			Some(Body::Mcp(request)) => {
+				let Some(operation) = mcp_operation(&request) else {
+					send_error(
+						responses,
+						request_id,
+						pb::ProtocolErrorCode::InvalidArgument,
+						"MCP operation is missing",
+					)
+					.await;
+					return;
+				};
 				if !authorize_data_operation(
-					connection,
-					scope,
-					mcp_operation(&request),
-					"env.mcp",
-					responses,
-					request_id,
+					connection, scope, operation, "env.mcp", responses, request_id,
 				)
 				.await
 				{
@@ -9533,20 +9538,24 @@ fn spawn_worker_invocation(
 					break;
 				},
 				Some(ExtHostEvent::Complete(complete)) => {
-					let (json, details_blob, is_error) =
-						match projected_worker_completion_json(&blobs, &complete, output_request) {
-							Ok(completion) => completion,
-							Err(reason) => {
-								send_abort_verdict(
-									&responses,
-									request_id,
-									&invocation_id,
-									omp_tool::Abort::EffectsUnknown { reason },
-								)
-								.await;
-								break;
-							},
-						};
+					let (json, details_blob, is_error) = match projected_worker_completion_json(
+						&blobs,
+						&complete,
+						output_request,
+						retention_session.as_deref(),
+					) {
+						Ok(completion) => completion,
+						Err(reason) => {
+							send_abort_verdict(
+								&responses,
+								request_id,
+								&invocation_id,
+								omp_tool::Abort::EffectsUnknown { reason },
+							)
+							.await;
+							break;
+						},
+					};
 					if let Some(details) = details_blob.as_ref() {
 						let hash: [u8; 32] = match details.hash.as_ref().try_into() {
 							Ok(hash) => hash,
@@ -10080,19 +10089,19 @@ async fn send_resource_capability_error(
 	.await;
 }
 
-const fn mcp_operation(request: &pb::McpOp) -> &'static str {
+const fn mcp_operation(request: &pb::McpOp) -> Option<&'static str> {
 	use mcp_op::Op;
 
 	match request.op.as_ref() {
-		Some(Op::Status(_)) => "omp.env.mcp.status",
-		Some(Op::Subscribe(_)) => "omp.env.mcp.subscribe",
-		Some(Op::Reset(_)) => "omp.env.mcp.reset",
-		Some(Op::LiveHeader(_)) => "omp.env.mcp.live-header",
-		Some(Op::Resource(_)) => "omp.env.mcp.resource",
-		Some(Op::Prompt(_)) => "omp.env.mcp.prompt",
-		Some(Op::Invoke(_)) => "omp.env.mcp.invoke",
-		Some(Op::Config(_)) => "omp.env.mcp.config",
-		None => "omp.env.mcp.invalid",
+		Some(Op::Status(_)) => Some("omp.env.mcp.status"),
+		Some(Op::Subscribe(_)) => Some("omp.env.mcp.subscribe"),
+		Some(Op::Reset(_)) => Some("omp.env.mcp.reset"),
+		Some(Op::LiveHeader(_)) => Some("omp.env.mcp.live-header"),
+		Some(Op::Resource(_)) => Some("omp.env.mcp.resource"),
+		Some(Op::Prompt(_)) => Some("omp.env.mcp.prompt"),
+		Some(Op::Invoke(_)) => Some("omp.env.mcp.invoke"),
+		Some(Op::Config(_)) => Some("omp.env.mcp.config"),
+		None => None,
 	}
 }
 
@@ -10870,8 +10879,16 @@ fn projected_worker_completion_json(
 	blobs: &BlobHost,
 	complete: &ExtHostCompletion,
 	request: omp_tool::OutputRequest,
+	retention_session: Option<&str>,
 ) -> Result<(Bytes, Option<thread_pb::Blob>, bool), Str> {
-	let (mut json, details_blob, is_error) = worker_completion_json(complete)?;
+	let (mut json, mut details_blob, is_error) = worker_completion_json(complete)?;
+	if details_blob.is_none() {
+		details_blob = Some(
+			blobs
+				.put_verdict_bytes(retention_session, complete.call_id.as_str(), &json)
+				.map_err(|_| sf!("worker outcome could not be durably retained"))?,
+		);
+	}
 	let inline_limit = match request {
 		omp_tool::OutputRequest::Bounded => DEFAULT_RESULT_PROJECTION_BYTES,
 		omp_tool::OutputRequest::Complete => COMPLETE_RESULT_PROJECTION_BYTES,
@@ -12280,6 +12297,45 @@ mod tests {
 	};
 
 	const TEST_DAP_SESSION_ID: [u8; 16] = [0x2a; 16];
+	#[test]
+	fn small_worker_outcomes_retain_the_canonical_envelope() {
+		let scratch = tempfile::tempdir().expect("verdict store");
+		let blobs = BlobHost::open(scratch.path()).expect("open blobs");
+		for (kind, call_id) in
+			[(ExtHostOutcomeKind::Ok, "small-ok"), (ExtHostOutcomeKind::Faulted, "small-fault")]
+		{
+			let complete = ExtHostCompletion {
+				call_id: Str::new_static(call_id),
+				kind,
+				parts: Vec::new(),
+				details_json: Some(Bytes::from_static(br#"{"message":"saved"}"#)),
+				details_blob: None,
+				args_issue: None,
+				useless: false,
+				terminate: false,
+			};
+			let expected = worker_completion_json(&complete)
+				.expect("canonical outcome")
+				.0;
+			let (inline, artifact, is_error) = projected_worker_completion_json(
+				&blobs,
+				&complete,
+				omp_tool::OutputRequest::Bounded,
+				Some("session"),
+			)
+			.expect("project and retain");
+			assert_eq!(inline, expected);
+			assert_eq!(is_error, kind != ExtHostOutcomeKind::Ok);
+			let artifact = artifact.expect("small outcomes retain an artifact too");
+			assert!(artifact.inline.is_empty());
+			assert_eq!(artifact.mime, "application/json");
+			let hash = artifact.hash.as_ref().try_into().expect("artifact hash");
+			let stored = blobs
+				.get(BlobId { hash, size: artifact.size })
+				.expect("read retained outcome");
+			assert_eq!(stored, expected);
+		}
+	}
 
 	#[tokio::test]
 	async fn late_diagnostics_batch_by_path_in_arrival_order() {
@@ -14085,5 +14141,36 @@ mod tests {
 		};
 		assert!(yolo.denial(&effects, br#"{"command":"touch x"}"#).is_none());
 		assert!(plan.denial(&effects, br#"{"command":"touch x"}"#).is_some());
+	}
+}
+
+#[cfg(test)]
+mod runtime_operation_contracts {
+	use super::{mcp_operation, pb};
+
+	#[test]
+	fn every_mcp_operation_reaches_a_registered_environment_contract() {
+		use pb::mcp_op::Op;
+		for operation in [
+			Op::Status(pb::McpStatusRequest::default()),
+			Op::Subscribe(pb::McpSubscribeRequest::default()),
+			Op::Reset(pb::McpResetRequest::default()),
+			Op::LiveHeader(pb::McpLiveHeaderRequest::default()),
+			Op::Resource(pb::McpResourceRequest::default()),
+			Op::Prompt(pb::McpPromptRequest::default()),
+			Op::Invoke(pb::McpInvokeRequest::default()),
+			Op::Config(pb::McpConfigRequest::default()),
+		] {
+			let request = pb::McpOp { op: Some(operation) };
+			let name = mcp_operation(&request).expect("present MCP operation");
+			let spec = omp_tool::operation_spec(name).expect("MCP operation has canonical metadata");
+			assert_eq!(spec.authority, omp_tool::Authority::Environment);
+			assert_eq!(spec.minimum_phase, omp_core::InvocationPhase::EffectsAuthorized);
+		}
+	}
+
+	#[test]
+	fn missing_mcp_operation_is_invalid_input_not_a_public_operation() {
+		assert_eq!(mcp_operation(&pb::McpOp::default()), None);
 	}
 }

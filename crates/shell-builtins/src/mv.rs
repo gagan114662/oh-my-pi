@@ -1232,8 +1232,11 @@ fn rename_dir_fallback(
 	};
 
 	#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
-	let xattrs =
-		fsxattr::retrieve_xattrs(host.resolve(from)).unwrap_or_else(|_| FastHashMap::default());
+	let xattrs = match fsxattr::retrieve_xattrs(host.resolve(from)) {
+		Ok(attributes) => attributes,
+		Err(error) if error.raw_os_error() == Some(libc::EOPNOTSUPP) => FastHashMap::default(),
+		Err(error) => return Err(error),
+	};
 
 	// Use directory copying (with or without hardlink support)
 	let result = copy_dir_contents(
@@ -1249,10 +1252,14 @@ fn rename_dir_fallback(
 		display_manager,
 	);
 
-	#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
-	fsxattr::apply_xattrs(host.resolve(to), xattrs)?;
-
 	result?;
+	#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
+	if !xattrs.is_empty() {
+		match fsxattr::apply_xattrs(host.resolve(to), xattrs) {
+			Err(error) if error.raw_os_error() == Some(libc::EOPNOTSUPP) => {},
+			result => result?,
+		}
+	}
 
 	// Remove the source directory after successful copy
 	fs::remove_dir_all(host.resolve(from))?;
@@ -1492,7 +1499,7 @@ fn rename_file_fallback(
 	// Copy xattrs, ignoring ENOTSUP errors (filesystem doesn't support xattrs)
 	#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
 	{
-		let _ = copy_xattrs_if_supported(host, from, to);
+		copy_xattrs_if_supported(host, from, to)?;
 	}
 
 	fs::remove_file(host.resolve(from))
@@ -1952,6 +1959,25 @@ mod tests {
 
 	use super::Mv;
 	use crate::host::{Host, Utility, run_util};
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn cross_filesystem_fallback_preserves_attributes_before_removing_source() {
+		use std::{ffi::OsString, path::Path};
+		let fixture = tempdir().unwrap();
+		let source = fixture.path().join("source");
+		let target = fixture.path().join("target");
+		fs::write(&source, b"payload").unwrap();
+		let mut attributes = omp_core::FastHashMap::default();
+		attributes.insert(OsString::from("user.omp.proof"), vec![0, 255, 42]);
+		super::fsxattr::apply_xattrs(&source, attributes.clone()).unwrap();
+		let (mut host, _) = Host::for_test("mv", "", fixture.path());
+		super::rename_file_fallback(&mut host, Path::new("source"), Path::new("target"), None, None)
+			.unwrap();
+		assert!(!source.exists());
+		assert_eq!(fs::read(&target).unwrap(), b"payload");
+		assert_eq!(super::fsxattr::retrieve_xattrs(&target).unwrap(), attributes);
+	}
 
 	#[test]
 	fn relative_rename_uses_host_working_directory() {

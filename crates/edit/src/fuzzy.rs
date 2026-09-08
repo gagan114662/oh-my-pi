@@ -1171,6 +1171,25 @@ pub fn replace_text(
 	all: bool,
 	threshold: Option<f64>,
 ) -> Result<ReplaceResult, EditError> {
+	let (bom, body) = crate::text::strip_bom(content);
+	let (_, old_body) = crate::text::strip_bom(old_text);
+	let (_, new_body) = crate::text::strip_bom(new_text);
+	let mut result = replace_text_body(body, old_body, new_body, fuzzy, all, threshold)?;
+	if !bom.is_empty() {
+		result.content.insert_str(0, bom);
+	}
+	Ok(result)
+}
+
+// A leading BOM is document metadata, not indentation in a fuzzy match.
+fn replace_text_body(
+	content: &str,
+	old_text: &str,
+	new_text: &str,
+	fuzzy: bool,
+	all: bool,
+	threshold: Option<f64>,
+) -> Result<ReplaceResult, EditError> {
 	if old_text.is_empty() {
 		return Err(EditError::apply("oldText must not be empty."));
 	}
@@ -1284,6 +1303,53 @@ mod tests {
 		assert_eq!(multiple.occurrences, Some(2));
 		assert_eq!(multiple.occurrence_lines, Some(vec![1, 3]));
 		assert_eq!(multiple.occurrence_previews.as_ref().map(Vec::len), Some(2));
+	}
+
+	#[test]
+	fn replacement_keeps_one_bom_for_exact_all_and_missing_matches() {
+		let replaced = replace_text("\u{feff}old old", "old", "new", false, true, None).unwrap();
+		assert_eq!(replaced.count, 2);
+		assert_eq!(replaced.content, "\u{feff}new new");
+		let missing = replace_text("\u{feff}old", "absent", "new", false, false, None).unwrap();
+		assert_eq!(missing.count, 0);
+		assert_eq!(missing.content, "\u{feff}old");
+		let explicit =
+			replace_text("\u{feff}old", "\u{feff}old", "\u{feff}new", false, false, None).unwrap();
+		assert_eq!(explicit.count, 1);
+		assert_eq!(explicit.content, "\u{feff}new");
+	}
+
+	#[test]
+	fn replacement_preserves_bom_while_matching_typographic_quotes_and_crlf() {
+		let result = replace_text(
+			"\u{feff}say “hello”\r\n",
+			"say \"hello\"\n",
+			"say \"goodbye\"\n",
+			true,
+			false,
+			None,
+		)
+		.unwrap();
+		assert_eq!(result.count, 1);
+		assert_eq!(result.content, "\u{feff}say \"goodbye\"\n");
+	}
+
+	#[test]
+	fn typographic_quotes_match_only_when_fuzzy_is_allowed_and_remain_ambiguous() {
+		for (content, target) in [("say “hello”", "say \"hello\""), ("it’s fine", "it's fine")]
+		{
+			assert!(
+				find_match(content, target, &options(false))
+					.matched
+					.is_none()
+			);
+			let found = find_match(content, target, &options(true)).matched.unwrap();
+			assert_eq!(found.actual_text, content);
+			assert_eq!(found.confidence, 1.0);
+		}
+		let ambiguous = find_match("say “hello”\nsay ”hello“", "say \"hello\"", &options(true));
+		assert!(ambiguous.matched.is_none());
+		assert_eq!(ambiguous.fuzzy_matches, Some(2));
 	}
 
 	#[test]

@@ -11,6 +11,9 @@ PYO3_CONFIG_FILE = { value = "vendor/python/pyo3-config.txt", relative = true }
 # Optional realtime audio builds audiopus_sys through CMake. Use Ninja to
 # avoid the macOS GNU make jobserver incompatibility.
 CMAKE_GENERATOR = "Ninja"
+# audiopus_sys 0.2.2 vendors pre-3.5 Opus CMake policy declarations. CMake
+# 4 removed that compatibility; use its supported policy floor in-tree.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 
 # Dev links go through ld64.lld as well: the 652 MB statically-linked CPython
 # images overflow ld64's compact-unwind fast path (__eh_frame > 16 MB), and
@@ -20,7 +23,7 @@ CMAKE_GENERATOR = "Ninja"
 # crates remain. Eight is rustc's best-tested setting; Cargo's jobserver prevents
 # oversubscription while many crates compile. Requires the pinned nightly.
 rustflags = [
-	"-C", "link-arg=--ld-path=/opt/homebrew/bin/ld64.lld",
+	"-C", "link-arg=--ld-path=/opt/homebrew/opt/lld@22/bin/ld64.lld",
 	"-Z", "threads=8",
 ]
 # Store each crate's metadata only in its .rmeta instead of duplicating it into

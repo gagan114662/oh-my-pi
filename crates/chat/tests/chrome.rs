@@ -142,19 +142,20 @@ fn boot_surface_matches_pi_chrome_at_120x40() {
 	let (rows, cursor) = surface(120, 40);
 	assert_eq!(rows.len(), 40);
 	insta::assert_snapshot!(rows.join("\n"));
-	// The same row anchors as the reference capture: box rows 1..=20, tip on
-	// 21, two blank rows, status on 24, composer on 25.
+	// The current wrapped-tip layout: box rows 1..=20, tip on
+	// 21..=22, two blank rows, status on 25, composer on 26.
 	assert!(rows[1].starts_with("╭─── omp v"), "{}", rows[1]);
 	assert!(rows[20].starts_with('╰') && rows[20].contains('┴'), "{}", rows[20]);
 	assert!(rows[21].starts_with(" Tip: "), "{}", rows[21]);
-	assert_eq!(rows[22], "");
+	assert_eq!(rows[22], "      to use it!");
 	assert_eq!(rows[23], "");
+	assert_eq!(rows[24], "");
 	// Band segment order with the `/work` root stripped from the path,
 	// the git branch, the powerline cap, and the gauge running to the edge
 	// with its `1M` window label.
-	assert_eq!(rows[24], expected_band(" π  > ⬢ Fable 5 > 📁 omp > ⑂ main ▶", 120, 80));
-	assert!(rows[25].starts_with("╰─ Ask anything, edit files, run tools"), "{}", rows[25]);
-	assert_eq!(cursor, Some((3, 25)), "caret sits after the prompt gutter");
+	assert_eq!(rows[25], expected_band(" π  > ⬢ Fable 5 > 📁 omp > ⑂ main ▶", 120, 80));
+	assert!(rows[26].starts_with("╰─ Ask anything, edit files, run tools"), "{}", rows[26]);
+	assert_eq!(cursor, Some((3, 26)), "caret sits after the prompt gutter");
 }
 
 #[test]

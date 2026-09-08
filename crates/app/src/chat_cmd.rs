@@ -53,6 +53,38 @@ pub(crate) async fn process_signal() -> std::io::Result<omp_session::ExitSignal>
 	}
 }
 
+/// [`process_signal`] for unattended print mode: a terminal hangup does not
+/// end the turn. Registering the SIGHUP stream replaces its default
+/// disposition (terminate), and the hangup is logged and otherwise ignored,
+/// so a task started over ssh, tmux or a closed pipe reader keeps running
+/// until it finishes or is interrupted (#125). Writes to a closed stdout
+/// still fail on their own.
+#[cfg(unix)]
+pub(crate) async fn process_signal_headless() -> std::io::Result<omp_session::ExitSignal> {
+	use tokio::signal::unix::{SignalKind, signal};
+
+	let mut interrupt = signal(SignalKind::interrupt())?;
+	let mut terminate = signal(SignalKind::terminate())?;
+	let mut hangup = signal(SignalKind::hangup())?;
+	let mut quit = signal(SignalKind::quit())?;
+	loop {
+		tokio::select! {
+			_ = interrupt.recv() => return Ok(omp_session::ExitSignal::new("SIGINT", Some(libc::SIGINT))),
+			_ = terminate.recv() => return Ok(omp_session::ExitSignal::new("SIGTERM", Some(libc::SIGTERM))),
+			_ = quit.recv() => return Ok(omp_session::ExitSignal::new("SIGQUIT", Some(libc::SIGQUIT))),
+			_ = hangup.recv() => {
+				tracing::info!("SIGHUP ignored: headless print mode keeps its turn");
+			},
+		}
+	}
+}
+
+/// [`process_signal`] for print mode on Windows, where no hangup exists.
+#[cfg(windows)]
+pub(crate) async fn process_signal_headless() -> std::io::Result<omp_session::ExitSignal> {
+	process_signal().await
+}
+
 /// Waits for the first console interrupt the session owner can journal before
 /// teardown.
 #[cfg(windows)]

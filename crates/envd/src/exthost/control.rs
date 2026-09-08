@@ -2752,6 +2752,21 @@ pub enum ControlRuntimeError {
 	Remote(ControlProtocolError),
 }
 
+// The reader owns the connection lifetime. Cleanup must also run when its
+// task is aborted or a malformed frame returns early, not only on clean EOF.
+impl Drop for ControlRuntime {
+	fn drop(&mut self) {
+		self.shared.router.lock().disconnect();
+		self.shared.invocations.lock().clear();
+		self.shared.dispatch_by_id.lock().clear();
+		self.shared.dispatch_progress.lock().clear();
+		self.shared.dispatch_chunks.lock().clear();
+		for (_, request) in mem::take(&mut *self.shared.child_requests.lock()) {
+			request.abort();
+		}
+	}
+}
+
 impl ControlRuntime {
 	/// Binds one authenticated child descriptor and returns its dispatch handle.
 	pub fn new(
@@ -2781,14 +2796,6 @@ impl ControlRuntime {
 	pub async fn serve(mut self) -> Result<(), ControlRuntimeError> {
 		loop {
 			let Some(frame) = read_json_control_frame(&mut self.reader).await? else {
-				self.shared.router.lock().disconnect();
-				self.shared.invocations.lock().clear();
-				self.shared.dispatch_by_id.lock().clear();
-				self.shared.dispatch_progress.lock().clear();
-				self.shared.dispatch_chunks.lock().clear();
-				for (_, request) in mem::take(&mut *self.shared.child_requests.lock()) {
-					request.abort();
-				}
 				return Ok(());
 			};
 			match frame.kind.as_str() {
@@ -3409,8 +3416,23 @@ impl ControlHandle {
 			.ok_or_else(|| ControlProtocolError::malformed("dispatch response has no result").into())
 	}
 
-	/// Sends stage one of the documented cancellation ladder.
+	/// Removes a callback which has not entered the child, or sends stage one
+	/// of the cancellation ladder for an already dispatched callback.
 	pub async fn cancel(&self, invocation: &str) -> Result<(), ControlRuntimeError> {
+		if let Some(id) = self.last_frame(invocation) {
+			let queued = self
+				.shared
+				.router
+				.lock()
+				.cancel_queued(self.shared.identity.extension.as_str(), id)?;
+			if queued {
+				self.shared.invocations.lock().remove(invocation);
+				self.shared.dispatch_by_id.lock().remove(&id);
+				self.shared.dispatch_progress.lock().remove(&id);
+				self.shared.dispatch_chunks.lock().remove(&id);
+				return Ok(());
+			}
+		}
 		if !self.shared.invocations.lock().contains_key(invocation) {
 			return Err(
 				ControlProtocolError::new(
@@ -3731,6 +3753,191 @@ mod convar_tests {
 	) -> Arc<dyn ControlAuthority> {
 		let convars = factory.bind(identity).expect("bind convar authority");
 		Arc::new(CompositeControlAuthority::new([Arc::clone(&convars)], convars))
+	}
+
+	enum RuntimeStop {
+		CancelQueued,
+		Abort,
+		Malformed,
+		Eof,
+	}
+
+	async fn assert_runtime_stop_settles_calls(stop: RuntimeStop) {
+		use std::{
+			future::Future as _,
+			task::Poll,
+			time::{Duration, Instant},
+		};
+
+		use tokio::{io::AsyncWriteExt as _, time};
+
+		use super::*;
+
+		let identity = identity();
+		let factory = ConvarControlFactory::new(Arc::new(Ctx::new()));
+		let authority = routed_authority(&factory, Arc::clone(&identity));
+		let (parent, child) = UnixStream::pair().expect("CONTROL pair");
+		let (runtime, handle) = ControlRuntime::new(
+			parent,
+			HostKey::new("project", "trusted", identity.extension.clone()),
+			(*identity).clone(),
+			authority,
+		);
+		let pump = tokio::spawn(runtime.serve());
+		let child_request = tokio::spawn(std::future::pending::<()>());
+		handle
+			.shared
+			.child_requests
+			.lock()
+			.insert(77, child_request.abort_handle());
+		let (mut reader, mut writer) = child.into_split();
+		let dispatch = |name| ControlDispatch {
+			operation: sf!("omp.test.block"),
+			arguments: serde_json::Map::new(),
+			authority: ControlInvocationAuthority {
+				invocation:        Str::new_static(name),
+				phase:             InvocationPhase::EffectsAuthorized,
+				session:           sf!("session"),
+				turn:              None,
+				event:             None,
+				call:              None,
+				device:            None,
+				effects:           Box::new([]),
+				place_kind:        sf!("host"),
+				lifecycle:         LifecyclePhase::Active,
+				roots:             Box::new([]),
+				remote:            false,
+				has_ui:            false,
+				headless:          true,
+				settings:          serde_json::Map::new(),
+				secret_settings:   Box::new([]),
+				data:              None,
+				direct_filesystem: None,
+			},
+			policy:    CallbackConcurrency::Serialized,
+			deadline:  EventDeadline { at: Instant::now() + Duration::from_secs(30) },
+		};
+		let (progress_tx, progress_rx) = flume::bounded(1);
+		let running = handle.dispatch_with_progress(dispatch("running"), progress_tx);
+		tokio::pin!(running);
+		time::timeout(Duration::from_secs(1), async {
+			tokio::select! {
+				result = &mut running => panic!("dispatch finished before child response: {result:?}"),
+				frame = read_json_control_frame(&mut reader) => {
+					assert!(frame.expect("dispatch frame").is_some());
+				}
+			}
+		})
+		.await
+		.expect("dispatch reached child");
+		let queued = handle.dispatch(dispatch("queued"));
+		tokio::pin!(queued);
+		std::future::poll_fn(|cx| {
+			assert!(queued.as_mut().poll(cx).is_pending());
+			Poll::Ready(())
+		})
+		.await;
+		assert!(handle.is_live("running"));
+		assert!(handle.is_live("queued"));
+
+		let queued_error = if matches!(stop, RuntimeStop::CancelQueued) {
+			DispatchError::Cancelled
+		} else {
+			DispatchError::HostGone
+		};
+		match stop {
+			RuntimeStop::CancelQueued => {
+				handle
+					.cancel("queued")
+					.await
+					.expect("cancel queued callback");
+				assert!(handle.is_live("running"), "other callback remains active");
+				assert!(!handle.is_live("queued"), "queued authority is removed immediately");
+				let error = reader
+					.try_read(&mut [0_u8; 1])
+					.expect_err("no child cancellation frame");
+				assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+				pump.abort();
+				assert!(pump.await.expect_err("test cleanup").is_cancelled());
+			},
+			RuntimeStop::Abort => {
+				pump.abort();
+				assert!(pump.await.expect_err("aborted pump").is_cancelled());
+			},
+			RuntimeStop::Malformed => {
+				writer
+					.write_all(&1_u32.to_be_bytes())
+					.await
+					.expect("frame header");
+				writer.write_all(b"{").await.expect("invalid JSON");
+				let result = time::timeout(Duration::from_secs(1), pump)
+					.await
+					.expect("malformed frame terminates pump")
+					.expect("pump task");
+				assert!(matches!(result, Err(ControlRuntimeError::Json(_))));
+			},
+			RuntimeStop::Eof => {
+				writer.shutdown().await.expect("child EOF");
+				time::timeout(Duration::from_secs(1), pump)
+					.await
+					.expect("EOF terminates pump")
+					.expect("pump task")
+					.expect("clean EOF");
+			},
+		}
+		let running_result = time::timeout(Duration::from_secs(1), running)
+			.await
+			.expect("running call settled");
+		assert!(matches!(
+			running_result,
+			Err(ControlRuntimeError::Dispatch(DispatchError::HostGone))
+		));
+		let queued_result = time::timeout(Duration::from_secs(1), queued)
+			.await
+			.expect("queued call settled");
+		assert!(
+			matches!(queued_result, Err(ControlRuntimeError::Dispatch(error)) if error == queued_error)
+		);
+		assert!(!handle.is_live("running"));
+		assert!(!handle.is_live("queued"));
+		assert!(
+			time::timeout(Duration::from_secs(1), progress_rx.recv_async())
+				.await
+				.expect("progress stream settled")
+				.is_err(),
+			"progress stream closed"
+		);
+		assert!(
+			time::timeout(Duration::from_secs(1), child_request)
+				.await
+				.expect("child request stopped")
+				.expect_err("child request aborted")
+				.is_cancelled()
+		);
+		let late = time::timeout(Duration::from_secs(1), handle.dispatch(dispatch("late")))
+			.await
+			.expect("stale handle rejects dispatch promptly");
+		assert!(matches!(late, Err(ControlRuntimeError::Dispatch(DispatchError::HostGone))));
+	}
+
+	#[tokio::test]
+	async fn queued_control_cancellation_does_not_reach_child_or_stop_running_call() {
+		assert_runtime_stop_settles_calls(RuntimeStop::CancelQueued).await;
+	}
+
+	#[tokio::test]
+	async fn aborted_control_pump_settles_running_and_queued_calls() {
+		assert_runtime_stop_settles_calls(RuntimeStop::Abort).await;
+	}
+
+	#[tokio::test]
+	async fn malformed_control_frame_settles_running_and_queued_calls() {
+		assert_runtime_stop_settles_calls(RuntimeStop::Malformed).await;
+	}
+
+	#[tokio::test]
+	async fn control_eof_settles_calls_and_rejects_late_dispatch() {
+		assert_runtime_stop_settles_calls(RuntimeStop::Eof).await;
 	}
 
 	#[test]

@@ -2267,7 +2267,8 @@ async fn session_loop(mut shell: Shell, commands: Receiver<SessionCommand>) {
 						RunTerminal::Cancelled,
 						Duration::ZERO,
 						shell.working_dir(),
-					);
+					)
+					.await;
 					cancellation_deadline = Some(Instant::now() + CANCEL_GRACE);
 					continue;
 				},
@@ -2289,7 +2290,8 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool
 				RunTerminal::Cancelled,
 				started_at.elapsed(),
 				shell.working_dir(),
-			);
+			)
+			.await;
 			return true;
 		},
 		Err(flume::TryRecvError::Empty) => {},
@@ -2311,7 +2313,8 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool
 			RunTerminal::Failed,
 			started_at.elapsed(),
 			shell.working_dir(),
-		);
+		)
+		.await;
 		return false;
 	};
 	if let Some(sandbox) = command.sandbox.as_ref()
@@ -2353,13 +2356,15 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool
 				RunTerminal::Failed,
 				started_at.elapsed(),
 				shell.working_dir(),
-			);
+			)
+			.await;
 			return false;
 		}
 	}
 	let _ = command
 		.events
-		.send(ExecEvent::Started { exec_id: command.exec.clone() });
+		.send_async(ExecEvent::Started { exec_id: command.exec.clone() })
+		.await;
 	params.process_group_policy = omp_shell::ProcessGroupPolicy::NewProcessGroup;
 	params.set_spawn_observer(command.control.spawns.clone());
 	params.set_process_scope(command.control.spawns.clone());
@@ -2453,7 +2458,7 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool
 						RunTerminal::Cancelled,
 						started_at.elapsed(),
 						shell.working_dir(),
-					);
+					).await;
 					return true;
 				},
 			};
@@ -2481,14 +2486,15 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool
 			RunTerminal::Denied { exit_code: denial.exit_code, fact: denial.fact },
 			started_at.elapsed(),
 			shell.working_dir(),
-		);
+		)
+		.await;
 		return cancelled;
 	}
-	finish_session_command(&command, result, started_at.elapsed(), shell.working_dir());
+	finish_session_command(&command, result, started_at.elapsed(), shell.working_dir()).await;
 	cancelled
 }
 
-fn finish_session_command(
+async fn finish_session_command(
 	command: &SessionCommand,
 	mut result: RunTerminal,
 	elapsed: Duration,
@@ -2545,7 +2551,9 @@ fn finish_session_command(
 		final_cwd_revision,
 		props: Default::default(),
 	});
-	let _ = command.events.send(event);
+	// Yield under terminal backpressure so the consumer can drain this
+	// same runtime. Never discard the terminal event when the queue is full.
+	let _ = command.events.send_async(event).await;
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -2927,7 +2935,11 @@ impl OutputCapture {
 		(projected != 0).then(|| Bytes::copy_from_slice(&data[..projected]))
 	}
 
-	fn close_projection(&mut self) {
+	fn discard_projection_frame(&mut self, bytes: usize) {
+		// project() reserves inline accounting before the nonblocking enqueue.
+		// A rejected frame was captured in CAS, but never delivered inline.
+		self.projected_bytes -= bytes;
+		self.projected_frames -= 1;
 		self.projection_closed = true;
 		self.spilled = true;
 	}
@@ -3004,6 +3016,7 @@ fn spawn_reader<R: Read + Send + 'static>(
 			sequencer.next += 1;
 			sequencer.sequence.store(sequencer.next, Ordering::Release);
 			if let Some(data) = projected {
+				let projected_bytes = data.len();
 				let event = ExecEvent::Output(OutputFrame {
 					exec: exec.clone(),
 					channel: channel as i32,
@@ -3012,7 +3025,10 @@ fn spawn_reader<R: Read + Send + 'static>(
 					props: Default::default(),
 				});
 				if sequencer.events.try_send(event).is_err() {
-					sequencer.output.lock().close_projection();
+					sequencer
+						.output
+						.lock()
+						.discard_projection_frame(projected_bytes);
 				}
 			}
 		}
@@ -3351,9 +3367,9 @@ fn detached_command(source: &str, sandbox: Option<&ExecSandbox>) -> Result<Comma
 	let args = crate::shell_child::child_args(source);
 	let args = [args[0].as_os_str(), args[1].as_os_str()];
 	let mut command = sandbox.map_or_else(
-		|| Command::new(&executable),
+		|| Ok(Command::new(&executable)),
 		|sandbox| sandbox.command(executable.as_os_str(), &args),
-	);
+	)?;
 	if sandbox.is_none() {
 		command.args(args);
 	}
@@ -4423,6 +4439,71 @@ mod tests {
 		host.close_session(&opened.session).expect("session closes");
 	}
 
+	#[tokio::test]
+	async fn saturated_output_queue_counts_only_delivered_bytes_and_retains_all_source() {
+		let root = tempfile::tempdir().expect("temporary artifact root");
+		let store = BlobStore::open(root.path().join("artifacts")).expect("artifact store");
+		let output = Arc::new(Mutex::new(
+			OutputCapture::new_with_request(Some(&store), omp_tool::OutputRequest::Bounded)
+				.expect("output capture"),
+		));
+		let (events, receiver) = flume::bounded(OUTPUT_EVENT_CAPACITY);
+		let exec = Bytes::from_static(b"saturated-output");
+		for _ in 1..OUTPUT_EVENT_CAPACITY {
+			events
+				.try_send(ExecEvent::Started { exec_id: exec.clone() })
+				.expect("reserve all but one slot");
+		}
+		let sequencer = Arc::new(Mutex::new(OutputSequencer {
+			next: 1,
+			sequence: Arc::new(AtomicU64::new(1)),
+			events,
+			output: output.clone(),
+			sandbox_diagnostic: None,
+		}));
+		// Use the actual reader/enqueue path. Waiting for each reader makes
+		// saturation deterministic without sleeps or OS pipe chunk assumptions.
+		spawn_reader(
+			io::Cursor::new(b"kept"),
+			OutputChannel::Stdout,
+			exec.clone(),
+			sequencer.clone(),
+		)
+		.await
+		.expect("first reader finishes");
+		assert_eq!(receiver.len(), OUTPUT_EVENT_CAPACITY);
+		let omitted = vec![b'x'; OUTPUT_CHUNK_BYTES + 17];
+		spawn_reader(io::Cursor::new(omitted.clone()), OutputChannel::Stdout, exec, sequencer)
+			.await
+			.expect("saturated reader finishes without blocking");
+		let delivered = receiver
+			.try_iter()
+			.filter_map(|event| match event {
+				ExecEvent::Output(frame) => Some(frame.data),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(delivered, [Bytes::from_static(b"kept")]);
+		let mut output = output.lock();
+		assert_eq!(output.projected_frames, 1, "rejected frames are not delivered frames");
+		let (artifact, projection) = output.finish_with_projection().expect("capture finalizes");
+		assert_eq!(projection.inline_bytes, 4);
+		assert_eq!(projection.source_bytes, (4 + omitted.len()) as u64);
+		assert!(projection.omitted);
+		assert_eq!(projection.request, v1::OutputRequest::Bounded as i32);
+		let artifact = artifact.expect("queue omission retains an artifact");
+		assert_eq!(projection.artifact, Some(wire_blob(&artifact)));
+		let mut expected = b"kept".to_vec();
+		expected.extend_from_slice(&omitted);
+		assert_eq!(
+			store
+				.get(&artifact)
+				.expect("complete source artifact")
+				.as_ref(),
+			expected.as_slice()
+		);
+	}
+
 	#[test]
 	fn tiny_output_frames_are_count_bounded_and_spilled_whole() {
 		let root = tempfile::tempdir().expect("temporary artifact root");
@@ -4450,6 +4531,76 @@ mod tests {
 				.as_ref(),
 			expected.as_slice(),
 		);
+	}
+
+	#[tokio::test]
+	async fn terminal_event_yields_on_a_full_queue_and_preserves_order() {
+		let (events, receiver) = flume::bounded(OUTPUT_EVENT_CAPACITY);
+		let receiver = Arc::new(receiver);
+		let (cancel_tx, cancel_rx) = flume::bounded(1);
+		let command = SessionCommand {
+			host: Weak::new(),
+			exec: Bytes::from_static(b"saturated-run"),
+			source: Str::from(""),
+			environment: None,
+			timeout: None,
+			pty: None,
+			control: Arc::new(RunControl {
+				cancel_tx,
+				input: Mutex::new(None),
+				spawns: Arc::new(SpawnBook {
+					groups:  Mutex::new(Vec::new()),
+					pids:    Mutex::new(Vec::new()),
+					session: None,
+				}),
+				finished: AtomicBool::new(false),
+				retained: Mutex::new(None),
+				events: Arc::downgrade(&receiver),
+			}),
+			cancel_rx,
+			events,
+			output: Arc::new(Mutex::new(
+				OutputCapture::new_with_request(None, omp_tool::OutputRequest::Bounded)
+					.expect("output capture"),
+			)),
+			github_targets: Vec::new(),
+			sandbox: None,
+			sandbox_announced: Arc::new(AtomicBool::new(false)),
+			diags: Arc::new(Mutex::new(Vec::new())),
+			sequence: Arc::new(AtomicU64::new(1)),
+			rerun: false,
+			sandbox_environment_update: false,
+		};
+		// Fill the real production queue before polling finalization. No timing
+		// or OS-dependent pipe chunk size is needed to reach backpressure.
+		for index in 0..OUTPUT_EVENT_CAPACITY {
+			command
+				.events
+				.try_send(ExecEvent::Started { exec_id: Bytes::from(index.to_string()) })
+				.expect("queue has exactly the production capacity");
+		}
+		let mut finish = std::pin::pin!(finish_session_command(
+			&command,
+			RunTerminal::Exited(0),
+			Duration::ZERO,
+			Path::new("/"),
+		));
+		assert!(futures::poll!(finish.as_mut()).is_pending(), "full queue must yield");
+		for index in 0..OUTPUT_EVENT_CAPACITY {
+			let ExecEvent::Started { exec_id } = receiver.try_recv().expect("queued event") else {
+				panic!("terminal event overtook queued output");
+			};
+			assert_eq!(exec_id, Bytes::from(index.to_string()));
+		}
+		finish.await;
+		let ExecEvent::Exit(event) = receiver.try_recv().expect("terminal event retained") else {
+			panic!("expected terminal event");
+		};
+		assert_eq!(event.exec, command.exec);
+		let status = event.status.expect("terminal status retained");
+		assert_eq!(status.exit_code, Some(0));
+		assert_eq!(status.outcome, ExecOutcome::Exited as i32);
+		assert!(receiver.try_recv().is_err(), "terminal event delivered once");
 	}
 
 	#[tokio::test]

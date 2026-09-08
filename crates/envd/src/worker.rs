@@ -591,6 +591,7 @@ pub enum ExtHostEvent {
 pub struct ExtHostInvocation {
 	id:                 u64,
 	invocation_id:      Str,
+	execution_id:       Str,
 	host_generation:    u64,
 	session_generation: u64,
 	owner:              HostKey,
@@ -614,7 +615,7 @@ impl ExtHostInvocation {
 		if matches!(event, ExtHostEvent::Complete(_) | ExtHostEvent::Aborted(_)) {
 			self.terminal = true;
 			if let Some(authority) = &self.data_authority {
-				authority.settle(&self.owner, self.invocation_id.as_str());
+				authority.settle(&self.owner, self.execution_id.as_str());
 			}
 		}
 		Ok(event)
@@ -687,7 +688,7 @@ impl ExtHostInvocation {
 			authority
 				.authorize(
 					&self.owner,
-					self.invocation_id.as_str(),
+					self.execution_id.as_str(),
 					frame.effect_token.clone(),
 					frame
 						.effects
@@ -757,7 +758,7 @@ impl Drop for ExtHostInvocation {
 			});
 		}
 		if let Some(authority) = &self.data_authority {
-			authority.settle(&self.owner, self.invocation_id.as_str());
+			authority.settle(&self.owner, self.execution_id.as_str());
 		}
 	}
 }
@@ -1758,9 +1759,18 @@ impl ExtHostSupervisor {
 			{
 				Ok(Ok(evidence)) => evidence,
 				Ok(Err(error)) => {
+					let mut tail = Vec::new();
+					while let Ok(log) = running.logs().try_recv() {
+						let bytes = log.bytes.as_slice();
+						tail.extend_from_slice(&bytes[bytes.len().saturating_sub(800)..]);
+						if tail.len() > 800 {
+							tail.drain(..tail.len() - 800);
+						}
+					}
 					tracing::warn!(
 						extension_id = %extension.key.extension(),
 						error = %error,
+						output_tail = %String::from_utf8_lossy(&tail).trim(),
 						"Python extension registry freeze failed; containing failure",
 					);
 					running.shutdown().await;
@@ -2533,14 +2543,17 @@ impl ExtHostSupervisor {
 		let commands = route.commands.clone();
 		let id = self.next_invocation.fetch_add(1, Ordering::Relaxed).max(1);
 		let invocation_id = call.invocation_id.clone();
+		// Client call names are only unique inside their own connection.
+		let execution_id = Str::from(omp_core::Ulid::generate().to_string());
 		if let Some(authority) = &self.data_authority {
-			authority.open(route.owner.clone(), invocation_id.clone());
+			authority.open(route.owner.clone(), execution_id.clone());
 		}
 		let (events_tx, events) = flume::unbounded();
 		if commands
 			.send(ControlHostCommand::Open {
 				id,
 				owner: route.owner.clone(),
+				execution_id: execution_id.clone(),
 				call,
 				events: events_tx,
 				callback_policy: route.callback_policy,
@@ -2548,13 +2561,14 @@ impl ExtHostSupervisor {
 			.is_err()
 		{
 			if let Some(authority) = &self.data_authority {
-				authority.settle(&route.owner, invocation_id.as_str());
+				authority.settle(&route.owner, execution_id.as_str());
 			}
 			return Err(ExtHostError::Unavailable);
 		}
 		Ok(ExtHostInvocation {
 			id,
 			invocation_id,
+			execution_id,
 			owner: route.owner.clone(),
 			data_authority: self.data_authority.clone(),
 			maximum_effects: route.maximum_effects.clone(),
@@ -3061,6 +3075,7 @@ enum ControlHostCommand {
 	Open {
 		id:              u64,
 		owner:           HostKey,
+		execution_id:    Str,
 		call:            ExtHostToolCall,
 		events:          flume::Sender<ExtHostEvent>,
 		callback_policy: CallbackConcurrency,
@@ -3094,6 +3109,7 @@ enum ControlHostCommand {
 }
 
 struct PendingInvocation {
+	execution_id:    Str,
 	call:            ExtHostToolCall,
 	events:          flume::Sender<ExtHostEvent>,
 	callback_policy: CallbackConcurrency,
@@ -3687,10 +3703,15 @@ async fn run_control_supervisor(
 			continue;
 		};
 		match command {
-			ControlHostCommand::Open { id, owner: request_owner, call, events, callback_policy }
-				if request_owner == owner =>
-			{
-				pending.insert(id, PendingInvocation { call, events, callback_policy });
+			ControlHostCommand::Open {
+				id,
+				owner: request_owner,
+				execution_id,
+				call,
+				events,
+				callback_policy,
+			} if request_owner == owner => {
+				pending.insert(id, PendingInvocation { execution_id, call, events, callback_policy });
 			},
 			ControlHostCommand::ArgsCommitted { id, frame } => {
 				let Some(invocation) = pending.remove(&id) else {
@@ -3736,7 +3757,7 @@ async fn run_control_supervisor(
 				arguments.insert(String::from("args"), serde_json::Value::Object(args));
 				let data = (activation.data_enabled && frame.effects.is_some()).then(|| {
 					serde_json::json!({
-						"invocation": invocation.call.invocation_id.as_str(),
+						"invocation": invocation.execution_id.as_str(),
 						"effect_token": {
 							"$bytes": omp_core::base64::encode(frame.effect_token.as_ref()),
 						},
@@ -3749,7 +3770,7 @@ async fn run_control_supervisor(
 					operation: sf!("omp.devices.call"),
 					arguments,
 					authority: ControlInvocationAuthority {
-						invocation: invocation.call.invocation_id.clone(),
+						invocation: invocation.execution_id.clone(),
 						phase: InvocationPhase::EffectsAuthorized,
 						session: session_id.clone(),
 						turn: None,
@@ -3771,9 +3792,7 @@ async fn run_control_supervisor(
 					policy: invocation.callback_policy,
 					deadline: EventDeadline { at: Instant::now() + invocation.call.deadline },
 				};
-				in_flight
-					.lock()
-					.insert(id, invocation.call.invocation_id.clone());
+				in_flight.lock().insert(id, invocation.execution_id.clone());
 				let control = activation.control.clone();
 				let store = result_store.clone();
 				let result_session = session_id.clone();
@@ -3806,11 +3825,15 @@ async fn run_control_supervisor(
 					let _ = progress.await;
 					let was_cancelled = task_cancelled.lock().remove(&id);
 					if was_cancelled {
+						let effects_unknown = !matches!(
+							result,
+							Err(ControlRuntimeError::Dispatch(DispatchError::Cancelled))
+						);
 						let _ = invocation.events.send(ExtHostEvent::Aborted(ExtHostAbort {
-							call_id:         invocation.call.invocation_id,
-							kind:            ExtHostAbortKind::Cancelled,
-							reason:          sf!("extension invocation cancelled"),
-							effects_unknown: true,
+							call_id: invocation.call.invocation_id,
+							kind: ExtHostAbortKind::Cancelled,
+							reason: sf!("extension invocation cancelled"),
+							effects_unknown,
 						}));
 					} else {
 						match result {
@@ -4194,6 +4217,77 @@ async fn dispatch_control_service(
 mod tests {
 	use super::*;
 
+	#[tokio::test]
+	async fn repeated_client_call_names_keep_separate_worker_authority() {
+		let authority = Arc::new(AuthorityTable::default());
+		let mut config = ExtHostConfig::new(
+			PathBuf::from("unused"),
+			Principal::new(sf!("test"), sf!("Test")),
+			sf!("session"),
+			1,
+		);
+		config.bind_data_authority(Arc::clone(&authority));
+		let mut supervisor = ExtHostSupervisor::spawn(config)
+			.await
+			.expect("empty supervisor");
+		let owner = HostKey::new("project", "trusted", "test");
+		let (commands, mailbox) = flume::unbounded();
+		supervisor
+			.routes
+			.insert((sf!("tool"), sf!("1")), HostRoute {
+				commands,
+				owner: owner.clone(),
+				maximum_effects: omp_tool::Effects::default(),
+				callback_policy: CallbackConcurrency::Serialized,
+				host_generation: Arc::new(AtomicU64::new(1)),
+				session_generation: 1,
+			});
+		let call = || ExtHostToolCall {
+			invocation_id: sf!("same-client-name"),
+			name:          sf!("tool"),
+			rev:           sf!("1"),
+			deadline:      Duration::from_secs(5),
+		};
+		let mut first = supervisor.open(call()).expect("first client");
+		let mut second = supervisor.open(call()).expect("second client");
+		assert_ne!(first.execution_id, second.execution_id);
+		for invocation in [&mut first, &mut second] {
+			let ControlHostCommand::Open { execution_id, call, .. } = mailbox.recv().expect("open")
+			else {
+				panic!("expected open command");
+			};
+			assert_eq!(execution_id, invocation.execution_id);
+			assert_eq!(call.invocation_id, "same-client-name");
+		}
+		for invocation in [&mut first, &mut second] {
+			invocation
+				.args_committed(ArgsCommitted {
+					invocation_id: "same-client-name".to_owned(),
+					raw: Bytes::from_static(b"{}"),
+					effect_token: Bytes::from(invocation.execution_id.to_string()),
+					authorized_at_ms: 1,
+					..Default::default()
+				})
+				.expect("each client authorizes its own invocation");
+			assert!(matches!(
+				mailbox.recv().expect("commit"),
+				ControlHostCommand::ArgsCommitted { .. }
+			));
+		}
+		let first_execution = first.execution_id.clone();
+		drop(first);
+		assert!(!authority.is_worker_invocation(&owner, first_execution.as_str()));
+		assert!(authority.is_worker_invocation(&owner, second.execution_id.as_str()));
+		let ControlHostCommand::Cancel { id, .. } = mailbox.recv().expect("first cancellation")
+		else {
+			panic!("first drop must cancel its own call");
+		};
+		assert_ne!(id, second.id);
+		let second_execution = second.execution_id.clone();
+		drop(second);
+		assert!(!authority.is_worker_invocation(&owner, second_execution.as_str()));
+	}
+
 	#[test]
 	fn control_tools_reject_streamed_argument_declarations() {
 		let committed = ToolDecl::default();
@@ -4241,6 +4335,7 @@ mod tests {
 			.send(ControlHostCommand::Open {
 				id: 1,
 				owner: HostKey::new("project", "trusted", "broken"),
+				execution_id: sf!("internal-queued"),
 				call: ExtHostToolCall {
 					invocation_id: sf!("queued"),
 					name:          sf!("tool"),
@@ -4279,6 +4374,7 @@ mod tests {
 		let invocation = ExtHostInvocation {
 			id: 1,
 			invocation_id: sf!("call"),
+			execution_id: sf!("internal-call"),
 			host_generation: 1,
 			session_generation: 1,
 			owner: HostKey::new(sf!("project"), sf!("trusted"), sf!("extension")),

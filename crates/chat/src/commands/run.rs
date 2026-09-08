@@ -123,7 +123,34 @@ fn state<'a>(node: &'a omp_dom::Node, key: &str) -> Option<&'a Value> {
 	node.prop(&PropKey::Custom(Str::new(format!("state/{key}"))))
 }
 
+/// Controller-gone notice: a slash command must never appear to succeed
+/// when its [`HostCommand`] was dropped on the floor.
+const CONTROLLER_UNAVAILABLE: &str = "Command was not sent: the session controller is unavailable.";
+
+fn repaint(_: &mut Presenter) -> Routed {
+	Routed::Repaint
+}
+
 impl Presenter {
+	/// Sends `command` to the controller; `Err` is the notice to return
+	/// instead of the success path.
+	fn try_send(&mut self, command: HostCommand) -> Result<(), Routed> {
+		match self.commands.send(command) {
+			Ok(()) => Ok(()),
+			Err(_) => Err(self.notice(CONTROLLER_UNAVAILABLE)),
+		}
+	}
+
+	/// Sends `command`, then runs `then` for the success-path effect. Every
+	/// controller mutation goes through here so a dead controller is
+	/// reported rather than silently ignored.
+	fn send(&mut self, command: HostCommand, then: impl FnOnce(&mut Self) -> Routed) -> Routed {
+		match self.try_send(command) {
+			Ok(()) => then(self),
+			Err(routed) => routed,
+		}
+	}
+
 	/// Applies one slash-command request.
 	pub(crate) fn run_command(&mut self, action: CommandAction) -> Result<Routed, HostError> {
 		Ok(match action {
@@ -138,54 +165,40 @@ impl Presenter {
 			CommandAction::Loop { limit, prompt } => self.loop_mode(limit, prompt),
 			CommandAction::Queue { prompt } => {
 				let active = self.turn_active;
-				if self
-					.commands
-					.send(HostCommand::Queue { prompt, attachments: Vec::new() })
-					.is_err()
-				{
-					return Ok(
-						self.notice("Command was not sent: the session controller is unavailable.")
-					);
-				}
-				self.notice(if active {
-					"Queued message for when the agent yields"
-				} else {
-					"Sent queued message"
+				self.send(HostCommand::Queue { prompt, attachments: Vec::new() }, |p| {
+					p.notice(if active {
+						"Queued message for when the agent yields"
+					} else {
+						"Sent queued message"
+					})
 				})
 			},
 			CommandAction::Prompt { text } => self.submit(text),
 			CommandAction::SkillPrompt { prompt } => self.submit_skill_prompt(prompt),
 			CommandAction::Force { tool, prompt } => {
-				if self
-					.commands
-					.send(HostCommand::Director {
-						id:     Str::new_static(FORCE),
-						engage: true,
-						args:   vec![tool.clone()],
-					})
-					.is_err()
-				{
-					return Ok(
-						self.notice("Command was not sent: the session controller is unavailable.")
-					);
-				}
-				let routed = self.notice(format!("Next turn forced to use {tool}."));
-				match prompt {
-					Some(prompt) => routed.max(self.submit(prompt)),
-					None => routed,
-				}
+				let director = HostCommand::Director {
+					id:     Str::new_static(FORCE),
+					engage: true,
+					args:   vec![tool.clone()],
+				};
+				self.send(director, |p| {
+					let routed = p.notice(format!("Next turn forced to use {tool}."));
+					match prompt {
+						Some(prompt) => routed.max(p.submit(prompt)),
+						None => routed,
+					}
+				})
 			},
 			CommandAction::Pause => self.pause()?,
 			CommandAction::PauseResume { held_ms } => {
-				let _ = self.commands.send(HostCommand::Pause { active: false });
-				let held = crate::overlays::pause::PausePanel::duration(Duration::from_millis(held_ms));
-				self.notice(format!("Resumed after {held} — agents are running again."))
+				self.send(HostCommand::Pause { active: false }, |p| {
+					let held =
+						crate::overlays::pause::PausePanel::duration(Duration::from_millis(held_ms));
+					p.notice(format!("Resumed after {held} — agents are running again."))
+				})
 			},
 			CommandAction::Compact { method, focus } => self.compact(method, focus),
-			CommandAction::New => {
-				let _ = self.commands.send(HostCommand::SessionNew { model: None });
-				Routed::Repaint
-			},
+			CommandAction::New => self.send(HostCommand::SessionNew { model: None }, repaint),
 			CommandAction::Fresh => {
 				if self.turn_active {
 					return Ok(self.notice(WAIT_BEFORE_FRESH));
@@ -199,8 +212,7 @@ impl Presenter {
 				if !self.session_persisted() {
 					return Ok(self.notice("Nothing to drop (in-memory session)"));
 				}
-				let _ = self.commands.send(HostCommand::SessionDrop);
-				Routed::Repaint
+				self.send(HostCommand::SessionDrop, repaint)
 			},
 			CommandAction::Resume { id } => self.resume(id)?,
 			CommandAction::Select(Selector::Rewind | Selector::Tree) => {
@@ -212,40 +224,26 @@ impl Presenter {
 				if self.turn_active {
 					return Ok(self.notice(WAIT_BEFORE_FORK));
 				}
-				let _ = self.commands.send(HostCommand::Fork { target });
-				Routed::Repaint
+				self.send(HostCommand::Fork { target }, repaint)
 			},
 			CommandAction::Rewind { target, recall } => {
-				let _ = self.commands.send(HostCommand::Rewind { target });
-				if let Some(text) = recall {
-					self.composer.set_text(text.as_str());
-				}
-				Routed::Repaint
+				self.send(HostCommand::Rewind { target }, |p| {
+					if let Some(text) = recall {
+						p.composer.set_text(text.as_str());
+					}
+					Routed::Repaint
+				})
 			},
 			CommandAction::SessionRename { id, title } => {
-				let _ = self
-					.commands
-					.send(HostCommand::Service(Mutation::RenameSession { id, title }));
-				Routed::Repaint
+				self.send(HostCommand::Service(Mutation::RenameSession { id, title }), repaint)
 			},
 			CommandAction::SessionDelete { id } => {
-				let _ = self
-					.commands
-					.send(HostCommand::Service(Mutation::DeleteSession { id }));
-				Routed::Repaint
+				self.send(HostCommand::Service(Mutation::DeleteSession { id }), repaint)
 			},
-			CommandAction::Rename { title } => {
-				if self
-					.commands
-					.send(HostCommand::Rename { title: title.clone() })
-					.is_err()
-				{
-					return Ok(
-						self.notice("Command was not sent: the session controller is unavailable.")
-					);
-				}
-				self.notice(format!("Session renamed to \"{title}\"."))
-			},
+			CommandAction::Rename { title } => self
+				.send(HostCommand::Rename { title: title.clone() }, |p| {
+					p.notice(format!("Session renamed to \"{title}\"."))
+				}),
 			CommandAction::Session(op) => self.session(op)?,
 			CommandAction::Jobs => self.jobs()?,
 			CommandAction::Todo(op) => self.todo(op)?,
@@ -261,22 +259,19 @@ impl Presenter {
 				})))?
 			},
 			CommandAction::Tan { task } => {
-				let _ = self
-					.commands
-					.send(HostCommand::Spawn { kind: SpawnKind::Tan, text: task });
-				Routed::Repaint
+				self.send(HostCommand::Spawn { kind: SpawnKind::Tan, text: task }, repaint)
 			},
 			CommandAction::Omfg { rule } => {
 				let text = Str::new(OMFG_RULE.replace("{{complaint}}", rule.as_str()));
-				let _ = self.commands.send(HostCommand::Steer(text));
-				self.notice("Rule steered into the session; it applies from the next safe point.")
+				self.send(HostCommand::Steer(text), |p| {
+					p.notice("Rule steered into the session; it applies from the next safe point.")
+				})
 			},
 			CommandAction::Clear => {
 				if self.turn_active {
 					return Ok(self.notice(WAIT_BEFORE_RESET));
 				}
-				let _ = self.commands.send(HostCommand::ContextReset);
-				Routed::Repaint
+				self.send(HostCommand::ContextReset, repaint)
 			},
 			CommandAction::Move { path } => {
 				if self.turn_active {
@@ -299,10 +294,7 @@ impl Presenter {
 					.unwrap_or_else(|_| PathBuf::from("."));
 				let resolved = super::workspace::resolve_to_cwd(path.as_str(), &cwd);
 				if resolved.is_dir() {
-					let _ = self
-						.commands
-						.send(HostCommand::Move { path: resolved, create: false });
-					return Ok(Routed::Repaint);
+					return Ok(self.send(HostCommand::Move { path: resolved, create: false }, repaint));
 				}
 				if resolved.exists() {
 					return Ok(self.notice(format!("Not a directory: {}", resolved.display())));
@@ -330,15 +322,15 @@ impl Presenter {
 				let branch = branch.unwrap_or_else(super::workspace::default_worktree_branch);
 				match self.services.create_worktree(branch.as_str()) {
 					Ok(worktree) => {
-						let _ = self
-							.commands
-							.send(HostCommand::Move { path: worktree.path.clone(), create: false });
-						self.notice(format!(
-							"Moved to worktree {} on branch {} (checked out, uncommitted changes carried \
-							 over).",
-							worktree.path.display(),
-							worktree.branch
-						))
+						let path = worktree.path.clone();
+						self.send(HostCommand::Move { path, create: false }, |p| {
+							p.notice(format!(
+								"Moved to worktree {} on branch {} (checked out, uncommitted changes \
+								 carried over).",
+								worktree.path.display(),
+								worktree.branch
+							))
+						})
 					},
 					Err(error) => self.notice(format!("Worktree creation failed: {error}")),
 				}
@@ -359,27 +351,16 @@ impl Presenter {
 			return self.notice(EXIT_VIBE_FIRST);
 		}
 		if self.plan_engaged() {
-			if self
-				.commands
-				.send(HostCommand::PlanMode { engage: false })
-				.is_err()
-			{
-				return self.notice("Command was not sent: the session controller is unavailable.");
+			return self
+				.send(HostCommand::PlanMode { engage: false }, |p| p.notice("Plan mode paused."));
+		}
+		self.send(HostCommand::PlanMode { engage: true }, |p| {
+			let routed = p.notice(format!("Plan mode enabled. Plan file: {DEFAULT_PLAN}"));
+			match prompt {
+				Some(prompt) => routed.max(p.submit(prompt)),
+				None => routed,
 			}
-			return self.notice("Plan mode paused.");
-		}
-		if self
-			.commands
-			.send(HostCommand::PlanMode { engage: true })
-			.is_err()
-		{
-			return self.notice("Command was not sent: the session controller is unavailable.");
-		}
-		let routed = self.notice(format!("Plan mode enabled. Plan file: {DEFAULT_PLAN}"));
-		match prompt {
-			Some(prompt) => routed.max(self.submit(prompt)),
-			None => routed,
-		}
+		})
 	}
 
 	fn plan_review(&mut self) -> Result<Routed, HostError> {
@@ -403,16 +384,13 @@ impl Presenter {
 		if !self.plan_engaged() {
 			return self.notice("Plan mode is not active.");
 		}
-		if self
-			.commands
-			.send(HostCommand::Director {
-				id:     Str::new_static("plan"),
-				engage: false,
-				args:   Vec::new(),
-			})
-			.is_err()
-		{
-			return self.notice("Command was not sent: the session controller is unavailable.");
+		let exit_plan = HostCommand::Director {
+			id:     Str::new_static("plan"),
+			engage: false,
+			args:   Vec::new(),
+		};
+		if let Err(routed) = self.try_send(exit_plan) {
+			return routed;
 		}
 		if let Some(role) = role
 			&& let Some((_, model, _)) = self.cycle.iter().find(|(name, ..)| *name == role)
@@ -421,17 +399,14 @@ impl Presenter {
 			return self.notice(format!("Could not switch to the {role} model: {error}"));
 		}
 		if compact {
-			if self
-				.commands
-				.send(HostCommand::Compact {
-					method: CompactionMethod::Compact,
-					hint:   Some(Str::new_static(
-						"Keep every decision and open question from the approved plan.",
-					)),
-				})
-				.is_err()
-			{
-				return self.notice("Command was not sent: the session controller is unavailable.");
+			let compact = HostCommand::Compact {
+				method: CompactionMethod::Compact,
+				hint:   Some(Str::new_static(
+					"Keep every decision and open question from the approved plan.",
+				)),
+			};
+			if let Err(routed) = self.try_send(compact) {
+				return routed;
 			}
 		}
 		let prompt = if keep {
@@ -445,12 +420,12 @@ impl Presenter {
 
 	fn vibe(&mut self, prompt: Option<Str>) -> Routed {
 		if director_active(&self.replica, VIBE) {
-			let _ = self.commands.send(HostCommand::Director {
+			let exit_vibe = HostCommand::Director {
 				id:     Str::new_static(VIBE),
 				engage: false,
 				args:   Vec::new(),
-			});
-			return self.notice("Vibe mode disabled.");
+			};
+			return self.send(exit_vibe, |p| p.notice("Vibe mode disabled."));
 		}
 		if self.plan_engaged() {
 			return self.notice(EXIT_PLAN_FIRST);
@@ -458,19 +433,18 @@ impl Presenter {
 		if director_active(&self.replica, GOAL) {
 			return self.notice(EXIT_GOAL_FIRST);
 		}
-		let _ = self.commands.send(HostCommand::Director {
-			id:     Str::new_static(VIBE),
-			engage: true,
-			args:   Vec::new(),
-		});
-		let routed = self.notice(
-			"Vibe mode enabled. You direct fast/good worker sessions; toolset is read + optional \
-			 parent Todo + vibe tools.",
-		);
-		match prompt {
-			Some(prompt) => routed.max(self.submit(prompt)),
-			None => routed,
-		}
+		let enter_vibe =
+			HostCommand::Director { id: Str::new_static(VIBE), engage: true, args: Vec::new() };
+		self.send(enter_vibe, |p| {
+			let routed = p.notice(
+				"Vibe mode enabled. You direct fast/good worker sessions; toolset is read + optional \
+				 parent Todo + vibe tools.",
+			);
+			match prompt {
+				Some(prompt) => routed.max(p.submit(prompt)),
+				None => routed,
+			}
+		})
 	}
 
 	fn goal(&mut self, op: GoalOp) -> Result<Routed, HostError> {
@@ -494,13 +468,13 @@ impl Presenter {
 				if director_active(&self.replica, VIBE) {
 					return Ok(self.notice(EXIT_VIBE_FIRST));
 				}
-				let _ = self
-					.commands
-					.send(engage(vec![Str::new_static("set"), objective.clone()]));
-				self.notice(if frame.is_some() {
-					format!("Goal replaced: {objective}")
-				} else {
-					format!("Goal mode enabled: {objective}")
+				let replaced = frame.is_some();
+				self.send(engage(vec![Str::new_static("set"), objective.clone()]), |p| {
+					p.notice(if replaced {
+						format!("Goal replaced: {objective}")
+					} else {
+						format!("Goal mode enabled: {objective}")
+					})
 				})
 			},
 			GoalOp::Show => match frame {
@@ -509,8 +483,7 @@ impl Presenter {
 			},
 			GoalOp::Pause => match frame.filter(|_| director_active(&self.replica, GOAL)) {
 				Some(_) => {
-					let _ = self.commands.send(engage(vec![Str::new_static("pause")]));
-					self.notice("Goal paused.")
+					self.send(engage(vec![Str::new_static("pause")]), |p| p.notice("Goal paused."))
 				},
 				None => self.notice("No active goal to pause."),
 			},
@@ -521,19 +494,18 @@ impl Presenter {
 					.is_some_and(|node| custom(node, "status") == Some("paused"))
 			}) {
 				Some(_) => {
-					let _ = self.commands.send(engage(vec![Str::new_static("resume")]));
-					self.notice("Goal resumed.")
+					self.send(engage(vec![Str::new_static("resume")]), |p| p.notice("Goal resumed."))
 				},
 				None => self.notice("No paused goal to resume."),
 			},
 			GoalOp::Drop => match frame {
 				Some(_) => {
-					let _ = self.commands.send(HostCommand::Director {
+					let drop = HostCommand::Director {
 						id:     Str::new_static(GOAL),
 						engage: false,
 						args:   Vec::new(),
-					});
-					self.notice("Goal dropped.")
+					};
+					self.send(drop, |p| p.notice("Goal dropped."))
 				},
 				None => self.notice("No goal to drop."),
 			},
@@ -547,10 +519,11 @@ impl Presenter {
 					if let Some(budget) = budget {
 						args.push(Str::new(budget.to_string()));
 					}
-					let _ = self.commands.send(engage(args));
-					self.notice(match budget {
-						Some(budget) => format!("Goal budget set to {budget}."),
-						None => "Goal budget cleared.".to_owned(),
+					self.send(engage(args), |p| {
+						p.notice(match budget {
+							Some(budget) => format!("Goal budget set to {budget}."),
+							None => "Goal budget cleared.".to_owned(),
+						})
 					})
 				},
 			},
@@ -616,12 +589,12 @@ impl Presenter {
 
 	fn loop_mode(&mut self, limit: Option<LoopLimit>, prompt: Option<Str>) -> Routed {
 		if director_active(&self.replica, LOOP) {
-			let _ = self.commands.send(HostCommand::Director {
+			let exit_loop = HostCommand::Director {
 				id:     Str::new_static(LOOP),
 				engage: false,
 				args:   Vec::new(),
-			});
-			return self.notice("Loop mode disabled.");
+			};
+			return self.send(exit_loop, |p| p.notice("Loop mode disabled."));
 		}
 		let mut args = match limit {
 			None => vec![Str::new_static("unbounded")],
@@ -635,11 +608,10 @@ impl Presenter {
 		if let Some(prompt) = &prompt {
 			args.push(prompt.clone());
 		}
-		let _ = self.commands.send(HostCommand::Director {
-			id: Str::new_static(LOOP),
-			engage: true,
-			args,
-		});
+		let enter_loop = HostCommand::Director { id: Str::new_static(LOOP), engage: true, args };
+		if let Err(routed) = self.try_send(enter_loop) {
+			return routed;
+		}
 		let mut text = StrMut::new("Loop mode enabled.");
 		match limit {
 			Some(LoopLimit::Iterations(count)) => {
@@ -664,7 +636,9 @@ impl Presenter {
 	}
 
 	fn pause(&mut self) -> Result<Routed, HostError> {
-		let _ = self.commands.send(HostCommand::Pause { active: true });
+		if let Err(routed) = self.try_send(HostCommand::Pause { active: true }) {
+			return Ok(routed);
+		}
 		let session_name = StatusLine::from_dom(&self.replica).name;
 		self.act(HostAction::Open(PanelOpener::new(move |cx| {
 			Ok(Box::new(crate::overlays::pause::PausePanel::open(session_name.clone(), cx)) as Box<_>)
@@ -684,13 +658,12 @@ impl Presenter {
 			CompactionMethod::Shake if count == 0 => return self.notice("Nothing to shake."),
 			_ => {},
 		}
-		let _ = self
-			.commands
-			.send(HostCommand::Compact { method, hint: focus });
-		self.notice(match method {
-			CompactionMethod::Compact => "Compacting context... (esc to cancel)",
-			CompactionMethod::Handoff => "Generating handoff… (esc to cancel)",
-			CompactionMethod::Shake => "Shaking context…",
+		self.send(HostCommand::Compact { method, hint: focus }, |p| {
+			p.notice(match method {
+				CompactionMethod::Compact => "Compacting context... (esc to cancel)",
+				CompactionMethod::Handoff => "Generating handoff… (esc to cancel)",
+				CompactionMethod::Shake => "Shaking context…",
+			})
 		})
 	}
 
@@ -723,10 +696,7 @@ impl Presenter {
 				.map(|row| row.path)
 		};
 		Ok(match path {
-			Some(path) => {
-				let _ = self.commands.send(HostCommand::SessionOpen { path });
-				Routed::Repaint
-			},
+			Some(path) => self.send(HostCommand::SessionOpen { path }, repaint),
 			None => self.notice(format!("Session \"{id}\" not found")),
 		})
 	}
@@ -746,7 +716,9 @@ impl Presenter {
 				if !self.session_persisted() {
 					return Ok(self.notice("No session file to delete (in-memory session)."));
 				}
-				let _ = self.commands.send(HostCommand::SessionDrop);
+				if let Err(routed) = self.try_send(HostCommand::SessionDrop) {
+					return Ok(routed);
+				}
 				let routed = self.notice("Session deleted");
 				Ok(routed.max(self.act(HostAction::Open(PanelOpener::new(|cx| {
 					SessionPicker::open(cx).map(|panel| Box::new(panel) as Box<_>)
@@ -802,10 +774,7 @@ impl Presenter {
 					Err(error) => Ok(self.notice(format!("Export failed: {error}"))),
 				}
 			},
-			other => {
-				let _ = self.commands.send(HostCommand::Todo(other));
-				Ok(Routed::Repaint)
-			},
+			other => Ok(self.send(HostCommand::Todo(other), repaint)),
 		}
 	}
 }

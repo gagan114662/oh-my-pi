@@ -99,8 +99,8 @@ pub fn render() -> String {
 		.collect::<Vec<_>>();
 	output.push_str(&names.join(", "));
 	output.push_str(
-		"\n\nAdditional tools when enabled:\n  lsp (language-server operations)\n  browser \
-		 (requires browser support and the browser tool to be enabled)\n",
+		"\n\nAvailability depends on configuration and capabilities. Long-tail tools such as lsp \
+		 and browser use dyn by default; browser also requires browser support to be enabled.\n",
 	);
 	output
 }

@@ -67,6 +67,20 @@ coordination. Driver subagent composition lives in `crates/driver/src/subagent/`
 The environment host supervises the resources that must actually stop; a
 cancelled UI future alone is not a process kill boundary.
 
+## Lifecycle hooks and the gate
+
+`HookGate` in `crates/agent/src/hooks.rs` owns the subscription bitmap, the
+dispatch queue, and the pending-reply table; `Kernel::with_hook_gate` installs
+it (`crates/agent/src/loop.rs`). An unsubscribed event costs one relaxed atomic
+load, a bit test, and a branch: no payload is built. Subscribed decisions run the
+`HookPhase` order PRECHECK, TRANSFORM, REVIEW, APPROVAL, then OBSERVE; a deny
+short-circuits the later phases. Subscriptions marked fail-closed synthesize a
+deny when the extension host is gone instead of letting the effect through.
+`HookGate::delegated_channel` hands one complete dispatch to envd's
+`HookControlFactory` (`crates/envd/src/tools.rs`), which selects sealed
+subscriptions, orders them, calls the exact extension generation, and answers
+with one final decision. `LifecycleHooks` carries the non-gating seams.
+
 ## Presentation and verification
 
 `omp-chat` is an actor over `Session::subscribe()`. It consumes snapshots and

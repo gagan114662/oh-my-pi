@@ -1276,10 +1276,11 @@ pub enum HeadlessDispatchError {
 /// Frame multiplexing only correlates concurrent CONTROL traffic. Callback
 /// entry remains serialized unless the declaration explicitly opts out.
 pub struct DispatchRouter {
-	host:       HostKey,
-	generation: u64,
-	pending:    Arc<Mutex<SparseMap<u64, Pending>>>,
-	actors:     BTreeMap<Str, ExtensionActor>,
+	host:         HostKey,
+	generation:   u64,
+	pending:      Arc<Mutex<SparseMap<u64, Pending>>>,
+	actors:       BTreeMap<Str, ExtensionActor>,
+	disconnected: bool,
 }
 
 /// Router rejection or terminal failure.
@@ -1321,6 +1322,7 @@ impl DispatchRouter {
 			generation,
 			pending: Arc::new(Mutex::new(SparseMap::new())),
 			actors: BTreeMap::new(),
+			disconnected: false,
 		}
 	}
 
@@ -1332,6 +1334,9 @@ impl DispatchRouter {
 		extension: impl Into<Str>,
 		request: DispatchRequest,
 	) -> Result<(Option<DispatchRequest>, DispatchPending), DispatchError> {
+		if self.disconnected {
+			return Err(DispatchError::HostGone);
+		}
 		if request.id == 0 {
 			return Err(DispatchError::ZeroId);
 		}
@@ -1485,6 +1490,7 @@ impl DispatchRouter {
 	/// Fails every outstanding callback when the child CONTROL descriptor
 	/// closes.
 	pub fn disconnect(&mut self) {
+		self.disconnected = true;
 		self.pending.lock().retain(|_, record| {
 			let _ = record.response.send(Err(DispatchError::HostGone));
 			false

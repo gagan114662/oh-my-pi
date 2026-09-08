@@ -12,6 +12,16 @@ default:
 # Setup
 # ---------------------------------------------------------------------------
 
+# Diagnose build prerequisites without compiling or downloading.
+[group('setup')]
+doctor:
+    @command -v python3 >/dev/null || { echo "Install Python 3.11+ to run the build doctor."; exit 1; }
+    python3 scripts/build-doctor.py
+
+[group('setup')]
+doctor-test:
+    python3 scripts/build-doctor-test.py
+
 # One-time embedded-Python fetch crates/py needs before it builds; re-run freely, skips work once the stamp matches crates/py/requirements.txt.
 [group('setup')]
 setup-python:
@@ -96,6 +106,11 @@ lintx-test:
 adr-paths:
     python3 scripts/check-adr-paths.py
 
+# Every incomplete architecture record must identify its remaining gap.
+[group('lint')]
+adr-status:
+    python3 scripts/check-adr-status.py
+
 # Enforce provider-as-data rules against the live inference crate.
 [group('format & lint')]
 lint-models:
@@ -111,9 +126,11 @@ spec-check:
 lintx-fix *paths='crates':
     cargo run --quiet --release --locked --manifest-path tools/lintx/Cargo.toml -- --fix {{ paths }}
 
-# Run every formatter-check and linter this repo defines.
+# Run every formatter-check and linter this repo enforces. `lintx` over all
+# crates stays advisory (arc-struct/mutex-arc fire on existing code); only the
+# model rules are gated, matching the CI format job.
 [group('format & lint')]
-lint: fmt-check clippy proto-lint lint-locked-maps lintx
+lint: fmt-check clippy proto-lint lint-locked-maps lint-models adr-paths adr-status
 
 # ---------------------------------------------------------------------------
 # Build & check
@@ -220,7 +237,7 @@ e2e-baseline:
 # Run every P1-P10 proof plus the tool-sources check, in CI order.
 [group('e2e')]
 e2e: e2e-build e2e-core e2e-p7 e2e-p9 e2e-p10
-    cargo nextest run -p omp-e2e --test tool_sources --locked
+    cargo nextest run -p omp-e2e --test tool_sources --test output_completeness --locked
     cargo nextest run -p omp-e2e --test p8_baselines --locked
 
 # ---------------------------------------------------------------------------
@@ -315,3 +332,13 @@ clean:
 # Reproduce the CI "format" + "rust" jobs locally before pushing (skips macOS/Linux-only Python-toolchain verification steps).
 [group('housekeeping')]
 ci: fmt-check-rust clippy test e2e
+
+# Execute all elastic-slot TLA+/PlusCal variants with pinned TLC and retained evidence.
+[group('proof')]
+tlc *args='':
+    python3 scripts/check-tla.py --download --output target/tlc {{ args }}
+
+# Verify failure handling in the model-check runner (does not replace TLC).
+[group('proof')]
+tlc-test:
+    python3 scripts/check-tla-test.py

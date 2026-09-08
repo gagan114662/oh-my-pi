@@ -77,6 +77,12 @@ New resource kinds are added as projections behind `Read`, NEVER as new roster t
 
 **Partial.** Primary implementation: `crates/tools/src/read.rs`. Read materializes local, internal, web, archive, SQLite, notebook, image, and structural resources. Focused image inspection is the optional `Read.question` path: local, archive-member, internal-URL, and HTTP(S) images become bounded blob parts plus a typed vision request for the active route, with metadata fallback when media is unavailable. `crates/tools/src/read/image.rs` bounds encoded bytes, decoded pixels, raster dimensions, and cached normalized output; `crates/chat/src/cards/read.rs` owns the combined Read/Inspect card. `crates/envd/src/{vault.rs,tool_url/vault.rs,tool_document.rs}` implements configured and Obsidian-discovered `vault://` roots with project/user/CLI precedence, strict URL decoding and selectors, bounded directory/file reads and CLI output, symlink confinement, cancellable and deadline-bounded CLI process-tree cleanup, atomic filesystem writes, search/read CLI queries, and create/move/delete/open mutations routed through Read/Write. Device discovery is not a Read scheme: `dyn` owns it (0025).
 
+Gap: video input and the `:-N` last-lines selector are not implemented in the
+current Read surface. `crates/tools/src/read/selector.rs` recognizes negative
+selector syntax as read-like but does not implement tail-range resolution.
+These remaining capabilities are tracked in issue #31; the implemented image
+inspection path does not establish video support.
+
 ## References
 
 - The Harness Playbook, "The tool surface" — "Deep builtins: Read"

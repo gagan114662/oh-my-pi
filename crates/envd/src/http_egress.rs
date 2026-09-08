@@ -2,8 +2,7 @@
 
 use std::{env, time::Duration};
 
-use bytes::{Bytes, BytesMut};
-use futures::StreamExt as _;
+use bytes::Bytes;
 use http::{
 	HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
 	header::{
@@ -294,26 +293,10 @@ fn response_headers(headers: &HeaderMap) -> Vec<pb::HttpHeader> {
 }
 
 async fn read_bounded(response: reqwest::Response) -> Result<Bytes, HttpEgressError> {
-	if response
-		.content_length()
-		.is_some_and(|length| length > MAX_TUNNEL_BUFFER_BYTES as u64)
-	{
-		return Err(HttpEgressError::ResponseTooLarge);
-	}
-	let mut body = BytesMut::with_capacity(
-		response
-			.content_length()
-			.and_then(|length| usize::try_from(length).ok())
-			.unwrap_or_default()
-			.min(MAX_TUNNEL_BUFFER_BYTES),
-	);
-	let mut stream = response.bytes_stream();
-	while let Some(chunk) = stream.next().await {
-		let chunk = chunk.map_err(HttpEgressError::transport)?;
-		if body.len().saturating_add(chunk.len()) > MAX_TUNNEL_BUFFER_BYTES {
-			return Err(HttpEgressError::ResponseTooLarge);
-		}
-		body.extend_from_slice(&chunk);
-	}
-	Ok(body.freeze())
+	omp_http::read_bounded(response, MAX_TUNNEL_BUFFER_BYTES)
+		.await
+		.map_err(|error| match error {
+			omp_http::BodyError::TooLarge { .. } => HttpEgressError::ResponseTooLarge,
+			omp_http::BodyError::Transport(error) => HttpEgressError::transport(error),
+		})
 }

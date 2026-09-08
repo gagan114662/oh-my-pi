@@ -145,6 +145,12 @@ pub struct PathDenied {
 /// Rewrites external-command launches with a sandbox prefix and environment
 /// filter.
 pub trait SpawnWrapper: Send + Sync {
+	/// Revalidates retained authority before constructing an external command.
+	/// This check does not make later path-based kernel setup atomic.
+	fn validate(&self) -> std::io::Result<()> {
+		Ok(())
+	}
+
 	/// Launcher program and prefix arguments to prepend before the resolved
 	/// program, if any.
 	fn launcher(&self) -> Option<(&OsStr, &[OsString])>;

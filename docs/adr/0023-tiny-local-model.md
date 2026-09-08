@@ -43,7 +43,28 @@ title generation, translation, sentiment, and local TTS/STT through it by defaul
 
 ## Status in omp
 
-**Partial.** Primary implementation: `crates/ai/src/lib.rs`. Gap: no embedded tiny local model is present for harness chores.
+**Partial.** Local inference components exist in `crates/ai/src/local/`.
+`crates/ai/src/local/{tiny_catalog,title}.rs` supplies revision-pinned GGUF
+artifact metadata and title validation; catalog entries are not executable
+text-generation engines. `crates/ai/src/local/{stt,parakeet}.rs` implements
+speech recognition, `crates/ai/src/local/tts/kokoro/` implements speech synthesis,
+and `crates/ai/src/local/embedding.rs` implements local embeddings. These engines
+are feature-gated. `crates/ai/src/local/{runtime,artifact}.rs` owns shared
+admission, memory reservations, cancellation, and verified artifact lifecycle.
+
+`crates/ai/src/local/applefm.rs` and `crates/ai/src/local/applefm/` provide a
+dynamically loaded Apple Foundation Models bridge. The framework requires
+macOS 26 or later and an eligible Apple Intelligence-enabled device; OMP's
+availability path additionally restricts generation to Apple Silicon
+(`aarch64`). The `x86_64.s` file is ABI support code, not proof that Intel Macs
+can run Apple's model. Framework/model availability is checked at runtime.
+See [Apple's framework availability announcement](https://www.apple.com/ca/newsroom/2025/09/apples-foundation-models-framework-unlocks-new-intelligent-app-experiences/).
+
+Gap: the curated GGUF catalog is not connected to a native text-generation
+executor for title, memory, and classifier chores. This does not establish the
+decision's default-local routing for classification, titles, translation, and
+sentiment, or its offline/no-hosted-fallback guarantees. The existing speech,
+embedding, and Apple framework engines do not by themselves close that gap.
 
 ## References
 

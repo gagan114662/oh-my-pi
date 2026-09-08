@@ -10,7 +10,8 @@ use std::{path::PathBuf, sync::Arc};
 use omp_chat::{
 	HostCommand, HostOptions, NativeEffect, NativeHost,
 	overlays::services::{
-		AccountRow, McpOp, McpRun, ServiceError, ServiceResult, Services, WorktreeInfo,
+		AccountRow, McpOp, McpRun, Mutation, ServiceError, ServiceResult, Services, SessionRow,
+		SessionScope, WorktreeInfo,
 	},
 };
 use omp_con::Value;
@@ -210,6 +211,21 @@ impl Services for Feed {
 			active:        true,
 		};
 		Ok(vec![row("sub", "oauth"), row("test", "api-key")])
+	}
+
+	/// One on-disk session so `/pin <id>` has something to toggle.
+	fn sessions(&self, _scope: SessionScope) -> ServiceResult<Vec<SessionRow>> {
+		Ok(vec![SessionRow {
+			id:          Str::new_static("01JSESSION"),
+			path:        self.project.join("01JSESSION.oms"),
+			title:       None,
+			created_ms:  0,
+			modified_ms: 0,
+			messages:    2,
+			parent:      None,
+			agent:       None,
+			pinned:      false,
+		}])
 	}
 }
 
@@ -688,15 +704,21 @@ fn mutating_commands_report_closed_controller_before_success() {
 	}
 }
 
+/// The provider catalog only disambiguates `/pin <provider>`; a host
+/// without one (remote gateway) must still pin sessions, and a failed
+/// provider-shaped pin must say why neither interpretation worked.
 #[test]
-fn pin_reports_provider_lookup_failure_without_sending_a_session_mutation() {
+fn pin_works_for_sessions_and_explains_failures_without_a_provider_catalog() {
 	let mut h = harness(Vec::new());
+	h.host.console("pin 01JSESSION").expect("console");
+	assert!(matches!(
+		h.commands.try_recv(),
+		Ok(HostCommand::Service(Mutation::PinSession { id, pinned: true })) if id == "01JSESSION"
+	));
+
 	h.host.console("pin anthropic").expect("console");
-	assert!(
-		h.host
-			.notice()
-			.expect("failure notice")
-			.starts_with("Cannot resolve pin target:")
-	);
+	let notice = h.host.notice().expect("failure notice");
+	assert!(notice.starts_with("Session \"anthropic\" not found."), "{notice}");
+	assert!(notice.contains("provider roster is unavailable"), "{notice}");
 	assert!(h.commands.try_recv().is_err());
 }

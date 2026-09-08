@@ -98,6 +98,15 @@ impl OwnedProcess {
 		self.group
 	}
 
+	/// Checks for child exit without waiting, preserving process ownership.
+	pub fn try_wait(&mut self) -> io::Result<Option<process::ExitStatus>> {
+		let status = self.child.try_wait()?;
+		if status.is_some() {
+			self.exited = true;
+		}
+		Ok(status)
+	}
+
 	/// Waits for normal process exit within `limit`.
 	pub async fn wait(&mut self, limit: Duration) -> Result<process::ExitStatus> {
 		let status = within("owned child exit", limit, self.child.wait()).await??;

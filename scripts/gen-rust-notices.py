@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Render cargo-about JSON deterministically, retaining the source-notice prelude."""
 import argparse
+import difflib
+import itertools
 import json
 from pathlib import Path
+
+# Enough context to see which crate/license drifted without flooding CI logs.
+DIFF_LINES = 400
 
 MARKER = "RUST DEPENDENCY LICENSES\n=========================\n"
 
@@ -42,6 +47,13 @@ def main() -> int:
     if args.check:
         if original != expected:
             print("Rust dependency notices are stale; run just license-notices-update")
+            diff = difflib.unified_diff(
+                original.splitlines(keepends=True),
+                expected.splitlines(keepends=True),
+                fromfile=str(args.notices),
+                tofile=f"{args.notices} (expected)",
+            )
+            print("".join(itertools.islice(diff, DIFF_LINES)), end="")
             return 1
         print("Rust dependency notices match the locked cargo-about inventory and license texts")
         return 0

@@ -2,11 +2,11 @@
 
 The python-build-standalone release describes CPython and each extension's
 native link inputs in ``PYTHON.json``.  This generator follows that metadata,
-reads the release's referenced license corpus, using one tracked, audited
-upstream fallback for the release's missing Zstandard text, and then appends
-license files from every frozen wheel. Any other missing referenced license is
-a hard error. Dynamic host libraries are deliberately outside the
-bundled-component corpus.
+reads the release's referenced license corpus, using tracked, audited upstream
+fallbacks for the texts the release references but does not ship (Zstandard on
+every target, zlib-ng on Linux), and then appends license files from every
+frozen wheel. Any other missing referenced license is a hard error. Dynamic
+host libraries are deliberately outside the bundled-component corpus.
 
 Usage: gen-py-notices.py VENDOR_DIR OUT
 """
@@ -22,6 +22,13 @@ AUDITED_LICENSE_FALLBACKS = {
     "licenses/LICENSE.zstd.txt": (
         "facebook/zstd v1.5.7 LICENSE",
         Path(__file__).resolve().parent.parent / "licenses" / "LICENSE.zstd.txt",
+    ),
+    # python-build-standalone builds `z` from cpython-source-deps zlib-ng-2.2.4
+    # (pythonbuild/downloads.py) and lists LICENSE.zlib-ng.txt for it, but the
+    # Linux archive only ships LICENSE.zlib.txt.
+    "licenses/LICENSE.zlib-ng.txt": (
+        "python/cpython-source-deps zlib-ng-2.2.4 LICENSE.md",
+        Path(__file__).resolve().parent.parent / "licenses" / "LICENSE.zlib-ng.txt",
     ),
 }
 

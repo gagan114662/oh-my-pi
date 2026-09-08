@@ -1696,7 +1696,8 @@ mod tests {
 		write_executable(
 			&script,
 			&format!(
-				"#!/bin/sh\nsleep 30 &\nprintf '%s %s' \"$$\" \"$!\" > '{}'\nwait\n",
+				"#!/bin/sh\nsleep 30 &\nprintf '%s %s' \"$$\" \"$!\" > '{0}.tmp'\nmv '{0}.tmp' \
+				 '{0}'\nwait\n",
 				pid_file.display(),
 			),
 		);
@@ -1706,6 +1707,8 @@ mod tests {
 		})
 		.expect("vault service")
 		.with_obsidian_binary(Some(script));
+		// The script renames a complete PID record into place. Existence of a
+		// file opened by shell redirection alone does not mean printf has run.
 		let task = tokio::spawn(async move { service.obsidian_read("notes", "note.md").await });
 		for _ in 0..100 {
 			if pid_file.exists() {

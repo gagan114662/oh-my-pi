@@ -573,26 +573,18 @@ pub fn reset_accounts(state: &ServiceState) -> ServiceResult<Pending<Vec<ResetAc
 }
 
 /// `/usage reset [account|active]`: lists or spends saved Codex resets.
-/// The redemption is a short network call; the actor blocks on it the
-/// same way `omp usage` does.
-pub fn reset(state: &ServiceState, target: &str) -> ServiceResult<Str> {
+/// Returns immediately; the mutation consumer awaits the network result.
+pub fn reset(state: &ServiceState, target: &str) -> ServiceResult<Pending<Str>> {
 	let data_dir = state.data_dir.clone();
 	let target = target.to_owned();
-	let runtime = state.runtime.clone();
-	let on_worker = tokio::runtime::Handle::try_current()
-		.is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
-	let outcome = if on_worker {
-		tokio::task::block_in_place(|| runtime.block_on(usage_cmd::reset_usage(&data_dir, &target)))
-	} else {
-		let (tx, rx) = flume::bounded(1);
-		runtime.spawn(async move {
-			let _ = tx.send(usage_cmd::reset_usage(&data_dir, &target).await);
-		});
-		rx.recv().map_err(|_| {
-			ServiceError::Failed(Str::new_static("usage reset task ended without a result"))
-		})?
-	};
-	outcome.map_err(ServiceError::failed)
+	let (tx, rx) = flume::bounded(1);
+	state.runtime.spawn(async move {
+		let result = usage_cmd::reset_usage(&data_dir, &target)
+			.await
+			.map_err(ServiceError::failed);
+		let _ = tx.send(result);
+	});
+	Ok(rx)
 }
 
 async fn build(data_dir: &Path, catalog: Option<&Catalog>) -> ServiceResult<UsageReport> {

@@ -222,7 +222,7 @@ omp_con::cmd! {
 	};
 
 	/// Summarizes the context with an LLM now: `/compact [focus]`.
-	compact(?focus: Str, ?instructions: Str) = |ctx, args| {
+	compact(?focus: Str) = |ctx, args| {
 		let focus = compact_focus(rest(args, 0))?;
 		post(ctx, CommandAction::Compact { method: CompactionMethod::Compact, focus })
 	};
