@@ -143,3 +143,16 @@ must not be described as completed until their runs actually execute.
   0014 (command stream), 0031 (typed component model), 0033 (debug protocol defines the UI)
 - `docs/architecture/agent-loop.md` — "Events, storage, and presentation";
   `docs/architecture/crates.md` — "Driver composes; app presents"
+
+
+The settings leaf also builds the production `omp` binary and runs
+`scripts/qa/cases/settings_roster_pty.py` using the `OMP_TTY` and debug resize
+hooks. Its isolated local mock must receive no model requests. The unchanged
+checker expects a human setting label in each of ten tabs, checks wraparound,
+keyboard search and clearing, dimensions after resize, zero-exit quit and
+original termios restoration. Fixture daemon identities are checked before
+TERM/KILL and verified absent; detached exit codes remain unknown. Artifacts
+include raw ANSI, browser-readable HTML frames, VT cell JSON, source/checker/
+binary hashes, and a stage table. These are terminal observations, not a native
+pixel screenshot. Writing this checker is not evidence of a passing run; the
+hosted leaf must produce all normal, mutation, PTY and full-suite artifacts.

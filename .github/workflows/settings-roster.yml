@@ -13,6 +13,8 @@ on:
       - rust-toolchain.toml
       - justfile
       - scripts/settings-roster/**
+      - scripts/qa/cases/settings_roster_pty.py
+      - scripts/qa/harness.py
       - .github/workflows/settings-roster.yml
   workflow_dispatch:
 
@@ -51,6 +53,29 @@ jobs:
           codes=("${PIPESTATUS[@]}")
           printf 'invariant,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/settings-roster/exits.csv || exit 1
           [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Build actual production application
+        id: build
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          just build 2>&1 | tee target/settings-roster/build.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'build,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/settings-roster/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Real PTY settings navigation, input, resize and cleanup
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          OMP_SETTINGS_ROSTER_PROOF_DIR: ${{ github.workspace }}/target/settings-roster
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          uv run --with pyte==0.8.2 python scripts/qa/cases/settings_roster_pty.py 2>&1 | tee target/settings-roster/pty-run.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'pty,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/settings-roster/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
       - name: Complete affected app and chat tests and doctests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         shell: bash
@@ -81,7 +106,7 @@ jobs:
           root.mkdir(parents=True, exist_ok=True)
           exits = root / 'exits.csv'
           observed = {row[0]: row[1:] for row in csv.reader(exits.open())} if exits.exists() else {}
-          required = ('invariant', 'omp-app-tests', 'omp-app-docs', 'omp-chat-tests', 'omp-chat-docs')
+          required = ('invariant', 'build', 'pty', 'omp-app-tests', 'omp-app-docs', 'omp-chat-tests', 'omp-chat-docs')
           lines = ['## Settings roster checks', '', '| Check | Command/log exits | Complete |', '|---|---|---|']
           failed = False
           for name in required:
@@ -91,7 +116,9 @@ jobs:
               lines.append(f"| {name} | {values or 'missing'} | {passed} |")
           summary = root / 'summary.md'
           lines += ['', summary.read_text() if summary.exists() else 'Structural proof is missing. No acceptance claim.']
-          lines += ['', 'This leaf proves structural settings coverage. A real PTY settings walkthrough remains required before full issue acceptance.']
+          pty_summary = root / 'live-pty/summary.md'
+          lines += ['', pty_summary.read_text() if pty_summary.exists() else 'Real PTY proof is missing.']
+          failed |= not pty_summary.exists()
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
               output.write('\n'.join(lines) + '\n')
           raise SystemExit(1 if failed or not summary.exists() else 0)
