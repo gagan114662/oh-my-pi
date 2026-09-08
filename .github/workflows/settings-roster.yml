@@ -23,7 +23,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: settings-roster-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # macOS keeps the original complete affected suites and real PTY proof.
+  # Linux is additional coverage; it does not excuse or replace macOS failures.
   settings-roster:
     runs-on: macos-15
     timeout-minutes: 180
@@ -112,7 +118,7 @@ jobs:
           exits = root / 'exits.csv'
           observed = {row[0]: row[1:] for row in csv.reader(exits.open())} if exits.exists() else {}
           required = ('invariant', 'build', 'pty', 'omp-app-tests', 'omp-app-docs', 'omp-chat-tests', 'omp-chat-docs')
-          lines = ['## Settings roster checks', '', '| Check | Command/log exits | Complete |', '|---|---|---|']
+          lines = ['## Settings roster checks', '', 'Complete macOS suites are required below; Linux provides additional coverage in settings-roster-tests.', '', '| Check | Command/log exits | Complete |', '|---|---|---|']
           failed = False
           for name in required:
               values = observed.get(name)
@@ -133,4 +139,84 @@ jobs:
         with:
           name: settings-roster-${{ github.sha }}
           path: target/settings-roster
+          if-no-files-found: error
+
+  settings-roster-tests:
+    name: complete omp-app and omp-chat suites (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select pinned Rust toolchain
+        run: |
+          test "$(uname -m)" = x86_64
+          rustup show active-toolchain
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pipx zstd
+          command -v uv >/dev/null || pipx install uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache embedded Python
+        id: python-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: vendor/python
+          key: python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/py/scripts/fetch-python.sh', 'crates/py/scripts/pack-pymodules.py', 'crates/py/scripts/gen-py-notices.py', 'crates/py/requirements.txt') }}
+
+      - name: Prepare embedded Python
+        if: steps.python-cache.outputs.cache-hit != 'true'
+        run: crates/py/scripts/fetch-python.sh
+
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-check-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-check-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
+            cargo-check-${{ runner.os }}-${{ runner.arch }}-
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Complete affected app and chat tests and doctests
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p target/settings-roster-tests
+          failed=0
+          for package in omp-app omp-chat; do
+            cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/settings-roster-tests/$package-tests.log"
+            tests=("${PIPESTATUS[@]}")
+            cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/settings-roster-tests/$package-docs.log"
+            docs=("${PIPESTATUS[@]}")
+            printf '%s-tests,%s,%s\n' "$package" "${tests[0]}" "${tests[1]}" >> target/settings-roster-tests/exits.csv || failed=1
+            printf '%s-docs,%s,%s\n' "$package" "${docs[0]}" "${docs[1]}" >> target/settings-roster-tests/exits.csv || failed=1
+            for code in "${tests[@]}" "${docs[@]}"; do
+              if [ "$code" -ne 0 ]; then failed=1; fi
+            done
+          done
+          {
+            echo '## Complete omp-app and omp-chat suites (Linux)'
+            echo '```text'
+            cat target/settings-roster-tests/exits.csv
+            grep -hE '^\s+(Summary|FAIL)' target/settings-roster-tests/*-tests.log
+            grep -hE '^test result' target/settings-roster-tests/*-docs.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$failed"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: settings-roster-tests-${{ github.sha }}
+          path: target/settings-roster-tests
           if-no-files-found: error

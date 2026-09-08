@@ -82,6 +82,9 @@ omp_con::var! {
 		default: true,
 		flags: archive,
 		meta: {
+			"ui.tab": "tasks",
+			"ui.group": "Commands & Skills",
+			"ui.label": "Skill Commands",
 			"legacy.path": "skills.enableSkillCommands",
 		},
 	};
@@ -90,6 +93,9 @@ omp_con::var! {
 		default: false,
 		flags: archive,
 		meta: {
+			"ui.tab": "tasks",
+			"ui.group": "Commands & Skills",
+			"ui.label": "Codex User Skills",
 			"legacy.path": "skills.enableCodexUser",
 		},
 	};
@@ -98,6 +104,9 @@ omp_con::var! {
 		default: false,
 		flags: archive,
 		meta: {
+			"ui.tab": "tasks",
+			"ui.group": "Commands & Skills",
+			"ui.label": "Claude User Skills",
 			"legacy.path": "skills.enableClaudeUser",
 		},
 	};
@@ -106,6 +115,9 @@ omp_con::var! {
 		default: true,
 		flags: archive,
 		meta: {
+			"ui.tab": "tasks",
+			"ui.group": "Commands & Skills",
+			"ui.label": "Claude Project Skills",
 			"legacy.path": "skills.enableClaudeProject",
 		},
 	};
@@ -114,6 +126,9 @@ omp_con::var! {
 		default: true,
 		flags: archive,
 		meta: {
+			"ui.tab": "tasks",
+			"ui.group": "Commands & Skills",
+			"ui.label": "pi User Skills",
 			"legacy.path": "skills.enablePiUser",
 		},
 	};
@@ -122,6 +137,9 @@ omp_con::var! {
 		default: true,
 		flags: archive,
 		meta: {
+			"ui.tab": "tasks",
+			"ui.group": "Commands & Skills",
+			"ui.label": "pi Project Skills",
 			"legacy.path": "skills.enablePiProject",
 		},
 	};
@@ -130,6 +148,9 @@ omp_con::var! {
 		default: true,
 		flags: archive,
 		meta: {
+			"ui.tab": "tasks",
+			"ui.group": "Commands & Skills",
+			"ui.label": "Agents User Skills",
 			"legacy.path": "skills.enableAgentsUser",
 		},
 	};
@@ -138,6 +159,9 @@ omp_con::var! {
 		default: true,
 		flags: archive,
 		meta: {
+			"ui.tab": "tasks",
+			"ui.group": "Commands & Skills",
+			"ui.label": "Agents Project Skills",
 			"legacy.path": "skills.enableAgentsProject",
 		},
 	};

@@ -98,7 +98,7 @@ def main():
             if table.exists():
                 lines.extend(['', f'### {arm}', '', table.read_text()])
         lines += ['', f'Invariant proof passed: {passed}', '',
-                  'Counts are tab/group pairs; General occurs under both Context and Memory. Before cleanup: 57 pairs / 56 unique names. After cleanup: 43 pairs / 42 unique names.',
+                  'Counts are tab/group pairs; General occurs under both Context and Memory. Before cleanup: 57 pairs / 56 unique names. After cleanup: 44 pairs / 43 unique names (13 removed, Commands & Skills bound).',
                   'Real PTY input, resize and clean-quit evidence remains required for full issue acceptance.']
         (OUT / 'summary.md').write_text('\n'.join(lines) + '\n')
     return 0 if passed else 1

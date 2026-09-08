@@ -64,6 +64,10 @@ struct TabSpec {
 	groups: &'static [&'static str],
 }
 
+// Every (tab, group) pair listed here must bind at least one renderable convar,
+// and every convar carrying `ui.tab`/`ui.group` must name a pair listed here.
+// `crates/app/tests/settings_roster.rs` fails otherwise (#55); groups removed
+// on 2026-09-08 are recorded in docs/adr/0005-controller-actor-separation.md.
 const SETTING_TABS: &[TabSpec] = &[
 	TabSpec {
 		tab:    SettingTab::Appearance,
@@ -126,7 +130,7 @@ const SETTING_TABS: &[TabSpec] = &[
 		tab:    SettingTab::Tasks,
 		label:  "Tasks",
 		icon:   "tab.tasks",
-		groups: &["Modes", "Subagents", "Isolation"],
+		groups: &["Modes", "Subagents", "Isolation", "Commands & Skills"],
 	},
 	TabSpec {
 		tab:    SettingTab::Providers,

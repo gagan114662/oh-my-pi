@@ -2,10 +2,15 @@
 import errno
 import json
 import os
+import pty
 import select
 import signal
 import socket
+import subprocess
+import sys
+import termios
 import time
+import tty
 
 
 def consume_pty(master, consume):
@@ -75,3 +80,66 @@ def kill_and_reap(process, master, consume, timeout=5):
     except Exception as error:
         record['error'] = f'{type(error).__name__}: {error}'
     return record
+
+
+def launch(args, **kwargs):
+    """Spawn the terminal application in its own process group, not a new session.
+
+    A session leader that opens the pty slave acquires it as its controlling
+    terminal (BSD open(2) semantics), and macOS revokes every descriptor of that
+    slave when the leader exits, so the driver's ``tcgetattr`` fails with ENOTTY
+    and the termios-restoration check could never be observed. A plain process
+    group keeps the driver's slave descriptor valid after exit and still lets
+    ``kill_and_reap`` signal the whole group.
+    """
+    if sys.version_info >= (3, 11):
+        kwargs['process_group'] = 0
+    else:
+        kwargs['preexec_fn'] = os.setpgrp
+    return subprocess.Popen(args, **kwargs)
+
+
+def termios_mode(attributes):
+    """Lossless JSON representation of every tcgetattr field.
+
+    Only normalize Python's byte/int representation of control characters;
+    never mask flags, speeds, or control characters out of the restore oracle.
+    Named bits below are redundant diagnostics, not the compared subset.
+    """
+    iflag, oflag, cflag, lflag, ispeed, ospeed, cc = attributes
+
+    def control(value):
+        return value if isinstance(value, int) else (value[0] if value else 0)
+
+    return {
+        'iflag': iflag, 'oflag': oflag, 'cflag': cflag, 'lflag': lflag,
+        'ispeed': ispeed, 'ospeed': ospeed,
+        'cc': [control(value) for value in cc],
+        'ICANON': bool(lflag & termios.ICANON),
+        'ECHO': bool(lflag & termios.ECHO),
+        'ISIG': bool(lflag & termios.ISIG),
+        'IEXTEN': bool(lflag & termios.IEXTEN),
+        'OPOST': bool(oflag & termios.OPOST),
+        'ICRNL': bool(iflag & termios.ICRNL),
+        'IXON': bool(iflag & termios.IXON),
+        'VMIN': control(cc[termios.VMIN]),
+        'VTIME': control(cc[termios.VTIME]),
+    }
+
+
+def termios_restore_reference(original):
+    """Expected post-restore attributes from an independent same-kernel PTY.
+
+    Darwin can set PENDIN when restoring canonical input with TCSANOW. Observe that transition independently before
+    launching the application. Never mask flags or mutate the application's
+    terminal after exit. The reference uses the product's TCSAFLUSH restore mode.
+    """
+    master, slave = pty.openpty()
+    try:
+        termios.tcsetattr(slave, termios.TCSANOW, original)
+        tty.setraw(slave, termios.TCSANOW)
+        termios.tcsetattr(slave, termios.TCSAFLUSH, original)
+        return termios_mode(termios.tcgetattr(slave))
+    finally:
+        os.close(master)
+        os.close(slave)
