@@ -1085,20 +1085,24 @@ impl<S: ReadSources, B: ReadBlobs, R: resolver::Resolve> ReadTool<S, B, R> {
 
 		let literal = self.sources.stat(Str::new(authored)).await.ok();
 		let video_target = if let Some(stat) = literal.as_ref() {
-			(stat.kind == SourceKind::File && video::is_video(authored)).then_some((authored, None))
+			(stat.kind != SourceKind::Directory && video::is_video(authored))
+				.then_some((authored, None))
 		} else {
 			video::split_target(authored)
 				.map(|(path, suffix)| (path, Some(suffix)))
 				.or_else(|| video::is_video(authored).then_some((authored, None)))
 		};
 		if let Some((path, suffix)) = video_target {
-			let stat = match self.sources.stat(Str::new(path)).await {
+			let mut stat = match self.sources.stat(Str::new(path)).await {
 				Ok(stat) => stat,
 				Err(error) => match self.sources.resolve_suffix(Str::new(path)).await? {
 					Some(stat) => stat,
 					None => return Err(error),
 				},
 			};
+			if stat.kind == SourceKind::Symlink {
+				stat = self.sources.stat(stat.canonical_path.clone()).await?;
+			}
 			if stat.kind == SourceKind::File {
 				let selection = video::parse(suffix).map_err(Fault::video)?;
 				let output = self

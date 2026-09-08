@@ -14,6 +14,8 @@ import sys
 import tempfile
 import time
 import traceback
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -86,8 +88,38 @@ class ReadTail(unittest.TestCase):
                 (output / (filename + ".generation.stderr")).write_bytes(generated.stderr)
                 self.assertEqual(generated.returncode, 0, generated.stderr)
                 (output / filename).write_bytes((project / filename).read_bytes())
+            # Independent decoded-frame oracle; compare both requested paths
+            # against frame 2 and verify that frame 0 is actually different.
+            for frame_number in (0, 2):
+                oracle = subprocess.run(["ffmpeg", "-v", "error", "-i", str(project / "demo.mp4"),
+                    "-vf", f"select=eq(n\\,{frame_number}),scale=1280:720:force_original_aspect_ratio=decrease",
+                    "-frames:v", "1", "-threads", "1", "-f", "image2pipe", "-c:v", "png", "pipe:1"],
+                    check=True, capture_output=True, timeout=15).stdout
+                (output / f"oracle-frame-{frame_number}.png").write_bytes(oracle)
+            self.assertNotEqual((output / "oracle-frame-0.png").read_bytes(), (output / "oracle-frame-2.png").read_bytes())
             (project / "demo';echo-not-executed.mp4").write_bytes((project / "demo.mp4").read_bytes())
             (project / "corrupt.mp4").write_bytes(b"not video")
+            outside = root / "outside.mp4"
+            outside.write_bytes((project / "demo.mp4").read_bytes())
+            (project / "disguised.mp4").write_text("ffconcat version 1.0\nfile '" + str(outside) + "'\n")
+            network_requests = []
+            class ReferenceServer(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    network_requests.append(self.path)
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(outside.read_bytes())
+                def log_message(self, *args):
+                    pass
+            reference_server = ThreadingHTTPServer(("127.0.0.1", 0), ReferenceServer)
+            reference_thread = threading.Thread(target=reference_server.serve_forever, daemon=True)
+            reference_thread.start()
+            def close_reference_server():
+                reference_server.shutdown()
+                reference_server.server_close()
+                reference_thread.join(timeout=5)
+            self.addCleanup(close_reference_server)
+            (project / "network.mkv").write_text("#EXTM3U\n#EXTINF:4,\nhttp://127.0.0.1:" + str(reference_server.server_port) + "/outside.mp4\n")
             artifact_code = r"""import omp
 ref = await omp.artifacts.put(b'one\ntwo\n', media_type='text/plain')
 assert await omp.artifacts.read(ref, 'raw:-2') == 'two\n'
@@ -112,6 +144,8 @@ print('ARTIFACT_TAIL_PARITY_OK')
                 ("video-appendix-e", call("read", path="long.mov:1h5m42s"), ["Timestamp: 3942.000s"], [], False),
                 ("video-outside", call("read", path="demo.mp4:9s"), [], [], True),
                 ("video-corrupt", call("read", path="corrupt.mp4"), [], [], True),
+                ("video-disguised-playlist", call("read", path="disguised.mp4"), [], [], True),
+                ("video-network-reference", call("read", path="network.mkv"), [], [], True),
             ]
             for name, reply, required, forbidden, error_expected in cases:
                 with self.subTest(source=name):
@@ -195,8 +229,14 @@ print('ARTIFACT_TAIL_PARITY_OK')
                                 row["png_dimensions"] = [int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")]
                                 if name == "video-preview":
                                     self.assertEqual(row["png_dimensions"], [960, 540])
+                                if name in ("video-frame", "video-time"):
+                                    self.assertEqual(png, (output / "oracle-frame-2.png").read_bytes(), "selected image must equal independently decoded frame 2, not frame 0")
                                 if name == "video-time":
                                     self.assertEqual(png, (output / "video-frame/frame.png").read_bytes(), "frame index and timestamp must select the same actual frame")
+                            if name in ("video-disguised-playlist", "video-network-reference"):
+                                self.assertNotIn("data:image/", json.dumps(captures[1]["messages"]), "disguised input must not yield another resource's image")
+                                row["network_reference_requests"] = list(network_requests)
+                                self.assertEqual(network_requests, [], "video demuxing must not fetch referenced network resources")
                             row["status"] = "passed"
                     except BaseException:
                         row["failure"] = traceback.format_exc()

@@ -51,10 +51,20 @@ artifacts before classifying it.
 ## Video QA prerequisites
 
 The production video checker requires both `ffmpeg` and `ffprobe` on PATH, with
-an encoder supporting `libx264` for the generated fixtures. On macOS use
+the seekable `fd` protocol and an encoder supporting `libx264` for generated
+fixtures. Check `ffmpeg -h protocol=fd` and `ffprobe -h protocol=fd` when selecting
+a distribution; unsupported utilities fail rather than reopen a pathname. On macOS use
 `brew install ffmpeg`; on Ubuntu use `sudo apt-get install ffmpeg`. The read-tail
 leaf installs this explicitly. Ordinary Rust selector and bounded-reader tests
 do not need external media utilities; no test is newly ignored. Existing CI
 runner availability is not assumed, and a missing utility makes production QA
 fail with its process diagnostic. Runtime video reads also return a typed
 missing-binary fault instead of claiming an extraction succeeded.
+
+Media confinement tests disguise a local concat playlist as MP4 and an HTTP
+playlist as MKV. Both must fail without an image; a live HTTP fixture records
+any attempted network reference and must receive zero requests. Frame/time
+results also equal an independently decoded frame-2 oracle, verified distinct
+from frame 0. Normal Unix Rust tests cover a held file surviving replacement,
+symlink rejection at final/ancestor components, output bounds and bounded child
+reaping after deadline/output-limit failure. No new ignore annotations are used.

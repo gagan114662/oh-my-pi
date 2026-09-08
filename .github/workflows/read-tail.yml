@@ -170,8 +170,8 @@ jobs:
                   baseline = json.loads(provenance.read_text())['source_revision'].startswith('b59b952172')
                   if baseline and not any(row['case'] == 'local-large' and row.get('terminal_validated') and row.get('semantic_mismatch') for row in runs):
                       raise ValueError('Baseline did not expose a semantic mismatch')
-                  if not baseline and (len(runs) != 15 or any(row['status'] != 'passed' for row in runs)):
-                      raise ValueError('Head did not pass all fifteen production cases')
+                  if not baseline and (len(runs) != 17 or any(row['status'] != 'passed' for row in runs)):
+                      raise ValueError('Head did not pass all seventeen production cases')
                   for row in runs:
                       for name in ('captures.json', 'stdout.jsonl'):
                           if not (out / 'qa' / row['case'] / name).is_file():

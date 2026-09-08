@@ -33,12 +33,27 @@ bounds; it must not silently widen a tail into a whole-resource search.
 Provide local video extraction through the existing `ReadSources` environment
 boundary. `omp-tools` owns the v1 frame/timestamp grammar and PNG/blob projection;
 `omp-envd` owns ffprobe/ffmpeg processes. Programs receive direct argv entries,
-never shell text, with protocol access restricted to file/pipe. Output readers
+never shell text. The demuxer is pinned from the container extension (MOV for
+MP4/MOV/M4V, Matroska for MKV/WebM, AVI for AVI, ASF for WMV). Playlist autodetection
+is disabled; MOV external data references and absolute aliases are disabled.
+Only fd/pipe protocols are permitted, so media cannot open filesystem or network
+references. Output readers
 cap metadata at 256 KiB, PNG at 8 MiB, and stderr at 64 KiB. The entire operation
-has a 30-second deadline; children are killed on cancellation and explicitly
-reaped after a bound or deadline failure. Frame indices are zero-based, integer
+uses one shared 30-second deadline for probing and decoding. Children are killed
+on cancellation; a bound or deadline failure kills and reaps the child with a
+separate maximum 2-second cleanup allowance. Cleanup timeout is a distinct fault. Frame indices are zero-based, integer
 selectors remain distinct from timestamps, and a selector-free read produces a
 3x3 grid plus duration, dimensions, codecs, frame rate and container metadata.
+
+The existing read-source authority resolves the authored path; video does not
+introduce a separate workspace-access policy or grant additional paths. The host
+opens that canonical source through retained directory descriptors with NOFOLLOW
+on every component and verifies a regular file. The same read-only descriptor is
+passed as stdin to both utilities; neither utility reopens the pathname. This
+pins file identity across renames and symlink replacement. Length/mtime changes
+on that held inode reject the result; this is not a cryptographic immutable
+snapshot against an actor deliberately restoring metadata after in-place writes.
+The descriptor protocol requires a supporting ffmpeg/ffprobe build and Unix host.
 
 Local video extensions match v1. Remote video ingestion and attachment-time
 preview generation are outside this read-tool change. Missing ffmpeg/ffprobe,

@@ -61,6 +61,12 @@ pub enum VideoFault {
 	/// The media utility returned no PNG image.
 	#[error("Video extraction returned no PNG frame.")]
 	NoFrame,
+	/// The opened source changed while metadata and frames were read.
+	#[error("Video source changed during extraction; retry against a stable source.")]
+	SourceChanged,
+	/// The child failed to reap within the cleanup allowance.
+	#[error("Video utility did not reap within the 2 second cleanup allowance.")]
+	CleanupDeadline,
 }
 
 /// Materialized PNG with metadata ready for durable blob storage.
@@ -87,7 +93,7 @@ pub fn is_video(path: &str) -> bool {
 /// Split after a video extension, retaining colons inside timestamps.
 /// Callers must check a literal existing filename before using this split.
 pub fn split_target(path: &str) -> Option<(&str, &str)> {
-	path.char_indices().find_map(|(index, character)| {
+	path.char_indices().rev().find_map(|(index, character)| {
 		(character == ':' && is_video(&path[..index])).then_some((&path[..index], &path[index + 1..]))
 	})
 }
@@ -111,7 +117,8 @@ pub fn parse(selector: Option<&str>) -> Result<Selection, VideoFault> {
 		return Ok(Selection::Frame(frame));
 	}
 	let number = |part: &str| -> Result<f64, VideoFault> {
-		if part.is_empty()
+		if !part.as_bytes().first().is_some_and(u8::is_ascii_digit)
+			|| !part.as_bytes().last().is_some_and(u8::is_ascii_digit)
 			|| !part
 				.bytes()
 				.all(|byte| byte.is_ascii_digit() || byte == b'.')
@@ -183,7 +190,9 @@ mod tests {
 		assert_eq!(parse(Some("0")), Ok(Selection::Frame(0)));
 		assert_eq!(parse(Some("0s")), Ok(Selection::Time(0.0)));
 		assert_eq!(split_target("clip.MP4:01:05:42"), Some(("clip.MP4", "01:05:42")));
-		for suffix in ["-1", "NaN", "1:60", "1s2h", "1.2.3", "f18446744073709551616", "1s;touch x"] {
+		for suffix in
+			["-1", "NaN", "1:60", "1s2h", "1.2.3", ".5", "5.", "f18446744073709551616", "1s;touch x"]
+		{
 			assert!(parse(Some(suffix)).is_err(), "{suffix}");
 		}
 	}
