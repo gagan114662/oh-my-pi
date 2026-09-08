@@ -466,6 +466,7 @@ mod tests {
 				capture_limit:       0,
 				timeout:             time::Duration::from_secs(1),
 				first_event_timeout: None,
+				idle_timeout:        None,
 			},
 		}
 	}

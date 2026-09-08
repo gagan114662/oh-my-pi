@@ -680,6 +680,7 @@ fn cassette_request(body: BodySource, format: NativeResponseFormat) -> Transport
 			capture_limit:       64,
 			timeout:             Duration::from_secs(30),
 			first_event_timeout: None,
+			idle_timeout:        None,
 		},
 	}
 }

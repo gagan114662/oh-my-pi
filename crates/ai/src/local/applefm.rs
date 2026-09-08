@@ -1679,6 +1679,7 @@ mod tests {
 			capture_limit:       1024,
 			timeout:             Duration::from_secs(1),
 			first_event_timeout: None,
+			idle_timeout:        None,
 		}
 	}
 
