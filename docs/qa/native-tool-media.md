@@ -65,3 +65,10 @@ out-of-order completion, multiple results in one message, placement before the
 next user turn, text-only profiles, and malformed batches. These tests are not
 provider calls and do not replace the unchanged read-tail PNG oracle. Rust tests
 and that production QA remain pending on this commit.
+
+Artifact replication now observes cancellation while opening each blob request,
+including waiting for space in a full outgoing transport queue. The regression
+fills a one-slot in-process queue, polls complete-projection restoration until
+it waits, then cancels without draining the queue; restoration must return
+`Interrupted` within one second. Existing transfer size/hash validation remains
+unchanged. This follow-up has static checks only; its runtime test is pending.

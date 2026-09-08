@@ -419,10 +419,14 @@ async fn replicate_outcome_blob(
 	let mut transfer = omp_env::ResumableBlobTransfer::new(expected_hash, expected_size, max_bytes)?;
 
 	for attempt in 0..OUTCOME_REPLICATION_ATTEMPTS {
-		let download = match client
-			.blob_get_for_invocation(invocation_id, transfer.request())
-			.await
-		{
+		// Opening the request can itself wait for space in the bounded
+		// transport queue. Cancellation must cover admission, not only receipt.
+		let opening = tokio::select! {
+			biased;
+			() = cancel.cancelled() => return Err(OutcomeReplicationError::Interrupted),
+			result = client.blob_get_for_invocation(invocation_id, transfer.request()) => result,
+		};
+		let download = match opening {
 			Ok(download) => download,
 			Err(source)
 				if resumable_blob_error(&source) && attempt + 1 < OUTCOME_REPLICATION_ATTEMPTS =>
@@ -3069,6 +3073,53 @@ mod tests {
 			bytes.as_ref(),
 			"tool media resolves without the environment host"
 		);
+	}
+
+	#[tokio::test]
+	async fn complete_projection_cancellation_interrupts_a_full_request_queue() {
+		let (client, _transport) = omp_env::EnvClient::in_process(1);
+		let client = client
+			.with_principal("session-a", "kernel")
+			.expect("principal");
+		let scratch = tempfile::tempdir().expect("CAS");
+		let store = omp_journal::blob::BlobStore::open(scratch.path()).expect("store");
+		let bytes = b"[]";
+		let digest = omp_core::Hash32::sum(bytes);
+		// Leave the one-slot queue occupied; no transport task drains it.
+		let _held_download = tokio::time::timeout(
+			std::time::Duration::from_secs(1),
+			client.blob_get_for_invocation("queue-blocker", omp_env::blob_frame::GetRequest {
+				hash:   bytes::Bytes::copy_from_slice(digest.as_bytes()),
+				offset: 0,
+				length: bytes.len() as u64,
+			}),
+		)
+		.await
+		.expect("first request enters queue")
+		.expect("first download");
+		let complete = omp_proto::thread::v1::Blob {
+			hash: bytes::Bytes::copy_from_slice(digest.as_bytes()),
+			size: bytes.len() as u64,
+			mime: "application/json".into(),
+			..Default::default()
+		};
+		let cancel = tokio_util::sync::CancellationToken::new();
+		let restore = super::restore_complete_parts(
+			&client,
+			&store,
+			"cancelled-call",
+			Vec::new(),
+			Some(&complete),
+			omp_proto::bounds::FRAME_MAX_BYTES as u64,
+			&cancel,
+		);
+		tokio::pin!(restore);
+		assert!(futures::poll!(restore.as_mut()).is_pending(), "restore waits behind full queue");
+		cancel.cancel();
+		let result = tokio::time::timeout(std::time::Duration::from_secs(1), restore)
+			.await
+			.expect("cancellation must not require queue drainage");
+		assert!(matches!(result, Err(super::OutcomeReplicationError::Interrupted)));
 	}
 
 	#[tokio::test]
