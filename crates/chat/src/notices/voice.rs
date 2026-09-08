@@ -281,9 +281,27 @@ enum InputPipeline {
 	Enhanced(EnhancedInput),
 }
 
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(strum::FromRepr, strum::Display))]
+#[cfg_attr(test, strum(serialize_all = "kebab-case"))]
+#[repr(u32)]
+enum WorkerPhase {
+	Starting,
+	WaitingForJob,
+	Synthesizing,
+	OpeningDevice,
+	WritingSamples,
+	Draining,
+	StoppingDevice,
+	FinishingRewrite,
+	Closed,
+}
+
 /// State shared between the host-side [`Vocalizer`], the synthesis worker,
 /// and the idle-flush timer.
 struct Shared {
+	#[cfg(test)]
+	phase:         AtomicU32,
 	/// Bumped by `clear`; jobs from older generations are dropped unplayed.
 	generation:    AtomicU64,
 	/// Generation of the utterance whose playback session is open (`0` when
@@ -318,6 +336,11 @@ struct Shared {
 }
 
 impl Shared {
+	fn mark_phase(&self, _phase: WorkerPhase) {
+		#[cfg(test)]
+		self.phase.store(_phase as u32, Ordering::Release);
+	}
+
 	fn live(&self, generation: u64) -> bool {
 		self.generation.load(Ordering::Acquire) == generation
 	}
@@ -410,6 +433,7 @@ impl Shared {
 		let writer = {
 			let mut slot = self.playback.lock();
 			if slot.is_none() {
+				self.mark_phase(WorkerPhase::OpeningDevice);
 				let stream = PlaybackStream::start(audio.sample_rate)?;
 				stream.set_gain(f32::from_bits(self.gain_bits.load(Ordering::Acquire)))?;
 				*slot = Some((audio.sample_rate, stream));
@@ -422,6 +446,7 @@ impl Shared {
 		let Some(writer) = writer else {
 			return Err(VocalizerFailure::Playback { source: VoiceError::PlaybackClosed });
 		};
+		self.mark_phase(WorkerPhase::WritingSamples);
 		if let Err(source) = writer.write_owned_async(audio.samples).await {
 			self.playback.lock().take();
 			return Err(VocalizerFailure::Playback { source });
@@ -432,6 +457,7 @@ impl Shared {
 	/// Finishes the open session and waits until its audio has reached the
 	/// speaker (or `clear` aborted it), then releases the device.
 	async fn drain(&self) -> Result<(), VocalizerFailure> {
+		self.mark_phase(WorkerPhase::Draining);
 		let state = {
 			let mut slot = self.playback.lock();
 			slot.as_mut().map(|(_, stream)| {
@@ -442,6 +468,7 @@ impl Shared {
 		let Some(state) = state else { return Ok(()) };
 		state.wait_for_drain().await;
 		if let Some((_, mut stream)) = self.playback.lock().take() {
+			self.mark_phase(WorkerPhase::StoppingDevice);
 			stream.stop()?;
 		}
 		Ok(())
@@ -465,6 +492,7 @@ async fn synthesize_and_play(
 	synth: &dyn SpeechSynth,
 	shared: &Shared,
 ) {
+	shared.mark_phase(WorkerPhase::Synthesizing);
 	shared.open.store(generation, Ordering::Release);
 	match synth.synthesize(request).await {
 		Ok(audio) if shared.live(generation) => {
@@ -487,6 +515,7 @@ async fn finish_rewrite(
 	synth: &dyn SpeechSynth,
 	shared: &Shared,
 ) {
+	shared.mark_phase(WorkerPhase::FinishingRewrite);
 	let result = task.await;
 	shared.end_rewrite(generation);
 	let Ok((request, result)) = result else {
@@ -522,7 +551,11 @@ async fn worker(rx: Receiver<Job>, synth: Arc<dyn SpeechSynth>, shared: Arc<Shar
 	let mut rewritten = SpeakableStream::new();
 	let mut rewrites = VecDeque::new();
 	let mut last_config: Option<(SynthConfig, tokio_util::sync::CancellationToken)> = None;
-	while let Ok(job) = rx.recv_async().await {
+	loop {
+		shared.mark_phase(WorkerPhase::WaitingForJob);
+		let Ok(job) = rx.recv_async().await else {
+			break;
+		};
 		let generation = job.generation();
 		if !shared.live(generation) {
 			continue;
@@ -573,6 +606,7 @@ async fn worker(rx: Receiver<Job>, synth: Arc<dyn SpeechSynth>, shared: Arc<Shar
 		}
 	}
 	shared.abort_playback();
+	shared.mark_phase(WorkerPhase::Closed);
 }
 
 /// Idle-flush timer: when no delta arrives for
@@ -638,6 +672,8 @@ impl Vocalizer {
 	#[must_use]
 	pub fn new(synth: Arc<dyn SpeechSynth>, con: Arc<Ctx>) -> Self {
 		let shared = Arc::new(Shared {
+			#[cfg(test)]
+			phase: AtomicU32::new(WorkerPhase::Starting as u32),
 			generation: AtomicU64::new(1),
 			open: AtomicU64::new(0),
 			rewrites: Mutex::new((0, 0)),
@@ -654,6 +690,7 @@ impl Vocalizer {
 			idle: Notify::new(),
 			closed: AtomicBool::new(false),
 		});
+		shared.mark_phase(WorkerPhase::Starting);
 		let (tx, rx) = flume::bounded(JOB_CAPACITY);
 		let work = worker(rx.clone(), synth, Arc::clone(&shared));
 		let idle = idle_flush(tx.clone(), Arc::clone(&shared));
@@ -1166,6 +1203,61 @@ mod tests {
 		assert!(!vocalizer.speaking());
 	}
 
+	fn voice_snapshot(vocalizer: &Vocalizer) -> String {
+		let shared = &vocalizer.shared;
+		let phase = WorkerPhase::from_repr(shared.phase.load(Ordering::Acquire))
+			.map(|phase| phase.to_string())
+			.unwrap_or_else(|| "unknown".to_owned());
+		// Never block diagnostics on a lock held by device startup/teardown.
+		let playback = match shared.playback.try_lock() {
+			None => "lock-busy".to_owned(),
+			Some(slot) => match slot.as_ref() {
+				None => "none".to_owned(),
+				Some((rate, stream)) => {
+					let state = stream.state();
+					format!("rate={rate},drained={},stopped={}", state.is_drained(), state.is_stopped())
+				},
+			},
+		};
+		let failure = match shared.failure.try_lock() {
+			None => "lock-busy",
+			Some(value) => match value.as_ref() {
+				None => "none",
+				Some(VocalizerFailure::Backpressure { .. }) => "backpressure",
+				Some(VocalizerFailure::WorkerClosed) => "worker-closed",
+				Some(VocalizerFailure::Synthesis { .. }) => "synthesis",
+				Some(VocalizerFailure::Playback { .. }) => "playback",
+			},
+		};
+		format!(
+			"pid={} phase={phase} queued={} queue_disconnected={} generation={} open={} closed={} \
+			 playback=[{playback}] failure={failure} rewrites={:?}",
+			std::process::id(),
+			vocalizer.rx.len(),
+			vocalizer.rx.is_disconnected(),
+			shared.generation.load(Ordering::Acquire),
+			shared.open.load(Ordering::Acquire),
+			shared.closed.load(Ordering::Acquire),
+			shared.rewrites.try_lock().map(|value| *value)
+		)
+	}
+
+	#[tokio::test]
+	async fn diagnostic_snapshot_does_not_wait_for_playback_or_failure_locks() {
+		let vocalizer = Vocalizer::new(FakeSynth::new(), test_ctx());
+		let snapshot = {
+			let _playback = vocalizer.shared.playback.lock();
+			let _failure = vocalizer.shared.failure.lock();
+			let _rewrites = vocalizer.shared.rewrites.lock();
+			voice_snapshot(&vocalizer)
+		};
+		// Release the diagnostic contention before assertions and Vocalizer's
+		// synchronous Drop -> clear path reacquires these locks.
+		assert!(snapshot.contains("playback=[lock-busy]"), "{snapshot}");
+		assert!(snapshot.contains("failure=lock-busy"), "{snapshot}");
+		assert!(snapshot.contains("rewrites=None"), "{snapshot}");
+	}
+
 	#[test]
 	fn works_without_a_current_runtime() {
 		let synth = FakeSynth::new();
@@ -1181,6 +1273,7 @@ mod tests {
 		while vocalizer.speaking() && std::time::Instant::now() < deadline {
 			std::thread::sleep(Duration::from_millis(5));
 		}
+		eprintln!("vocalizer completion snapshot: {}", voice_snapshot(&vocalizer));
 		assert!(!vocalizer.speaking());
 	}
 
