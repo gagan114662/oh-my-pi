@@ -22,7 +22,7 @@ Cargo-config/toolchain/binary hashes and raw exits are retained.
   16 provider requests, a kernel `loop-guard` notice, and an incomplete or
   cancelled terminal outcome. Merely mentioning a notice in tool/model text
   does not count. The original parent control requires all 100 matching calls,
-  at least 100 actual tool results, the 101 st final-answer request, a natural
+  at least 100 actual tool results, the 101st final-answer request, a natural
   exit 0, no loop-guard notice, and the same checker failing its acceptance row.
   Build/import/transport/timeout/cleanup failure never qualifies as semantic red.
 - **Minutes to idle notice:** invoke a shell script that records its PID and
@@ -62,7 +62,7 @@ Unix sockets cannot accept connections. Cleanup cannot turn a failed run green.
 With a freshly built app and GNU `gsleep` on macOS (or GNU `sleep` on Linux):
 
 ```sh
-python 3 scripts/soak/watchdog_fixture.py --binary target/debug/omp --out target/watchdog-manual
+python3 scripts/soak/watchdog_fixture.py --binary target/debug/omp --out target/watchdog-manual
 ```
 
 This takes at least 31 real minutes. It is not a unit-test shortcut. The leaf

@@ -43,6 +43,7 @@ jobs:
           git -C ../proof-tools rev-parse HEAD > target/watchdog-proof/checker-revision.txt
           git status --porcelain=v1 > target/watchdog-proof/source-before.txt
           shasum -a 256 .cargo/config.toml Cargo.lock rust-toolchain.toml ../proof-tools/.github/workflows/watchdog-proof.yml > target/watchdog-proof/setup.sha256
+      - uses: taiki-e/install-action@nextest
       - name: Install supported native prerequisites
         working-directory: source
         run: |
