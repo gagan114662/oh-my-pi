@@ -128,6 +128,9 @@ fn kernel(inference: RoutedInference, root: &std::path::Path) -> Kernel<RoutedIn
 		autolearn_enabled:        false,
 		autolearn_min_tool_calls: 5,
 		recover_inline_edits:     true,
+		turn_max_requests:        0,
+		turn_max_wall:            None,
+		loop_guard_limit:         0,
 	})
 }
 

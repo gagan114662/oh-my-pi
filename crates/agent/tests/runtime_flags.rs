@@ -23,6 +23,9 @@ fn flags(compaction: bool, goal: bool) -> RuntimeFlags {
 		autolearn_enabled:        false,
 		autolearn_min_tool_calls: 5,
 		recover_inline_edits:     true,
+		turn_max_requests:        0,
+		turn_max_wall:            None,
+		loop_guard_limit:         0,
 	}
 }
 
@@ -78,6 +81,9 @@ async fn autolearn_flag_and_minimum_schedule_exactly_one_learn_call() {
 		autolearn_enabled:        true,
 		autolearn_min_tool_calls: 1,
 		recover_inline_edits:     true,
+		turn_max_requests:        0,
+		turn_max_wall:            None,
+		loop_guard_limit:         0,
 	});
 	let mut session = fresh_session(&temp.path().join("autolearn.oms"));
 	kernel
@@ -111,6 +117,9 @@ async fn disabled_autolearn_never_schedules_learn_after_the_same_tool_count() {
 		autolearn_enabled:        false,
 		autolearn_min_tool_calls: 1,
 		recover_inline_edits:     true,
+		turn_max_requests:        0,
+		turn_max_wall:            None,
+		loop_guard_limit:         0,
 	});
 	let mut session = fresh_session(&temp.path().join("no-autolearn.oms"));
 	kernel
