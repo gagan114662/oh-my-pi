@@ -810,10 +810,13 @@ fn restore_probe_mode(tty: &fs::File, original: &nix::sys::termios::Termios) -> 
 		// processes that pending input without consuming or flushing it, so
 		// later terminal preparation does not save the transient flag as original.
 		// See XNU bsd/kern/tty.c: ttioctl(TIOCSETA*) and ttnread.
-		nix::ioctl_read_bad!(pending_input, libc::FIONREAD, libc::c_int);
-		let mut pending = 0;
+		let mut pending: libc::c_int = 0;
 		// SAFETY: tty owns a valid descriptor and pending is a writable c_int.
-		unsafe { pending_input(std::os::fd::AsRawFd::as_raw_fd(tty), &mut pending) }?;
+		if unsafe { libc::ioctl(std::os::fd::AsRawFd::as_raw_fd(tty), libc::FIONREAD, &mut pending) }
+			== -1
+		{
+			return Err(nix::errno::Errno::last());
+		}
 	}
 	Ok(())
 }
