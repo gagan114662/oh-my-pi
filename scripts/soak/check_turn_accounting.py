@@ -45,6 +45,8 @@ def main():
 		report.update(source_revision=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), checker_revision=subprocess.check_output(['git', '-C', str(proof), 'rev-parse', 'HEAD'], text=True).strip(), checker_sha256=sha(Path(__file__)), workflow_sha256=sha(proof / '.github/workflows/turn-accounting.yml'), fixture_sha256={p: sha(proof / p) for p in FIXTURES}, source_status_before=subprocess.check_output(['git', 'status', '--porcelain=v1'], text=True))
 		if args.mode == 'parent':
 			assert report['source_revision'] == PARENT, 'comparison must use the frozen original source'
+		if args.mode == 'head':
+			run('accounting-tests', [sys.executable, '-m', 'unittest', 'discover', '-s', str(proof / 'scripts/soak'), '-p', 'test_*.py'])
 		build = run('build', ['just', 'build'])
 		try:
 			if build == 0:
@@ -69,7 +71,7 @@ def main():
 			for package in PACKAGES:
 				run(package + '-targets', ['just', '--command', 'cargo', 'nextest', 'run', '--profile', 'ci', '--locked', '-p', package, '--all-targets', '--no-fail-fast', '--no-tests', 'fail'])
 				run(package + '-doctests', ['just', '--command', 'cargo', 'test', '--doc', '--locked', '-p', package, '--no-fail-fast'])
-			report['status'] = 'passed' if len(commands) == 12 and report.get('fixture_passed') and all(command['raw_exit'] == 0 for command in commands) else 'failed'
+			report['status'] = 'passed' if len(commands) == 13 and report.get('fixture_passed') and all(command['raw_exit'] == 0 for command in commands) else 'failed'
 		assert report['fixture_sha256'] == {p: sha(proof / p) for p in FIXTURES}, 'fixture changed during execution'
 		report['source_status_after'] = subprocess.check_output(['git', 'status', '--porcelain=v1'], text=True)
 		assert report['source_status_after'] == report['source_status_before'], 'production source changed during proof'
