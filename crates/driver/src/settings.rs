@@ -36,6 +36,35 @@ pub enum ShareStore {
 omp_con::con_enum!(ShareStore);
 
 omp_con::var! {
+	/// Active minutes without a durable non-stream journal entry before the turn settles.
+	pub static SV_TURN_IDLE_MINUTES = sv_turn_idle_minutes: u32 {
+		default: 30,
+		min: 1,
+		max: 10_080,
+		flags: archive,
+	};
+	/// Provider requests one turn may start before it settles with a `turn-limit` notice; 0 leaves
+	/// turns unbounded. Callers with their own request budget are not loosened.
+	pub static SV_TURN_MAX_REQUESTS = sv_turn_max_requests: u32 {
+		default: 500,
+		min: 0,
+		max: 100_000,
+		flags: archive,
+		meta: {
+			"legacy.path": "turn.maxRequests",
+		},
+	};
+	/// Wall-clock hours one turn may run before it settles with a `turn-limit` notice; 0 leaves
+	/// turns unbounded. Callers with their own deadline are not loosened.
+	pub static SV_TURN_MAX_WALL_HOURS = sv_turn_max_wall_hours: u32 {
+		default: 6,
+		min: 0,
+		max: 168,
+		flags: archive,
+		meta: {
+			"legacy.path": "turn.maxWallHours",
+		},
+	};
 	/// Longest an approval prompt waits for a human before it is decided by its default (deny
 	/// unless the prompt says otherwise); 0 waits until answered. A shorter timeout set by the
 	/// prompt itself still wins.

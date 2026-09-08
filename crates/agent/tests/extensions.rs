@@ -50,7 +50,7 @@ async fn extensions_live_component_patch_is_journaled_once_and_replays_without_c
 		.run_turn(
 			&mut session,
 			TurnInput { text: Str::new_static("hello"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn completes");

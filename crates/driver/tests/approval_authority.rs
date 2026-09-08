@@ -185,7 +185,7 @@ async fn run(approve: bool) -> (Session, String, bool) {
 		kernel.run_turn(
 			&mut session,
 			TurnInput { text: Str::new_static("run it"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		),
 	)
 	.await

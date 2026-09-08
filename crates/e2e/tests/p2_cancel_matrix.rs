@@ -59,7 +59,7 @@ async fn p2_kernel_interrupt_records_no_false_completion_and_replays() {
 		.expect("queue interrupt");
 	let mut session = create_session(&path).expect("session");
 	let outcome = kernel
-		.run_turn(&mut session, input(), RunControl::default())
+		.run_turn(&mut session, input(), RunControl::new(Default::default(), None))
 		.await
 		.expect("turn");
 	assert_eq!(outcome.stop, TurnStop::Cancelled);
@@ -103,12 +103,12 @@ async fn p2_kernel_cancel_ends_session_and_future_turns() {
 	kernel.mailbox().send(Up::Cancel).expect("queue cancel");
 	let mut session = create_session(&path).expect("session");
 	let first = kernel
-		.run_turn(&mut session, input(), RunControl::default())
+		.run_turn(&mut session, input(), RunControl::new(Default::default(), None))
 		.await
 		.expect("first");
 	assert_eq!(first.stop, TurnStop::Cancelled);
 	let second = kernel
-		.run_turn(&mut session, input(), RunControl::default())
+		.run_turn(&mut session, input(), RunControl::new(Default::default(), None))
 		.await
 		.expect("second");
 	assert_eq!(second.stop, TurnStop::Cancelled);

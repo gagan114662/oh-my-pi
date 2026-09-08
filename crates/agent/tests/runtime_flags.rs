@@ -23,6 +23,10 @@ fn flags(compaction: bool, goal: bool) -> RuntimeFlags {
 		autolearn_enabled:        false,
 		autolearn_min_tool_calls: 5,
 		recover_inline_edits:     true,
+		turn_max_requests:        0,
+		turn_max_wall:            None,
+		turn_idle:                std::time::Duration::from_secs(30 * 60),
+		loop_guard_limit:         0,
 	}
 }
 
@@ -43,7 +47,7 @@ async fn automatic_compaction_flag_controls_director_engagement() {
 			.run_turn(
 				&mut session,
 				TurnInput { text: sf!("run"), attachments: Vec::new() },
-				RunControl::default(),
+				RunControl::new(Default::default(), None),
 			)
 			.await
 			.expect("turn");
@@ -78,13 +82,17 @@ async fn autolearn_flag_and_minimum_schedule_exactly_one_learn_call() {
 		autolearn_enabled:        true,
 		autolearn_min_tool_calls: 1,
 		recover_inline_edits:     true,
+		turn_max_requests:        0,
+		turn_max_wall:            None,
+		turn_idle:                std::time::Duration::from_secs(30 * 60),
+		loop_guard_limit:         0,
 	});
 	let mut session = fresh_session(&temp.path().join("autolearn.oms"));
 	kernel
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("run"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -111,13 +119,17 @@ async fn disabled_autolearn_never_schedules_learn_after_the_same_tool_count() {
 		autolearn_enabled:        false,
 		autolearn_min_tool_calls: 1,
 		recover_inline_edits:     true,
+		turn_max_requests:        0,
+		turn_max_wall:            None,
+		turn_idle:                std::time::Duration::from_secs(30 * 60),
+		loop_guard_limit:         0,
 	});
 	let mut session = fresh_session(&temp.path().join("no-autolearn.oms"));
 	kernel
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("run"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -145,13 +157,17 @@ async fn inline_recovery(flags_enabled: bool, family: &str, text: &str) -> (usiz
 		autolearn_enabled:        false,
 		autolearn_min_tool_calls: 5,
 		recover_inline_edits:     flags_enabled,
+		turn_max_requests:        0,
+		turn_max_wall:            None,
+		turn_idle:                std::time::Duration::from_secs(30 * 60),
+		loop_guard_limit:         0,
 	});
 	let mut session = fresh_session(&temp.path().join("inline.oms"));
 	kernel
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("run"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -215,7 +231,7 @@ async fn goal_tool_roster_follows_the_durable_engagement_state() {
 			.run_turn(
 				&mut session,
 				TurnInput { text: sf!("run"), attachments: Vec::new() },
-				RunControl::default(),
+				RunControl::new(Default::default(), None),
 			)
 			.await
 			.expect("turn");
@@ -250,7 +266,7 @@ async fn disabled_goal_is_removed_before_inference_while_enabled_goal_remains() 
 			.run_turn(
 				&mut session,
 				TurnInput { text: sf!("run"), attachments: Vec::new() },
-				RunControl::default(),
+				RunControl::new(Default::default(), None),
 			)
 			.await
 			.expect("turn");

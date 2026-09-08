@@ -86,7 +86,7 @@ async fn empty_output_continues_with_numbered_developer_nudge() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("original"), RunControl::default())
+		.run_turn(&mut session, input("original"), RunControl::new(Default::default(), None))
 		.await
 		.expect("empty output recovers");
 
@@ -153,7 +153,7 @@ async fn fourth_empty_output_yields_after_exactly_three_nudges_with_error_notice
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("original"), RunControl::default())
+		.run_turn(&mut session, input("original"), RunControl::new(Default::default(), None))
 		.await
 		.expect("retry cap yields visibly");
 
@@ -225,7 +225,7 @@ async fn empty_output_exhaustion_is_offered_to_the_director_stack() {
 		.engage_registered(&mut session, "empty_observer")
 		.expect("observer engages");
 	kernel
-		.run_turn(&mut session, input("empty"), RunControl::default())
+		.run_turn(&mut session, input("empty"), RunControl::new(Default::default(), None))
 		.await
 		.expect("turn yields through Director");
 	assert!(observed.load(Ordering::SeqCst));
@@ -251,7 +251,7 @@ async fn thought_only_completion_is_empty_until_visible_output_arrives() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("answer visibly"), RunControl::default())
+		.run_turn(&mut session, input("answer visibly"), RunControl::new(Default::default(), None))
 		.await
 		.expect("thought-only completion recovers");
 
@@ -291,12 +291,12 @@ async fn fresh_user_turn_resets_the_empty_output_retry_cap() {
 	let mut session = fresh_session(&journal_path);
 
 	let capped = kernel
-		.run_turn(&mut session, input("first"), RunControl::default())
+		.run_turn(&mut session, input("first"), RunControl::new(Default::default(), None))
 		.await
 		.expect("first turn reaches cap");
 	assert_eq!(capped.assistant_text, "");
 	let recovered = kernel
-		.run_turn(&mut session, input("fresh"), RunControl::default())
+		.run_turn(&mut session, input("fresh"), RunControl::new(Default::default(), None))
 		.await
 		.expect("fresh turn gets a fresh retry budget");
 

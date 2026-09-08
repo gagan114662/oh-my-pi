@@ -323,7 +323,7 @@ async fn lifecycle_tool_call_transform_reaches_executor_and_observations_are_com
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("capture"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -434,7 +434,7 @@ async fn lifecycle_and_native_approval_share_one_durable_ticket_and_replay() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("capture"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -499,7 +499,7 @@ async fn lifecycle_approval_timeout_denies_before_execution_and_replays() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("capture"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -626,7 +626,7 @@ async fn lifecycle_tool_call_denial_skips_executor_and_journals_abort() {
 		.run_turn(
 			&mut session,
 			TurnInput { text: sf!("capture"), attachments: Vec::new() },
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn");
@@ -642,4 +642,140 @@ async fn lifecycle_tool_call_denial_skips_executor_and_journals_abort() {
 			.any(|entry| entry.kind.name.as_str() == kind::TOOL_RESULT && entry.by == Some(call.id))
 	);
 	responder.await.expect("responder");
+}
+
+#[tokio::test]
+async fn pre_admission_hang_is_bounded_without_inventing_an_accepted_turn() {
+	for idle in [false, true] {
+		let (gate, receiver) = HookGate::delegated_channel();
+		gate
+			.subscribe("test", vec![subscription(
+				1,
+				HookEventId::HookEventBeforeAgentStart,
+				HookPhase::Precheck,
+			)])
+			.unwrap();
+		let directory = tempfile::tempdir().unwrap();
+		let path = directory.path().join("unaccepted.oms");
+		let (inference, requests) = ScriptedInference::new([text_script("unreachable")]);
+		let mut kernel = Kernel::new(
+			inference,
+			capture_registry(Arc::new(Mutex::new(None))),
+			DispatchPolicy::new(BlobStore::open(directory.path().join("blobs")).unwrap()),
+			StaticPrompt(sf!("system")),
+		)
+		.with_hook_gate(Arc::new(gate))
+		.with_runtime_flags(omp_agent::RuntimeFlags {
+			turn_idle: if idle {
+				Duration::from_millis(100)
+			} else {
+				Duration::from_secs(1800)
+			},
+			turn_max_wall: if idle {
+				None
+			} else {
+				Some(Duration::from_millis(100))
+			},
+			..omp_agent::RuntimeFlags::default()
+		});
+		let mut session = fresh_session(&path);
+		let control = kernel.turn_control();
+		let result = tokio::time::timeout(
+			Duration::from_secs(3),
+			kernel.run_turn(
+				&mut session,
+				TurnInput { text: sf!("never accepted"), attachments: Vec::new() },
+				control,
+			),
+		)
+		.await
+		.unwrap();
+		assert!(
+			matches!(result, Err(omp_agent::KernelError::AdmissionLimit { idle: reason }) if reason == idle)
+		);
+		assert_eq!(receiver.try_recv().unwrap().event, HookEventId::HookEventBeforeAgentStart);
+		assert!(requests.lock().is_empty());
+		assert_eq!(session.dom().count("body turn").unwrap(), 0);
+		assert!(
+			!journal_entries(&path)
+				.iter()
+				.any(|entry| entry.kind.name == "turn.start" || entry.kind.name == "turn.outcome")
+		);
+	}
+}
+
+#[tokio::test]
+async fn idle_watchdog_preserves_actual_tool_terminal_when_result_hook_never_answers() {
+	let (gate, receiver) = HookGate::delegated_channel();
+	gate
+		.subscribe("test", vec![subscription(
+			1,
+			HookEventId::HookEventToolResult,
+			HookPhase::Transform,
+		)])
+		.unwrap();
+	let directory = tempfile::tempdir().unwrap();
+	let path = directory.path().join("held-result.oms");
+	let seen = Arc::new(Mutex::new(None));
+	let (inference, requests) = ScriptedInference::new([
+		tool_script("capture-1", "capture", serde_json::json!({"value": 42})),
+		text_script("unreachable"),
+	]);
+	let mut kernel = Kernel::new(
+		inference,
+		capture_registry(seen.clone()),
+		DispatchPolicy::new(BlobStore::open(directory.path().join("blobs")).unwrap()),
+		StaticPrompt(sf!("system")),
+	)
+	.with_hook_gate(Arc::new(gate))
+	.with_runtime_flags(omp_agent::RuntimeFlags {
+		turn_idle: Duration::from_millis(100),
+		turn_max_wall: None,
+		..omp_agent::RuntimeFlags::default()
+	});
+	let mut session = fresh_session(&path);
+	let control = kernel.turn_control();
+	let result = tokio::time::timeout(
+		Duration::from_secs(5),
+		kernel.run_turn(
+			&mut session,
+			TurnInput { text: sf!("capture"), attachments: Vec::new() },
+			control,
+		),
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	assert_eq!(result.stop, TurnStop::Cancelled);
+	assert_eq!(*seen.lock(), Some(serde_json::json!({"value": 42})));
+	assert_eq!(receiver.try_recv().unwrap().event, HookEventId::HookEventToolResult);
+	assert_eq!(requests.lock().len(), 1);
+	assert!(session.unsettled_calls().is_empty());
+	let entries = journal_entries(&path);
+	let terminals: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == "tool.result")
+		.collect();
+	assert_eq!(terminals.len(), 1);
+	assert!(terminals[0].data.contains("42"), "preserve the actual staged tool value");
+	assert!(
+		!terminals[0].data.contains("effects_unknown"),
+		"the tool already produced an authoritative result"
+	);
+	assert!(
+		entries
+			.iter()
+			.any(|entry| entry.data.contains("idle watchdog"))
+	);
+	let outcome_entries: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == "turn.outcome")
+		.collect();
+	assert_eq!(outcome_entries.len(), 1);
+	assert_eq!(
+		serde_json::from_str::<omp_journal::data::TurnOutcome>(outcome_entries[0].data.as_str())
+			.unwrap()
+			.status,
+		omp_journal::data::TurnStatus::Cancelled
+	);
 }

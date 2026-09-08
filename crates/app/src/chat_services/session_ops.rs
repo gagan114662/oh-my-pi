@@ -304,7 +304,7 @@ pub(super) fn btw(
 			.run_turn(
 				&mut session,
 				omp_agent::TurnInput { text: prompt, attachments: Vec::new() },
-				omp_agent::RunControl::default(),
+				kernel.turn_control(),
 			)
 			.await;
 		drop(kernel);

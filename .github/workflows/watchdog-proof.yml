@@ -1,0 +1,79 @@
+name: Watchdog real-duration proof
+
+on:
+  push:
+    branches: [fix/watchdog-proof-124]
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact source revision to build; empty uses workflow revision
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watchdog-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  proof:
+    name: Watchdog ${{ matrix.mode }}
+    runs-on: macos-15
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [head, parent]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ matrix.mode == 'parent' && 'b59b952172f1f331c2a79a6bc22f6ea25a3e2135' || inputs.source_ref || github.sha }}
+      - name: Record source and checker provenance
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p target/watchdog-proof
+          git rev-parse HEAD > target/watchdog-proof/source-revision.txt
+          git -C ../proof-tools rev-parse HEAD > target/watchdog-proof/checker-revision.txt
+          git status --porcelain=v1 > target/watchdog-proof/source-before.txt
+          shasum -a 256 .cargo/config.toml Cargo.lock rust-toolchain.toml ../proof-tools/.github/workflows/watchdog-proof.yml > target/watchdog-proof/setup.sha256
+      - uses: taiki-e/install-action@nextest
+      - name: Install supported native prerequisites
+        working-directory: source
+        run: |
+          set -euo pipefail
+          brew install just cmake ninja lld@22 uv coreutils 2>&1 | tee target/watchdog-proof/install.log
+          rustup show active-toolchain 2>&1 | tee target/watchdog-proof/toolchain.log
+          just setup-python 2>&1 | tee target/watchdog-proof/python-setup.log
+          just doctor 2>&1 | tee target/watchdog-proof/doctor.log
+          command -v gsleep | tee target/watchdog-proof/sleep-path.txt
+      - name: Execute uncompressed production phases
+        working-directory: source
+        env:
+          PROOF_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          python3 ../proof-tools/scripts/soak/check_watchdog.py "$PROOF_MODE" --proof-root ../proof-tools --out target/watchdog-proof
+      - name: Require completed source-bound evidence
+        if: always()
+        working-directory: source
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('target/watchdog-proof/report.json')
+          assert path.is_file(), 'Missing proof report: setup or execution did not finish'
+          assert json.loads(path.read_text())['status'] == 'passed', 'Failed proof; inspect raw exits and journal'
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: watchdog-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: source/target/watchdog-proof/
+          if-no-files-found: error

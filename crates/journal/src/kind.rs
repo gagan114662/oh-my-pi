@@ -11,6 +11,8 @@ use thiserror::Error;
 pub const JOURNAL: &str = "journal";
 /// Explicit turn boundary.
 pub const TURN_START: &str = "turn.start";
+/// Durable terminal turn outcome.
+pub const TURN_OUTCOME: &str = "turn.outcome";
 /// User message.
 pub const MSG_USER: &str = "msg.user";
 /// Assistant message start.
@@ -55,6 +57,10 @@ pub enum KindName {
 	#[serde(rename = "turn.start")]
 	#[strum(to_string = "turn.start")]
 	TurnStart,
+	/// `turn.outcome@1`.
+	#[serde(rename = "turn.outcome")]
+	#[strum(to_string = "turn.outcome")]
+	TurnOutcome,
 	/// `msg.user@1`.
 	#[serde(rename = "msg.user")]
 	#[strum(to_string = "msg.user")]

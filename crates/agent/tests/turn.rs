@@ -142,7 +142,7 @@ async fn user_turn_journals_assistant_text_in_the_explicit_turn() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("reply once"), RunControl::default())
+		.run_turn(&mut session, input("reply once"), RunControl::new(Default::default(), None))
 		.await
 		.expect("turn completes");
 
@@ -188,6 +188,7 @@ async fn user_turn_journals_assistant_text_in_the_explicit_turn() {
 		kind::MSG_ASSISTANT_START,
 		kind::MSG_ASSISTANT_END,
 		kind::TURN_RECEIPT,
+		kind::TURN_OUTCOME,
 	] {
 		assert!(
 			entries
@@ -196,6 +197,24 @@ async fn user_turn_journals_assistant_text_in_the_explicit_turn() {
 			"missing {required}"
 		);
 	}
+	let terminal: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == kind::TURN_OUTCOME)
+		.collect();
+	assert_eq!(terminal.len(), 1);
+	assert_eq!(
+		terminal[0].by,
+		entries
+			.iter()
+			.find(|entry| entry.kind.name == kind::TURN_START)
+			.map(|entry| entry.id)
+	);
+	assert_eq!(
+		serde_json::from_str::<omp_journal::data::TurnOutcome>(terminal[0].data.as_str())
+			.unwrap()
+			.status,
+		omp_journal::data::TurnStatus::Completed
+	);
 }
 
 #[tokio::test]
@@ -213,7 +232,7 @@ async fn paused_completion_resamples_and_replays_durable_evidence() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("inspect"), RunControl::default())
+		.run_turn(&mut session, input("inspect"), RunControl::new(Default::default(), None))
 		.await
 		.expect("paused completion continues");
 	assert_eq!(outcome.stop, TurnStop::Completed);
@@ -280,7 +299,7 @@ async fn paused_completion_caps_consecutive_resamples_without_spinning() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("inspect"), RunControl::default())
+		.run_turn(&mut session, input("inspect"), RunControl::new(Default::default(), None))
 		.await
 		.expect("cap yields cleanly");
 	assert_eq!(outcome.stop, TurnStop::Completed);
@@ -331,7 +350,7 @@ async fn tool_progress_rearms_paused_completion_cap() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("inspect"), RunControl::default())
+		.run_turn(&mut session, input("inspect"), RunControl::new(Default::default(), None))
 		.await
 		.expect("tool progress rearms continuation cap");
 	assert_eq!(outcome.stop, TurnStop::Completed);
@@ -371,7 +390,7 @@ async fn queued_follow_up_blocks_paused_completion_resample() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("inspect"), RunControl::default())
+		.run_turn(&mut session, input("inspect"), RunControl::new(Default::default(), None))
 		.await
 		.expect("pending input yields");
 	assert_eq!(outcome.stop, TurnStop::Completed);
@@ -407,7 +426,8 @@ async fn runtime_pause_blocks_paused_completion_provider_admission() {
 	let up = kernel.mailbox();
 	up.send(Up::Pause { active: true }).expect("pause queues");
 	let mut session = fresh_session(&journal_path);
-	let run = kernel.run_turn(&mut session, input("inspect"), RunControl::default());
+	let run =
+		kernel.run_turn(&mut session, input("inspect"), RunControl::new(Default::default(), None));
 	tokio::pin!(run);
 
 	assert!(
@@ -446,7 +466,7 @@ async fn tool_call_round_settles_in_the_dom_then_runs_second_inference() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("use echo"), RunControl::default())
+		.run_turn(&mut session, input("use echo"), RunControl::new(Default::default(), None))
 		.await
 		.expect("tool turn completes");
 
@@ -517,6 +537,21 @@ async fn tool_call_round_settles_in_the_dom_then_runs_second_inference() {
 		.find(|entry| entry.kind.name.as_str() == kind::TOOL_RESULT)
 		.expect("tool result journals");
 	assert_eq!(result.by, Some(call.id));
+	assert_eq!(
+		entries
+			.iter()
+			.filter(|entry| entry.kind.name == kind::TURN_RECEIPT)
+			.count(),
+		2
+	);
+	assert_eq!(
+		entries
+			.iter()
+			.filter(|entry| entry.kind.name == kind::TURN_OUTCOME)
+			.count(),
+		1,
+		"tool continuations complete one explicit turn"
+	);
 }
 
 #[tokio::test]
@@ -534,7 +569,11 @@ async fn scoped_stream_abort_labels_siblings_in_call_order_and_replays() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = {
-		let run = kernel.run_turn(&mut session, input("stream two calls"), RunControl::default());
+		let run = kernel.run_turn(
+			&mut session,
+			input("stream two calls"),
+			RunControl::new(Default::default(), None),
+		);
 		tokio::pin!(run);
 		tokio::select! {
 			() = ready.notified() => {},
@@ -651,7 +690,8 @@ async fn independent_calls_from_one_turn_execute_concurrently() {
 		StaticPrompt(Str::new_static("test system")),
 	);
 	let mut session = fresh_session(&directory.path().join("parallel.oms"));
-	let turn = kernel.run_turn(&mut session, input("parallel"), RunControl::default());
+	let turn =
+		kernel.run_turn(&mut session, input("parallel"), RunControl::new(Default::default(), None));
 	tokio::pin!(turn);
 	let settled = tokio::time::timeout(Duration::from_secs(1), async {
 		tokio::select! {
@@ -693,7 +733,7 @@ async fn steering_is_drained_after_tool_results_before_the_yield_decision() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("use echo"), RunControl::default())
+		.run_turn(&mut session, input("use echo"), RunControl::new(Default::default(), None))
 		.await
 		.expect("steered turn completes");
 
@@ -799,7 +839,7 @@ async fn soft_request_budget_notice_grants_one_final_request_only_when_enabled()
 		.run_turn(
 			&mut session,
 			input("bounded child"),
-			RunControl::default()
+			RunControl::new(Default::default(), None)
 				.with_request_budget(0)
 				.with_request_budget_notice(true),
 		)
@@ -826,7 +866,7 @@ async fn request_budget_prevents_the_first_disallowed_provider_call() {
 		.run_turn(
 			&mut session,
 			input("bounded child"),
-			RunControl::default()
+			RunControl::new(Default::default(), None)
 				.with_request_budget(0)
 				.with_request_budget_notice(false),
 		)
@@ -841,6 +881,19 @@ async fn request_budget_prevents_the_first_disallowed_provider_call() {
 			.expect("selector")
 			.count(),
 		1
+	);
+	assert_eq!(outcome.terminal_status, omp_journal::data::TurnStatus::Incomplete);
+	drop(session);
+	let entries = journal_entries(&journal_path);
+	let terminal = entries
+		.iter()
+		.find(|entry| entry.kind.name == kind::TURN_OUTCOME)
+		.expect("terminal outcome");
+	assert_eq!(
+		serde_json::from_str::<omp_journal::data::TurnOutcome>(terminal.data.as_str())
+			.unwrap()
+			.status,
+		omp_journal::data::TurnStatus::Incomplete
 	);
 }
 
@@ -863,7 +916,7 @@ async fn interrupt_returns_cancelled_without_journaling_a_false_completion() {
 	let mut session = fresh_session(&journal_path);
 
 	let outcome = kernel
-		.run_turn(&mut session, input("cancel me"), RunControl::default())
+		.run_turn(&mut session, input("cancel me"), RunControl::new(Default::default(), None))
 		.await
 		.expect("interrupt settles turn");
 
@@ -890,6 +943,17 @@ async fn interrupt_returns_cancelled_without_journaling_a_false_completion() {
 		!entries
 			.iter()
 			.any(|entry| entry.kind.name.as_str() == kind::TURN_RECEIPT)
+	);
+	let terminal: Vec<_> = entries
+		.iter()
+		.filter(|entry| entry.kind.name == kind::TURN_OUTCOME)
+		.collect();
+	assert_eq!(terminal.len(), 1);
+	assert_eq!(
+		serde_json::from_str::<omp_journal::data::TurnOutcome>(terminal[0].data.as_str())
+			.unwrap()
+			.status,
+		omp_journal::data::TurnStatus::Cancelled
 	);
 }
 
@@ -954,7 +1018,7 @@ async fn settled_background_job_is_delivered_to_the_model_as_a_follow_up_turn() 
 		let _ = done_tx.send(());
 	});
 	let outcome = kernel
-		.run_turn(&mut session, input("delegate"), RunControl::default())
+		.run_turn(&mut session, input("delegate"), RunControl::new(Default::default(), None))
 		.await
 		.expect("turn completes after delivery");
 	assert_eq!(outcome.stop, TurnStop::Completed);
@@ -1033,7 +1097,7 @@ async fn retry_tool_tail_reruns_the_aborted_call_and_continues_the_turn() {
 		StaticPrompt(Str::new_static("test system")),
 	);
 	let outcome = kernel
-		.retry_tool_tail(&mut session, RunControl::default())
+		.retry_tool_tail(&mut session, RunControl::new(Default::default(), None))
 		.await
 		.expect("retry succeeds");
 	assert_eq!(outcome.stop, TurnStop::Completed);
@@ -1058,7 +1122,7 @@ async fn retry_tool_tail_reruns_the_aborted_call_and_continues_the_turn() {
 	);
 	assert!(matches!(
 		kernel
-			.retry_tool_tail(&mut session, RunControl::default())
+			.retry_tool_tail(&mut session, RunControl::new(Default::default(), None))
 			.await,
 		Err(omp_agent::KernelError::NothingToRetry)
 	));
@@ -1093,7 +1157,7 @@ async fn user_image_attachment_reaches_the_request_with_its_bytes_and_mime() {
 				text:        Str::new_static("what is this? [Image #1, 4x3]"),
 				attachments: vec![attachment.clone()],
 			},
-			RunControl::default(),
+			RunControl::new(Default::default(), None),
 		)
 		.await
 		.expect("turn completes");
@@ -1159,7 +1223,7 @@ async fn user_image_attachment_reaches_the_request_with_its_bytes_and_mime() {
 	.with_route_facts(omp_agent::RouteFacts { image_input: true, ..Default::default() });
 	let mut restored = restored;
 	kernel
-		.run_turn(&mut restored, input("and now?"), RunControl::default())
+		.run_turn(&mut restored, input("and now?"), RunControl::new(Default::default(), None))
 		.await
 		.expect("resumed turn completes");
 	assert_eq!(images(&requests.lock()[0]), live);
@@ -1197,7 +1261,7 @@ async fn steered_image_attachment_reaches_the_next_request() {
 		.expect("steering queues");
 
 	let outcome = kernel
-		.run_turn(&mut session, input("use echo"), RunControl::default())
+		.run_turn(&mut session, input("use echo"), RunControl::new(Default::default(), None))
 		.await
 		.expect("steered turn completes");
 	assert_eq!(outcome.stop, TurnStop::Steered);

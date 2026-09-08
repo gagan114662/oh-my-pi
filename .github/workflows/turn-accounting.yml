@@ -1,0 +1,109 @@
+name: Durable turn accounting
+
+on:
+  push:
+    branches: [fix/soak-turn-accounting-20260908, feat/soak-rig]
+  pull_request:
+    branches: [main, omp2]
+    paths:
+      - crates/journal/**
+      - crates/session/**
+      - crates/agent/**
+      - crates/driver/**
+      - crates/app/**
+      - scripts/soak/**
+      - scripts/qa/harness.py
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - justfile
+      - .github/workflows/turn-accounting.yml
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source revision to build; empty uses the workflow revision
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  turn-accounting:
+    name: Turn accounting ${{ matrix.mode }}
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [head, parent]
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ matrix.mode == 'parent' && '29fe965b37ba9a0a5ced3ddf7a73bb751db0ab7d' || inputs.source_ref || github.sha }}
+      - name: Record checkout identity before setup
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/turn-accounting
+          git rev-parse HEAD > target/turn-accounting/source-revision.txt
+          git -C ../proof-tools rev-parse HEAD > target/turn-accounting/checker-revision.txt
+          git status --porcelain=v1 > target/turn-accounting/source-before.txt
+          shasum -a 256 ../proof-tools/scripts/soak/check_turn_accounting.py ../proof-tools/.github/workflows/turn-accounting.yml .cargo/config.toml Cargo.lock rust-toolchain.toml > target/turn-accounting/setup-provenance.sha256
+      - name: Install documented prerequisites
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install just cmake ninja lld@22 uv 2>&1 | tee target/turn-accounting/install.log
+          rustup show active-toolchain 2>&1 | tee target/turn-accounting/toolchain.log
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare Python and check prerequisites
+        id: setup
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          just setup-python 2>&1 | tee target/turn-accounting/python-setup.log
+          just doctor 2>&1 | tee target/turn-accounting/doctor.log
+          /opt/homebrew/opt/lld@22/bin/ld64.lld --version | tee target/turn-accounting/linker.log
+          df -h . | tee target/turn-accounting/free-space.log
+      - name: Execute source-bound proof
+        working-directory: source
+        shell: bash
+        env:
+          PROOF_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          python3 ../proof-tools/scripts/soak/check_turn_accounting.py "$PROOF_MODE" --proof-root ../proof-tools --out target/turn-accounting
+      - name: Require completed evidence
+        if: always()
+        working-directory: source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('target/turn-accounting/report.json')
+          if not path.exists():
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                  summary.write('\nTurn accounting evidence missing: setup or checker did not complete.\n')
+              raise SystemExit('Missing turn accounting proof report')
+          report = json.loads(path.read_text())
+          if report['status'] != 'passed':
+              raise SystemExit('Incomplete or failed turn accounting proof; inspect raw logs and report.json')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: turn-accounting-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: source/target/turn-accounting/
+          if-no-files-found: error
