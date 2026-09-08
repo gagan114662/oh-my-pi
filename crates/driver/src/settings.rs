@@ -75,7 +75,6 @@ omp_con::var! {
 		flags: archive,
 		meta: {
 			"legacy.path": "turn.maxWallHours",
-
 		},
 	};
 	/// Enables skill commands.
