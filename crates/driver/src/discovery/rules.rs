@@ -8,16 +8,16 @@
 //!   project root — one file per directory depth, the highest-priority provider
 //!   winning a tie (`.omp/AGENTS.md`, Claude, Gemini, then standalone
 //!   `AGENTS.md` / `CLAUDE.md`) — plus one user-level winner from native,
-//!   Claude, Codex, Gemini, and OpenCode. Injected whole, farthest first so the
-//!   closest file reads last.
+//!   Claude, Codex, Gemini, OpenCode, and GitHub. Injected whole, farthest
+//!   first so the closest file reads last.
 //! * **Rules**: Markdown documents with optional frontmatter (`description`,
 //!   `globs`, `alwaysApply`, `condition`, `scope`, `agents`) from `.omp/rules`,
 //!   `<config root>/agent/rules`, the sticky `RULES.md`, `.agent[s]/rules`,
 //!   `.cursor/rules`, `.windsurf/rules`, `.clinerules`, and the legacy
-//!   `.cursorrules` / `.windsurfrules` files. Name conflicts resolve
-//!   first-source-wins in that order. `alwaysApply` rules are injected in full;
-//!   described rules are listed by name and globs for the model to read through
-//!   `rule://<name>`.
+//!   `.cursorrules` / `.windsurfrules` files, then scoped GitHub instructions.
+//!   Name conflicts resolve first-source-wins in that order. `alwaysApply`
+//!   rules are injected in full; described rules are listed by name and globs
+//!   for the model to read through `rule://<name>`.
 
 use std::{
 	collections::BTreeSet,
@@ -85,11 +85,13 @@ pub struct ContextFiles {
 
 /// Project context candidates in provider-priority order. Native context is
 /// admitted from the nearest `.omp` root, Claude/Gemini only from the active
-/// project root, and the standalone files walk every project depth.
-const PROJECT_CONTEXT_PROVIDERS: [(&str, &str); 5] = [
+/// project root (as is GitHub), and the standalone files walk every project
+/// depth.
+const PROJECT_CONTEXT_PROVIDERS: [(&str, &str); 6] = [
 	("native", ".omp/AGENTS.md"),
 	("claude", ".claude/CLAUDE.md"),
 	("gemini", ".gemini/GEMINI.md"),
+	("github", ".github/copilot-instructions.md"),
 	("agents-md", "AGENTS.md"),
 	("claude-md", "CLAUDE.md"),
 ];
@@ -97,12 +99,13 @@ const PROJECT_CONTEXT_PROVIDERS: [(&str, &str); 5] = [
 /// User context candidates in provider-priority order. The capability admits
 /// one user context file, so a higher-priority ecosystem owns the scope even
 /// when lower-priority files also exist.
-const USER_CONTEXT_PROVIDERS: [(&str, &str); 5] = [
+const USER_CONTEXT_PROVIDERS: [(&str, &str); 6] = [
 	("native", "agent/AGENTS.md"),
 	("claude", ".claude/CLAUDE.md"),
 	("codex", ".codex/AGENTS.md"),
 	("gemini", ".gemini/GEMINI.md"),
 	("opencode", ".config/opencode/AGENTS.md"),
+	("github", ".copilot/copilot-instructions.md"),
 ];
 
 impl ContextFiles {
@@ -116,6 +119,13 @@ impl ContextFiles {
 			} else {
 				home.join(relative)
 			};
+			if provider == "github" && path.exists() && !super::github::contained(home, &path) {
+				out.warnings.push(Warning {
+					path,
+					message: Str::new_static("GitHub context resolves outside its discovery root"),
+				});
+				continue;
+			}
 			let Some(content) = read_non_empty(&path, &mut out.warnings) else {
 				continue;
 			};
@@ -139,10 +149,17 @@ impl ContextFiles {
 				if provider == "native" && nearest_config != Some(depth) {
 					continue;
 				}
-				if matches!(provider, "claude" | "gemini") && depth != 0 {
+				if matches!(provider, "claude" | "gemini" | "github") && depth != 0 {
 					continue;
 				}
 				let path = dir.join(relative);
+				if provider == "github" && path.exists() && !super::github::contained(dir, &path) {
+					out.warnings.push(Warning {
+						path,
+						message: Str::new_static("GitHub context resolves outside its discovery root"),
+					});
+					continue;
+				}
 				let Some(content) = read_non_empty(&path, &mut out.warnings) else {
 					continue;
 				};
@@ -382,6 +399,26 @@ impl ActiveRules {
 				admit(rule, &mut warnings);
 			}
 		}
+		for path in super::github::files(
+			project_root,
+			".github/instructions",
+			".instructions.md",
+			true,
+			&mut warnings,
+		) {
+			let Some(name) = path
+				.file_name()
+				.and_then(|name| name.to_str())
+				.and_then(|name| name.strip_suffix(".instructions.md"))
+			else {
+				continue;
+			};
+			if let Some(rule) =
+				load_rule(&path, Str::new(name), "github", Level::Project, &mut warnings)
+			{
+				admit(rule, &mut warnings);
+			}
+		}
 		out.warnings = warnings;
 		out
 	}
@@ -516,6 +553,8 @@ struct RuleHeader {
 	#[serde(default)]
 	globs:        OneOrMany,
 	#[serde(default)]
+	apply_to:     OneOrMany,
+	#[serde(default)]
 	always_apply: bool,
 	#[serde(default)]
 	condition:    OneOrMany,
@@ -612,18 +651,56 @@ fn load_rule(
 			return None;
 		},
 	};
+	let (globs, always_apply, description) = if provider == "github" {
+		let globs = header
+			.apply_to
+			.into_vec(true)
+			.into_iter()
+			.flat_map(|value| {
+				value
+					.split(",")
+					.map(|part| part.trim())
+					.filter(|part| !part.is_empty())
+					.collect::<Vec<_>>()
+			})
+			.collect::<Vec<_>>();
+		if globs.is_empty() {
+			warnings.push(Warning {
+				path:    canonical.clone(),
+				message: Str::new_static("Missing applyTo; loaded without GitHub glob scoping"),
+			});
+		}
+		let always = globs
+			.iter()
+			.any(|glob| matches!(glob.as_str(), "*" | "**" | "**/*"));
+		let description = header
+			.description
+			.filter(|description| !description.trim().is_empty())
+			.or_else(|| {
+				Some(if globs.is_empty() {
+					"GitHub Copilot instructions without applyTo metadata".to_owned()
+				} else {
+					format!(
+						"GitHub Copilot instructions for {}",
+						globs.iter().map(Str::as_str).collect::<Vec<_>>().join(", ")
+					)
+				})
+			});
+		(if always { Vec::new() } else { globs }, always, description)
+	} else {
+		(header.globs.into_vec(true), header.always_apply, header.description)
+	};
 	Some(Rule {
 		name,
 		path: canonical,
 		content: Str::new(body),
-		description: header
-			.description
+		description: description
 			.as_deref()
 			.map(str::trim)
 			.filter(|description| !description.is_empty())
 			.map(Str::new),
-		globs: header.globs.into_vec(true),
-		always_apply: header.always_apply,
+		globs,
+		always_apply,
 		condition: header.condition.into_vec(false),
 		scope: header.scope.into_vec(true),
 		agents: header

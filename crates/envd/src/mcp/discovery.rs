@@ -688,6 +688,7 @@ mod tests {
 		assert_eq!(resolved.servers["same"].config.command.as_deref(), Some("claude"));
 		assert!(resolved.servers.contains_key("gemini"));
 		assert!(resolved.servers.contains_key("vscode"));
+		println!("| vscode | MCP .vscode/mcp.json | discovered |");
 	}
 
 	#[cfg(unix)]
