@@ -1,0 +1,10 @@
+# The already-built setup image supplies only Rust, never its launchers or OS.
+ARG RUST_SOURCE_IMAGE=omp-pristine-doctor
+FROM ${RUST_SOURCE_IMAGE} AS toolchain
+FROM debian:bookworm-slim
+COPY --from=toolchain /opt/rustup /opt/rustup
+COPY --from=toolchain /opt/cargo /opt/cargo
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+ENV PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WORKDIR /source
+ENTRYPOINT ["/bin/sh", "/source/scripts/build-doctor.sh"]
