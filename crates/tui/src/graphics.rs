@@ -806,6 +806,8 @@ fn restore_probe_mode(tty: &fs::File, original: &nix::sys::termios::Termios) -> 
 		.local_flags
 		.contains(nix::sys::termios::LocalFlags::PENDIN)
 	{
+		use nix::libc;
+
 		// Darwin adds PENDIN when restoring ICANON with TCSANOW. FIONREAD
 		// processes that pending input without consuming or flushing it, so
 		// later terminal preparation does not save the transient flag as original.
