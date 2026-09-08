@@ -2829,7 +2829,10 @@ async fn same_worker_invocation_id_on_two_connections_cancels_only_its_owner() {
 	};
 	let verdict_b: CallOutcome<Value, Value> =
 		serde_json::from_slice(&terminal_b.json).expect("decode worker B cancellation");
-	assert!(matches!(verdict_b, CallOutcome::Aborted { abort: Abort::Skipped { .. }, .. }));
+	assert!(
+		matches!(&verdict_b, CallOutcome::Aborted { abort: Abort::Skipped { .. }, .. }),
+		"queued worker B cancellation returned {verdict_b:?}",
+	);
 	assert!(!started_b.exists(), "cancelled worker B was dispatched");
 	assert!(
 		tokio::time::timeout(Duration::from_millis(100), invocation_a.next_event())
