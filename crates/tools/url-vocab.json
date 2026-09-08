@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "selector_grammar": "selector = raw | conflicts | ranges | raw ':' ranges | ranges ':' raw ; ranges = range { ',' range } ; range = [ 'L' | 'l' ] uint [ ( '-' | '..' ) [ 'L' | 'l' ] uint | ( '-' | '..' ) | '+' uint ] ; uint = digit { digit } ;",
+  "selector_grammar": "selector = raw | conflicts | ranges | tail | raw ':' ranges | ranges ':' raw | raw ':' tail | tail ':' raw ; tail = '-' uint ; ranges = range { ',' range } ; range = [ 'L' | 'l' ] uint [ ( '-' | '..' ) [ 'L' | 'l' ] uint | ( '-' | '..' ) | '+' uint ] ; uint = digit { digit } ;",
   "schemes": [
     { "member": "FILE", "wire": ["file"], "selectors": true },
     { "member": "HTTP", "wire": ["http", "https"], "selectors": true },

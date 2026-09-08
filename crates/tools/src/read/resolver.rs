@@ -1023,10 +1023,7 @@ impl LineOffsets {
 		let total_lines = self.line_count(raw);
 		let start_line = usize::try_from(range.start_line).unwrap_or(usize::MAX);
 		if start_line == 0 || start_line > total_lines {
-			return Err(SelectorError::from_message(format!(
-				"Line {} is out of bounds; resource has {total_lines} lines.",
-				range.start_line
-			)));
+			return Err(SelectorError::OutOfBounds { start: range.start_line, total_lines });
 		}
 		let end_line = range
 			.end_line
@@ -1040,11 +1037,10 @@ impl LineOffsets {
 	fn byte_range(&self, range: LineRange) -> Result<Range<usize>, SelectorError> {
 		let start_line = usize::try_from(range.start_line).unwrap_or(usize::MAX);
 		if start_line == 0 || start_line > self.starts.len() {
-			return Err(SelectorError::from_message(format!(
-				"Line {} is out of bounds; resource has {} lines.",
-				range.start_line,
-				self.starts.len()
-			)));
+			return Err(SelectorError::OutOfBounds {
+				start:       range.start_line,
+				total_lines: self.starts.len(),
+			});
 		}
 		let end_line = range
 			.end_line
@@ -1090,6 +1086,44 @@ impl LineOffsetCache {
 			.entry(Str::new(key))
 			.or_insert_with(|| offsets.clone())
 			.clone()
+	}
+
+	/// Select absolute or end-relative lines from an already materialized
+	/// resource. Whole-resource reads and single ranges retain their shared
+	/// backing bytes.
+	pub fn select<'a>(
+		&self,
+		key: &str,
+		bytes: CowBytes<'a>,
+		selector: &ParsedSelector,
+	) -> Result<CowBytes<'a>, SelectorError> {
+		let resolved = self.resolve_selector(key, &bytes, selector);
+		let ParsedSelector::Lines { ranges, .. } = resolved.as_ref() else {
+			return Ok(bytes);
+		};
+		if ranges.len() == 1 {
+			return self.slice(key, &bytes, ranges[0]);
+		}
+		let mut output = Vec::new();
+		for range in ranges {
+			output.extend_from_slice(&self.slice(key, &bytes, *range)?);
+		}
+		Ok(CowBytes::from(output))
+	}
+
+	/// Resolve a tail using the same raw/addressable line count as text
+	/// rendering.
+	pub fn resolve_selector<'a>(
+		&self,
+		key: &str,
+		bytes: &[u8],
+		selector: &'a ParsedSelector,
+	) -> std::borrow::Cow<'a, ParsedSelector> {
+		if matches!(selector, ParsedSelector::Tail { .. }) {
+			selector.resolve_tail(self.index(key, bytes).line_count(selector.is_raw()) as u64)
+		} else {
+			std::borrow::Cow::Borrowed(selector)
+		}
 	}
 
 	/// Applies one line range without copying its backing blob.
@@ -1304,6 +1338,14 @@ impl<C: ArtifactCatalog, B: BlobAuthority> ArtifactResolver<C, B> {
 	) -> Result<ResolvedRead, Fault> {
 		let record = self.record(resource).await?;
 		let size = self.blobs.stat(&record.digest).await?.byte_len;
+		let resolved;
+		let selector = if matches!(selector, ParsedSelector::Tail { .. }) {
+			let offsets = self.offsets(&record, size).await?;
+			resolved = selector.resolve_tail(offsets.line_count(selector.is_raw()) as u64);
+			resolved.as_ref()
+		} else {
+			selector
+		};
 		match selector {
 			ParsedSelector::Lines { ranges, raw } => {
 				self
@@ -1322,6 +1364,9 @@ impl<C: ArtifactCatalog, B: BlobAuthority> ArtifactResolver<C, B> {
 				.all_bytes(&record, size)
 				.await
 				.map(|data| ResolvedRead { data, diags: smallvec![] }),
+			ParsedSelector::Tail { .. } => {
+				unreachable!("tail resolved against immutable source above")
+			},
 			ParsedSelector::Image => Err(Fault::Invalid {
 				message: Str::new_static(
 					"The ':img' selector only supports local .svg and .svgz files.",

@@ -36,6 +36,7 @@ pub mod profile;
 pub mod resolver;
 pub mod selector;
 pub mod sqlite;
+pub mod video;
 
 use std::time;
 
@@ -54,6 +55,7 @@ const DESCRIPTION: &str = r"Read files, directories, archives, SQLite, images, d
 
 ## Selectors — append `:<sel>` to `path` (e.g. `src/foo.ts:50-200`, `src/foo.ts:raw`, `db.sqlite:users:42`)
 - `:50` / `:50-` — from line 50 | `:50-200` — inclusive | `:50+150` — 150 lines from 50 | `:5-16,960-973` — multiple ranges
+- `:-60` — last 60 lines | `:raw:-60` / `:-60:raw` — last 60 lines verbatim
 - `:raw` — verbatim, no anchors/prefixes | `:2-4:raw` / `:raw:2-4` — range + verbatim
 - `:conflicts` — one line per unresolved git merge conflict block
 - `:img` — rasterize a local `.svg`/`.svgz` as a PNG image; use when visual layout matters
@@ -66,6 +68,7 @@ const DESCRIPTION: &str = r"Read files, directories, archives, SQLite, images, d
 - SQLite (`.sqlite`, `.sqlite3`, `.db`, `.db3`): `file.db` (tables), `file.db:table` (schema+rows), `file.db:table:key` (by PK), `?limit=`/`?where=`/`?q=SELECT`.
 - Archives (`.zip` family incl. `.jar`/`.apk`/`.whl`, `.tar` incl. `.tar.{gz,bz2,xz,zst}`, `.rar`, `.7z`, `.iso`, `.cab`, `.deb`/`.rpm`/`.cpio`/`.ar`, `.lzh`/`.arj`, `.asar`; single-stream `.gz`/`.bz2`/`.xz`/`.zst`): `archive.ext:path/inside/archive` reads a member.
 - Documents → extracted text. Notebooks → editable cells. Images → decoded inline. SVGs read as text unless `:img` is specified. `:raw` bypasses converters.
+- Local video (`.mp4`, `.mov`, `.mkv`, `.webm`, `.m4v`, `.avi`, `.wmv`) returns a 3x3 preview grid and metadata. Use `:412`, `:f412`, or `:frame412` for a zero-based frame; `:1h5m42s`, `:01:05:42`, or `:42.5` for a timestamp. Requires ffmpeg and ffprobe on the environment PATH. Extraction has a 30-second deadline and bounded output.
 - URLs → reader-mode clean text/markdown; `:raw` → untouched HTML. Bare `host:port` needs trailing slash.
 - Internal resources enforce owner byte/entry ceilings; path-only resolution returns metadata without content. Binary/oversized resources return selector or materialized-path guidance rather than inline bytes.
 - `ssh://host/<path>` reads remote files/directories; bare `ssh://` lists hosts; specific remote files are searchable with `grep`.
@@ -214,6 +217,16 @@ pub trait ReadLease: Send + Sync {
 /// `omp-tools`; implementations provide local resources plus the low-level HTTP
 /// transport inherited from [`HttpClient`].
 pub trait ReadSources: web::types::HttpClient + Send + Sync + 'static {
+	/// Extracts one frame or a preview sheet in the environment that owns the
+	/// source.
+	fn video(
+		&self,
+		_path: Str,
+		_selection: video::Selection,
+	) -> impl Future<Output = Result<video::Output, video::VideoFault>> + Send + '_ {
+		async { Err(video::VideoFault::Unavailable) }
+	}
+
 	/// Revision-pinned plain-file lease type.
 	type Lease: ReadLease;
 
@@ -374,6 +387,13 @@ impl ReadSection {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Fault {
+	/// Structured video failure with its rendered wire diagnostic.
+	Video {
+		/// Stable machine-readable failure category.
+		error:   video::VideoFault,
+		/// Rendered once when projecting the video failure onto the tool wire.
+		message: Str,
+	},
 	/// Invalid selector or target syntax.
 	Invalid {
 		/// Exact diagnostic.
@@ -416,6 +436,11 @@ pub enum Fault {
 }
 
 impl Fault {
+	/// Projects a typed video error onto the serialized tool fault.
+	pub fn video(error: video::VideoFault) -> Self {
+		Self::Video { message: Str::from(error.to_string()), error }
+	}
+
 	/// Constructs a source failure.
 	pub fn source(message: impl Into<Str>) -> Self {
 		Self::Source { message: message.into() }
@@ -425,6 +450,7 @@ impl Fault {
 	pub const fn message(&self) -> &Str {
 		match self {
 			Self::Invalid { message }
+			| Self::Video { message, .. }
 			| Self::Source { message }
 			| Self::UnknownScheme { message, .. }
 			| Self::SchemeNotReadable { message, .. }
@@ -1058,6 +1084,43 @@ impl<S: ReadSources, B: ReadBlobs, R: resolver::Resolve> ReadTool<S, B, R> {
 		let authored = file_authored.as_deref().unwrap_or(authored);
 
 		let literal = self.sources.stat(Str::new(authored)).await.ok();
+		let video_target = if let Some(stat) = literal.as_ref() {
+			(stat.kind != SourceKind::Directory && video::is_video(authored))
+				.then_some((authored, None))
+		} else {
+			video::split_target(authored)
+				.map(|(path, suffix)| (path, Some(suffix)))
+				.or_else(|| video::is_video(authored).then_some((authored, None)))
+		};
+		if let Some((path, suffix)) = video_target {
+			let mut stat = match self.sources.stat(Str::new(path)).await {
+				Ok(stat) => stat,
+				Err(error) => match self.sources.resolve_suffix(Str::new(path)).await? {
+					Some(stat) => stat,
+					None => return Err(error),
+				},
+			};
+			if stat.kind == SourceKind::Symlink {
+				stat = self.sources.stat(stat.canonical_path.clone()).await?;
+			}
+			if stat.kind == SourceKind::File {
+				let selection = video::parse(suffix).map_err(Fault::video)?;
+				let output = self
+					.sources
+					.video(stat.canonical_path, selection)
+					.await
+					.map_err(Fault::video)?;
+				let blob = self
+					.blobs
+					.store(output.png, Str::new_static("image/png"))
+					.await?;
+				return Ok(ReadSection::new(vec![
+					PayloadPart::Text { text: output.description.clone() },
+					PayloadPart::Blob { blob, alt: output.description, vision: None },
+				]));
+			}
+		}
+
 		let parsed_split = selector::split_path_and_selector(authored);
 		let literal_wins = literal.is_some() && parsed_split.selector.is_some();
 		let split = if literal_wins {
@@ -1410,9 +1473,6 @@ impl<S: ReadSources, B: ReadBlobs, R: resolver::Resolve> ReadTool<S, B, R> {
 				modified_ms:   entry.modified_ms.unwrap_or(0),
 			})
 			.collect::<Vec<_>>();
-		let (offset, limit) = parsed.offset_limit();
-		let offset = offset.and_then(|value| usize::try_from(value).ok());
-		let limit = limit.and_then(|value| usize::try_from(value).ok());
 		let now_ms = time::SystemTime::now()
 			.duration_since(time::UNIX_EPOCH)
 			.unwrap_or_default()
@@ -1422,8 +1482,7 @@ impl<S: ReadSources, B: ReadBlobs, R: resolver::Resolve> ReadTool<S, B, R> {
 			&entries,
 			source.truncated,
 			now_ms,
-			offset,
-			limit,
+			parsed,
 		);
 		Ok(ReadSection {
 			parts: vec![PayloadPart::Text { text: rendered.text }],

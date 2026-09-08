@@ -1464,6 +1464,26 @@ assert path_meta.kind is omp.env.FileKind.DIRECTORY
 assert asyncio.run(omp.env.worktree()) == worktree
 
 assert asyncio.iscoroutinefunction(omp.urls.read)
+for suffix in ("-2", "raw:-2", "-2:raw"):
+    selected = omp.urls.parse_selector(suffix)
+    assert selected.tail == 2
+    assert selected.raw == ("raw" in suffix)
+    assert omp.urls.parse(f"artifact://7:{suffix}").selector == selected
+for suffix in ("-0", "raw:-0", "-18446744073709551616", "conflicts:-2"):
+    try:
+        omp.urls.parse_selector(suffix)
+    except omp.urls.SelectorError:
+        pass
+    else:
+        raise AssertionError(f"invalid tail accepted: {suffix}")
+assert omp.artifacts._select_lines("one\ntwo\nthree", "raw:-2") == "two\nthree"
+assert omp.artifacts._select_lines("", "-2") == ""
+for selector, expected in (("raw:-2", "two\n"), ("-2:raw", "two\n"), ("raw:-1", ""), ("raw:-60", "one\ntwo\n")):
+    assert omp.artifacts._select_lines("one\ntwo\n", selector) == expected
+assert omp.artifacts._select_lines("", "raw:-2") == ""
+assert omp.artifacts._select_lines("one\r\ntwo\r\n", "raw:-2") == "two\r\n"
+
+
 
 # Turn inference selection: thinking patches and scope-backed route/effort.
 assert "thinking" in {

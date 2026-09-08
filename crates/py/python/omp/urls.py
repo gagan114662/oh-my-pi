@@ -56,6 +56,7 @@ class Selector:
     ranges: tuple[tuple[int, int | None], ...] = ()
     raw: bool = False
     conflicts: bool = False
+    tail: int | None = None
 
 
 
@@ -173,9 +174,9 @@ def _parse_selector_or_none(text: str | None) -> Selector | None:
         if len(chunks) == 2:
             first, second = chunks
             range_text = second if first.lower() == "raw" else first if second.lower() == "raw" else None
-            ranges = _parse_ranges(range_text) if range_text is not None else None
-            if ranges is not None:
-                return Selector(ranges=ranges, raw=True)
+            parsed = _parse_range_or_tail(range_text, raw=True) if range_text is not None else None
+            if parsed is not None:
+                return parsed
         if all(_selector_chunk_looks_read_like(chunk) for chunk in chunks):
             raise SelectorError(_invalid_selector(text))
         return None
@@ -184,8 +185,23 @@ def _parse_selector_or_none(text: str | None) -> Selector | None:
         return Selector(raw=True)
     if lowered == "conflicts":
         return Selector(conflicts=True)
+    return _parse_range_or_tail(text)
+
+
+def _is_tail(text: str) -> bool:
+    return text.startswith("-") and bool(text[1:]) and text[1:].isascii() and text[1:].isdigit()
+
+
+def _parse_range_or_tail(text: str, *, raw: bool = False) -> Selector | None:
+    if _is_tail(text):
+        count = int(text[1:])
+        if count == 0:
+            raise SelectorError("Tail selector -0 is invalid; use :-N with N >= 1 to read the last N lines.")
+        if count > _U64_MAX:
+            raise SelectorError(f"Line selector '{text[1:]}' is too large.")
+        return Selector(tail=count, raw=raw)
     ranges = _parse_ranges(text)
-    return Selector(ranges=ranges) if ranges is not None else None
+    return Selector(ranges=ranges, raw=raw) if ranges is not None else None
 
 
 def _parse_ranges(text: str | None) -> tuple[tuple[int, int | None], ...] | None:
@@ -286,8 +302,8 @@ def _split_selector(text: str) -> tuple[str, str | None]:
     inner = path.rfind(":")
     if inner > 0:
         first = path[inner + 1 :]
-        if (first.lower() == "raw" and _is_range_list(selector)) or (
-            _is_range_list(first) and selector.lower() == "raw"
+        if (first.lower() == "raw" and (_is_range_list(selector) or _is_tail(selector))) or (
+            (_is_range_list(first) or _is_tail(first)) and selector.lower() == "raw"
         ):
             return path[:inner], text[inner + 1 :]
     return path, selector
@@ -316,7 +332,7 @@ def _internal_selector_chunk(text: str) -> bool:
 
 
 def _is_simple_selector(text: str) -> bool:
-    return text.lower() in {"raw", "conflicts"} or _is_range_list(text)
+    return text.lower() in {"raw", "conflicts"} or _is_range_list(text) or _is_tail(text)
 
 
 def _is_range_list(text: str) -> bool:
@@ -371,7 +387,7 @@ async def read(
 
 def _invalid_selector(text: str) -> str:
     return (
-        f"Invalid selector ':{text}'. Use :N, :N-M, :N+K, :N- (open-ended), "
+        f"Invalid selector ':{text}'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), "
         "a comma-separated list of ranges, :raw, or a range combined with raw "
         "(e.g. :raw:50-100)."
     )

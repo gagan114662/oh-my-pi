@@ -411,11 +411,17 @@ def _select_lines(text: str, selector: str | None) -> str:
                 selected.append("".join(lines[start : index + 1]))
                 start = None
         return "".join(selected)
-    if not parsed.ranges:
+    if not parsed.ranges and parsed.tail is None:
         return text
+    if parsed.raw and parsed.tail is not None:
+        # Raw read ranges address the terminal empty line after a newline too.
+        return "\n".join(text.split("\n")[-parsed.tail :])
     lines = text.splitlines(keepends=True)
+    ranges = parsed.ranges
+    if parsed.tail is not None:
+        ranges = ((max(1, len(lines) - parsed.tail + 1), len(lines)),)
     selected: list[str] = []
-    for first, last in parsed.ranges:
+    for first, last in ranges:
         upper = len(lines) if last is None else min(last, len(lines))
         for index in range(first - 1, upper):
             line = lines[index]

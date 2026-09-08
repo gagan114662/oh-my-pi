@@ -286,6 +286,9 @@ pub enum Fault {
 	/// The requested file offset was negative or not finite.
 	#[error("Skip must be a non-negative number")]
 	InvalidSkip,
+	/// A tail needs a source line count and cannot filter search roots.
+	#[error("Tail selectors are supported by read, not grep; use an absolute line range for search")]
+	TailSelector,
 	/// A path selector was invalid for grep.
 	#[error("{message}")]
 	InvalidSelector {
@@ -649,6 +652,7 @@ fn parse_root(original: Str) -> Result<SearchRoot, Fault> {
 		match parsed {
 			ParsedSelector::Lines { ranges: selected, .. } => ranges = selected,
 			ParsedSelector::Raw | ParsedSelector::Conflicts | ParsedSelector::None => {},
+			ParsedSelector::Tail { .. } => return Err(Fault::TailSelector),
 			ParsedSelector::Image => {
 				return Err(Fault::InvalidSelector {
 					message: sf!(
@@ -1127,6 +1131,13 @@ mod tests {
 			context_before: Vec::new(),
 			context_after: Vec::new(),
 			snapshot_tag: None,
+		}
+	}
+
+	#[test]
+	fn tail_search_is_rejected_instead_of_widening_the_root() {
+		for path in ["log.txt:-2", "log.txt:raw:-2", "artifact://7:-2"] {
+			assert!(matches!(parse_root(Str::new(path)), Err(Fault::TailSelector)), "{path}");
 		}
 	}
 

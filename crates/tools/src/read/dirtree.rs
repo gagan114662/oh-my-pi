@@ -4,15 +4,16 @@
 //! module only assembles, caps, formats, and slices those values.
 
 use std::{
-	collections::{HashMap, HashSet},
 	fmt::Write as _,
 	iter,
 	time::{Duration, UNIX_EPOCH},
 };
 
-use omp_core::{Str, sf, utc_minute};
+use omp_core::{FastHashMap, FastHashSet, Str, sf, utc_minute};
 use omp_tool::{Diag, DiagKind, Unit};
 use smallvec::{SmallVec, smallvec};
+
+use super::selector::ParsedSelector;
 
 /// Maximum directory depth rendered below the root.
 pub const MAX_DEPTH: usize = 2;
@@ -71,19 +72,17 @@ struct RenderedLine {
 ///
 /// `now_ms` is supplied by the caller rather than sampled here, keeping this
 /// pure and making relative ages deterministic. `scan_truncated` preserves an
-/// incomplete traversal reported by the application. `offset` is one-based
-/// and `limit` is a row count; both are applied after the complete tree has
-/// been aligned and rendered.
+/// incomplete traversal reported by the application. The selector is resolved
+/// against the rendered row count after the complete tree has been aligned.
 pub fn render_directory(
 	root_path: impl Into<Str>,
 	entries: &[DirEntry],
 	scan_truncated: bool,
 	now_ms: u64,
-	offset: Option<usize>,
-	limit: Option<usize>,
+	selector: &ParsedSelector,
 ) -> DirectoryRender {
 	let root_path = root_path.into();
-	let mut by_parent: HashMap<&str, Vec<EntryRef<'_>>> = HashMap::new();
+	let mut by_parent: FastHashMap<&str, Vec<EntryRef<'_>>> = FastHashMap::default();
 	for entry in entries {
 		let path = entry.relative_path.as_str().trim_matches('/');
 		if path.is_empty() {
@@ -115,6 +114,9 @@ pub fn render_directory(
 	};
 	let all_lines: Vec<&str> = base.split('\n').collect();
 	let total_lines = all_lines.len();
+	let (offset, limit) = selector.offset_limit(total_lines as u64);
+	let offset = offset.map(|value| usize::try_from(value).unwrap_or(usize::MAX));
+	let limit = limit.map(|value| usize::try_from(value).unwrap_or(usize::MAX));
 
 	if offset.is_none() && limit.is_none() {
 		return DirectoryRender {
@@ -168,7 +170,7 @@ pub fn render_directory(
 fn render_children<'a>(
 	parent: &str,
 	parent_depth: usize,
-	by_parent: &HashMap<&'a str, Vec<EntryRef<'a>>>,
+	by_parent: &FastHashMap<&'a str, Vec<EntryRef<'a>>>,
 	now_ms: u64,
 	rows: &mut Vec<RenderedLine>,
 	truncated: &mut bool,
@@ -200,7 +202,7 @@ fn render_children<'a>(
 fn render_entry<'a>(
 	node: EntryRef<'a>,
 	parent: &str,
-	by_parent: &HashMap<&'a str, Vec<EntryRef<'a>>>,
+	by_parent: &FastHashMap<&'a str, Vec<EntryRef<'a>>>,
 	now_ms: u64,
 	rows: &mut Vec<RenderedLine>,
 	truncated: &mut bool,
@@ -235,7 +237,7 @@ pub fn render_prompt_directory(
 	scan_truncated: bool,
 ) -> DirectoryRender {
 	let root_path = root_path.into();
-	let mut by_parent: HashMap<&str, Vec<EntryRef<'_>>> = HashMap::new();
+	let mut by_parent: FastHashMap<&str, Vec<EntryRef<'_>>> = FastHashMap::default();
 	for entry in entries {
 		let path = entry.relative_path.as_str().trim_matches('/');
 		if path.is_empty() {
@@ -285,7 +287,7 @@ pub fn render_prompt_directory(
 fn render_prompt_children<'a>(
 	parent: &str,
 	parent_depth: usize,
-	by_parent: &HashMap<&'a str, Vec<EntryRef<'a>>>,
+	by_parent: &FastHashMap<&'a str, Vec<EntryRef<'a>>>,
 	rows: &mut Vec<RenderedLine>,
 	truncated: &mut bool,
 ) {
@@ -317,7 +319,7 @@ fn render_prompt_children<'a>(
 fn render_prompt_entry<'a>(
 	node: EntryRef<'a>,
 	parent: &str,
-	by_parent: &HashMap<&'a str, Vec<EntryRef<'a>>>,
+	by_parent: &FastHashMap<&'a str, Vec<EntryRef<'a>>>,
 	rows: &mut Vec<RenderedLine>,
 	truncated: &mut bool,
 ) {
@@ -360,7 +362,7 @@ fn apply_prompt_line_cap(rows: &mut Vec<RenderedLine>) {
 		.into_iter()
 		.take(remove_count)
 		.map(|(index, _)| index)
-		.collect::<HashSet<_>>();
+		.collect::<FastHashSet<_>>();
 	let count = removed.len();
 	let mut index = 0;
 	rows.retain(|_| {
@@ -485,6 +487,36 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn tail_is_counted_from_rendered_rows_including_the_root() {
+		let entries = [
+			DirEntry {
+				relative_path: "a.txt".into(),
+				is_dir:        false,
+				size:          0,
+				modified_ms:   10_000,
+			},
+			DirEntry {
+				relative_path: "z.txt".into(),
+				is_dir:        false,
+				size:          0,
+				modified_ms:   10_000,
+			},
+		];
+		let selected = render_directory("root", &entries, false, 10_000, &ParsedSelector::Tail {
+			count: 1,
+			raw:   false,
+		});
+		assert_eq!(selected.text, "  - z.txt");
+		assert_eq!(selected.total_lines, 3);
+		assert!(
+			!selected
+				.diags
+				.iter()
+				.any(|diag| diag.native_kind() == Some(DiagKind::Pagination))
+		);
+	}
+
+	#[test]
 	fn entries_are_alphabetical_and_directories_have_slashes() {
 		let entries = [
 			DirEntry {
@@ -512,7 +544,7 @@ mod tests {
 				modified_ms:   7_000,
 			},
 		];
-		let rendered = render_directory("root", &entries, false, 10_000, None, None);
+		let rendered = render_directory("root", &entries, false, 10_000, &ParsedSelector::None);
 		let alpha = rendered.text.find("- alpha/").unwrap();
 		let nested_a = rendered.text.find("- a.txt").unwrap();
 		let nested_b = rendered.text.find("- b.txt").unwrap();
@@ -529,7 +561,13 @@ mod tests {
 			size:          1,
 			modified_ms:   0,
 		}];
-		let page = render_directory("root", &entries, false, 10_000, Some(1), Some(1));
+		let page = render_directory(
+			"root",
+			&entries,
+			false,
+			10_000,
+			&super::super::selector::parse_selector(Some("1-1")).unwrap(),
+		);
 		assert_eq!(page.text, ".");
 		let [diag] = page.diags.as_slice() else {
 			panic!("bounded listing emits one pagination diagnostic");
@@ -539,7 +577,13 @@ mod tests {
 		assert_eq!(diag.continuation.as_deref(), Some(":2"));
 		assert_eq!(diag.omitted, Some(omp_tool::Omitted { count: 1, unit: omp_tool::Unit::Lines }));
 
-		let beyond = render_directory("root", &entries, false, 10_000, Some(3), Some(1));
+		let beyond = render_directory(
+			"root",
+			&entries,
+			false,
+			10_000,
+			&super::super::selector::parse_selector(Some("3-3")).unwrap(),
+		);
 		assert!(beyond.text.is_empty());
 		let [diag] = beyond.diags.as_slice() else {
 			panic!("out-of-range listing emits one bounds diagnostic");
@@ -565,9 +609,9 @@ mod tests {
 				modified_ms:   1,
 			},
 		];
-		let first = render_directory("root", &entries, false, 10_000, None, None);
+		let first = render_directory("root", &entries, false, 10_000, &ParsedSelector::None);
 		entries.reverse();
-		let second = render_directory("root", &entries, false, 10_000, None, None);
+		let second = render_directory("root", &entries, false, 10_000, &ParsedSelector::None);
 		assert_eq!(first, second);
 	}
 

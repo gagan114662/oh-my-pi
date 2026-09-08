@@ -781,23 +781,9 @@ pub(super) fn select_bytes(
 	bytes: CowBytes<'static>,
 	selector: &ParsedSelector,
 ) -> Result<CowBytes<'static>, Fault> {
-	let ParsedSelector::Lines { ranges, .. } = selector else {
-		return Ok(bytes);
-	};
-	if ranges.len() == 1 {
-		return lines
-			.slice(resource, &bytes, ranges[0])
-			.map(CowBytes::into_owned)
-			.map_err(|error| Fault::Invalid { message: Str::from(error.to_string()) });
-	}
-	let mut output = Vec::new();
-	for range in ranges {
-		let piece = lines
-			.slice(resource, &bytes, *range)
-			.map_err(|error| Fault::Invalid { message: Str::from(error.to_string()) })?;
-		output.extend_from_slice(&piece);
-	}
-	Ok(CowBytes::from(output))
+	lines
+		.select(resource, bytes, selector)
+		.map_err(|error| Fault::Invalid { message: Str::new(error.to_string()) })
 }
 
 #[cfg(test)]
@@ -809,6 +795,17 @@ mod tests {
 	use parking_lot::RwLock;
 
 	use super::*;
+
+	#[test]
+	fn internal_resource_tail_selects_the_end_and_keeps_shared_bytes() {
+		let cache = LineOffsetCache::default();
+		let bytes = CowBytes::from_static(b"one\ntwo\nthree\n");
+		let pointer = bytes.as_ptr();
+		let tail = ParsedSelector::Tail { count: 1, raw: false };
+		let selected = select_bytes(&cache, "immutable", bytes, &tail).unwrap();
+		assert_eq!(&*selected, b"three\n");
+		assert_eq!(selected.as_ptr(), pointer.wrapping_add(8));
+	}
 
 	struct Authority {
 		endpoints: Vec<SessionEndpoint>,

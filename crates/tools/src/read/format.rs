@@ -290,6 +290,9 @@ pub fn format_text(
 		split_addressable_file_lines(text)
 	};
 	let total_lines = lines.len();
+	let tail = matches!(selector, ParsedSelector::Tail { .. });
+	let resolved = selector.resolve_tail(total_lines as u64);
+	let selector = resolved.as_ref();
 	let snapshot_tag = options.snapshot.map(|snapshot| Str::new(snapshot.tag));
 
 	if let ParsedSelector::Lines { ranges, .. } = selector
@@ -298,7 +301,7 @@ pub fn format_text(
 		return format_multiple_ranges(&lines, ranges, raw, options, total_lines, snapshot_tag);
 	}
 
-	let (offset, finite_limit) = selector.offset_limit();
+	let (offset, finite_limit) = selector.offset_limit(total_lines as u64);
 	let requested_start = offset
 		.and_then(|line| usize::try_from(line).ok())
 		.unwrap_or(1)
@@ -327,8 +330,8 @@ pub fn format_text(
 	let requested_end = finite_limit
 		.and_then(|limit| usize::try_from(limit).ok())
 		.map_or(total_lines, |limit| requested_start.saturating_add(limit).min(total_lines));
-	let explicit_start = !raw && offset.is_some_and(|line| line > 1);
-	let explicit_end = !raw && finite_limit.is_some();
+	let explicit_start = !raw && !tail && offset.is_some_and(|line| line > 1);
+	let explicit_end = !raw && !tail && finite_limit.is_some();
 	let start = if explicit_start {
 		requested_start.saturating_sub(RANGE_LEADING_CONTEXT_LINES)
 	} else {
@@ -846,6 +849,22 @@ fn normalize_display_separators(mut path: String) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn tail_count_excludes_absolute_range_context_on_large_files() {
+		let text = (1..=200_000)
+			.map(|n| format!("TAIL_LINE_{n:06}\n"))
+			.collect::<String>();
+		let tail = super::super::selector::parse_selector(Some("-2")).unwrap();
+		let rendered = format_text(&text, &tail, TextFormatOptions::new("file"));
+		assert_eq!(rendered.text, "199999:TAIL_LINE_199999\n200000:TAIL_LINE_200000");
+		let range = super::super::selector::parse_selector(Some("199999-200000")).unwrap();
+		let contextual = format_text(&text, &range, TextFormatOptions::new("file"));
+		assert_eq!(
+			contextual.text,
+			"199998:TAIL_LINE_199998\n199999:TAIL_LINE_199999\n200000:TAIL_LINE_200000"
+		);
+	}
 
 	#[test]
 	fn out_of_bounds_offset_is_only_a_structured_diag() {

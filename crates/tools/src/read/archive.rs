@@ -479,7 +479,8 @@ impl<R: Read + Seek> ArchiveReader<R> {
 				match parse_selector(Some(target))? {
 					parsed @ (ParsedSelector::Raw
 					| ParsedSelector::Conflicts
-					| ParsedSelector::Lines { .. }) => {
+					| ParsedSelector::Lines { .. }
+					| ParsedSelector::Tail { .. }) => {
 						selector = parsed;
 						("", root_node())
 					},
@@ -487,30 +488,19 @@ impl<R: Read + Seek> ArchiveReader<R> {
 						return Err(ArchiveError::NotFound { path: target.to_owned() });
 					},
 					ParsedSelector::Image => {
-						return Err(
-							SelectorError::from_message(
-								"The ':img' selector only supports local .svg and .svgz files.",
-							)
-							.into(),
-						);
+						return Err(SelectorError::ImageRequiresSvg.into());
 					},
 				}
 			}
 		};
 		if matches!(selector, ParsedSelector::Image) {
-			return Err(
-				SelectorError::from_message(
-					"The ':img' selector only supports local .svg and .svgz files.",
-				)
-				.into(),
-			);
+			return Err(SelectorError::ImageRequiresSvg.into());
 		}
 		let content = if node.is_directory {
 			if selector.is_multi_range() {
 				return Err(ArchiveError::DirectoryMultiRange);
 			}
-			let (offset, limit) = selector.offset_limit();
-			ArchiveContent::Directory(self.read_directory_slice(member_path, offset, limit)?)
+			ArchiveContent::Directory(self.read_directory_slice(member_path, &selector)?)
 		} else {
 			let member = self.read_member(member_path)?;
 			if let Some(text) = decode_utf8_text(&member.bytes) {
@@ -553,11 +543,11 @@ impl<R: Read + Seek> ArchiveReader<R> {
 	fn read_directory_slice(
 		&self,
 		path: &str,
-		offset: Option<u64>,
-		limit: Option<u64>,
+		selector: &ParsedSelector,
 	) -> Result<ArchiveListing, ArchiveError> {
 		let all = self.list_directory(path)?;
 		let total_entries = all.len();
+		let (offset, limit) = selector.offset_limit(total_entries as u64);
 		let offset = usize::try_from(offset.unwrap_or(1).max(1)).unwrap_or(usize::MAX);
 		let start = offset.saturating_sub(1).min(all.len());
 		let available = &all[start..];

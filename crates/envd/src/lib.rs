@@ -70,6 +70,7 @@ pub mod tool_settings;
 /// Shell-tool execution, managed process sessions, and shell URI resolution.
 pub mod tool_shell;
 pub mod tool_url;
+mod tool_video;
 mod tools;
 mod vault;
 pub mod vcs;

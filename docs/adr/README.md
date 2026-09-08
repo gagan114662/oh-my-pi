@@ -70,6 +70,7 @@ names real paths and says "not yet implemented" where true.
 - [0027](0027-read-materializes-resources.md) — `Read` materializes any resource; internal URL schemes
 - [0028](0028-bash-is-an-in-process-interpreter.md) — `Bash` is a policy-aware in-process interpreter
 - [0029](0029-autoqa-report-issue.md) — Agents get a bug-report path
+- [0037](0037-read-tail-and-video-boundary.md) — End-relative reads and the explicit video capability boundary
 
 ### Interface
 - [0030](0030-one-pass-rendering-pipeline.md) — RichText streams through one pass; no `string[]` render

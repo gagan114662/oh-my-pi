@@ -2080,3 +2080,121 @@ async fn multi_target_read_warns_for_failed_sections_and_preserves_successful_co
 				&& diag.severity == Severity::Warn)
 	);
 }
+
+#[tokio::test]
+async fn tail_reads_reach_the_end_of_a_200k_line_file_and_record_only_visible_lines() {
+	let sources = Sources::default();
+	sources.file("long.txt", numbered_lines(200_000));
+	let (output, diags) = text_with_diags(sources.clone(), r#"{"path":"long.txt:-2"}"#).await;
+	assert_eq!(
+		output,
+		"[long.txt#A1B2]\n199998:line 199998\n199999:line 199999\n200000:line 200000"
+	);
+	assert!(
+		!diags
+			.iter()
+			.any(|diag| diag.native_kind() == Some(DiagKind::Pagination))
+	);
+	let snapshots = sources.snapshots.lock();
+	assert_eq!(snapshots.last().unwrap().seen, vec![read::SeenRange {
+		start_line: 199_998,
+		end_line:   200_000,
+	}]);
+	drop(snapshots);
+	for path in ["long.txt:raw:-2", "long.txt:-2:raw", "file://long.txt:raw:-2"] {
+		let args =
+			serde_json::to_string(&read::Params { path: Str::new(path), question: None }).unwrap();
+		assert_eq!(text(sources.clone(), &args).await, "line 199999\nline 200000");
+	}
+}
+
+#[tokio::test]
+async fn tail_reads_preserve_short_empty_and_terminal_newline_behavior() {
+	let sources = Sources::default();
+	sources.file("short.txt", "one\ntwo\n");
+	sources.file("empty.txt", "");
+	sources.file("literal.txt:-2", "literal");
+	assert_eq!(
+		text(sources.clone(), r#"{"path":"short.txt:-60"}"#).await,
+		"[short.txt#A1B2]\n1:one\n2:two"
+	);
+	assert_eq!(text(sources.clone(), r#"{"path":"short.txt:raw:-2"}"#).await, "two\n");
+	assert_eq!(text(sources.clone(), r#"{"path":"empty.txt:raw:-2"}"#).await, "");
+	assert_eq!(
+		text(sources.clone(), r#"{"path":"literal.txt:-2"}"#).await,
+		"[literal.txt:-2#A1B2]\n1:literal"
+	);
+	assert!(
+		text(sources, r#"{"path":"short.txt:-0"}"#)
+			.await
+			.contains("Tail selector -0 is invalid")
+	);
+}
+
+#[tokio::test]
+async fn tail_reads_apply_to_archive_members_and_listings_and_web_text() {
+	let sources = Sources::default();
+	sources.file(
+		"tail.zip",
+		encoded_zip(&[("a.txt", "one\ntwo\nthree"), ("b.txt", "b"), ("c.txt", "c")]),
+	);
+	assert_eq!(text(sources.clone(), r#"{"path":"tail.zip:a.txt:raw:-1"}"#).await, "three");
+	assert_eq!(text(sources.clone(), r#"{"path":"tail.zip:-1"}"#).await, "c.txt (1B)");
+	sources.responses.lock().push_back(Ok(HttpResponse {
+		final_url:    sf!("https://fixture.invalid/log"),
+		status:       200,
+		content_type: Some(sf!("text/plain")),
+		headers:      vec![].into(),
+		body:         Bytes::from_static(b"one\ntwo\nthree"),
+	}));
+	assert_eq!(
+		text(sources, r#"{"path":"https://fixture.invalid/log:raw:-2"}"#).await,
+		"two\nthree"
+	);
+}
+
+#[tokio::test]
+async fn artifact_tail_indexes_200k_lines_and_reuses_the_index_for_raw_tail() {
+	let bytes = CowBytes::from(numbered_lines(200_000).into_bytes());
+	let ranges = Arc::new(Mutex::new(Vec::new()));
+	let resolver = ArtifactResolver::new(
+		ArtifactCatalogFixture {
+			record: ArtifactRecord {
+				digest:   Str::new("d".repeat(64)),
+				lifetime: ArtifactLifetime::Session,
+			},
+		},
+		BlobAuthorityFixture { bytes, stats: Arc::new(AtomicU64::new(0)), ranges: ranges.clone() },
+	);
+	let tail = read::selector::parse_selector(Some("-2")).unwrap();
+	assert_eq!(
+		&*resolver.read("7", &tail).await.unwrap(),
+		b"199998:line 199998\n199999:line 199999\n200000:line 200000"
+	);
+	let scans = ranges.lock().len();
+	let raw = read::selector::parse_selector(Some("raw:-2")).unwrap();
+	assert_eq!(&*resolver.read("7", &raw).await.unwrap(), b"line 199999\nline 200000");
+	assert_eq!(
+		ranges.lock().len(),
+		scans + 1,
+		"cached tail reads fetch only the selected byte window"
+	);
+}
+
+#[test]
+fn immutable_resolver_tail_counts_agree_with_raw_and_addressable_text() {
+	for (bytes, raw, expected) in [
+		(b"one\ntwo\n".as_slice(), false, b"two\n".as_slice()),
+		(b"one\ntwo\n".as_slice(), true, b"".as_slice()),
+		(b"".as_slice(), false, b"".as_slice()),
+	] {
+		let cache = LineOffsetCache::default();
+		let bytes = CowBytes::from(bytes.to_vec());
+		let tail = ParsedSelector::Tail { count: 1, raw };
+		let resolved = cache.resolve_selector("resource", &bytes, &tail);
+		let ParsedSelector::Lines { ranges, .. } = resolved.as_ref() else {
+			panic!("tail must resolve");
+		};
+		assert_eq!(&*cache.slice("resource", &bytes, ranges[0]).unwrap(), expected);
+	}
+}

@@ -237,7 +237,14 @@ impl Resolve for LocalResolver {
 					output.push_str(")\n");
 				}
 			}
-			return Ok(CowBytes::from(output.into_bytes()));
+			// Directory listings are live projections, not immutable resources.
+			// Their byte offsets must not survive an entry deletion or rename.
+			return select_bytes(
+				&LineOffsetCache::default(),
+				resource,
+				CowBytes::from(output.into_bytes()),
+				selector,
+			);
 		}
 		if !metadata.is_file() {
 			return Err(Fault::Invalid {
@@ -422,6 +429,41 @@ mod tests {
 		let root = session_local_root(sessions, session_id);
 		fs::create_dir_all(&root).expect("create session root");
 		fs::write(root.join("shared.txt"), content).expect("write session file");
+	}
+
+	#[tokio::test]
+	async fn directory_tail_reindexes_after_entries_are_deleted() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let sessions = temp.path().join("sessions");
+		let directory = session_local_root(&sessions, "tail").join("sub");
+		fs::create_dir_all(&directory).expect("create directory");
+		fs::write(directory.join("a.txt"), "a").expect("first entry");
+		fs::write(directory.join("z-long-entry.txt"), "z").expect("last entry");
+		let resolver = LocalResolver::open(sessions).expect("resolver");
+		let selector = ParsedSelector::Tail { count: 1, raw: false };
+		let first = crate::tools::with_invocation_session_scope(
+			Some(Str::new_static("tail")),
+			resolver.read("sub", &selector),
+		)
+		.await
+		.expect("initial directory tail");
+		assert_eq!(first.as_ref(), b"- [z-long-entry.txt](local://sub/z-long-entry.txt)\n");
+		fs::remove_file(directory.join("z-long-entry.txt")).expect("delete last entry");
+		let shorter = crate::tools::with_invocation_session_scope(
+			Some(Str::new_static("tail")),
+			resolver.read("sub", &selector),
+		)
+		.await
+		.expect("shortened directory tail");
+		assert_eq!(shorter.as_ref(), b"- [a.txt](local://sub/a.txt)\n");
+		fs::remove_file(directory.join("a.txt")).expect("delete remaining entry");
+		let empty = crate::tools::with_invocation_session_scope(
+			Some(Str::new_static("tail")),
+			resolver.read("sub", &selector),
+		)
+		.await
+		.expect("empty directory tail");
+		assert_eq!(empty.as_ref(), b"(empty)\n");
 	}
 
 	#[tokio::test]
