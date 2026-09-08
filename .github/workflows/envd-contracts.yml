@@ -6,6 +6,7 @@ on:
     paths:
       - crates/envd/**
       - crates/py/**
+      - crates/app/**
       - .github/workflows/envd-contracts.yml
   workflow_dispatch:
 
@@ -67,7 +68,7 @@ jobs:
             cargo-p7-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
             cargo-p7-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Run environment host tests, Python startup contract, and doctests
+      - name: Run environment, startup, application cancellation, and doctest contracts
         shell: bash
         run: |
           mkdir -p "$OMP_ENVD_CONTRACT_DIR"
@@ -76,12 +77,15 @@ jobs:
           test_status=${PIPESTATUS[0]}
           cargo nextest run --profile ci --locked -p omp-py --test control_registration_contract --no-tests fail 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/startup.log"
           startup_status=${PIPESTATUS[0]}
-          cargo test --doc --locked -p omp-envd -p omp-py 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/doctests.log"
+          cargo nextest run --profile ci --locked -p omp-app --test it --no-tests fail -E 'test(worker_cancel_forwards_effects_unknown_once_and_respawn_serves_next_request) | test(same_worker_invocation_id_on_two_connections_cancels_only_its_owner) | test(control_cancellation_restarts_only_the_owning_extension_host)' 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/application.log"
+          application_status=${PIPESTATUS[0]}
+          cargo test --doc --locked -p omp-envd -p omp-py -p omp-app 2>&1 | tee "$OMP_ENVD_CONTRACT_DIR/doctests.log"
           doc_status=${PIPESTATUS[0]}
           printf '%s\n' "$test_status" > "$OMP_ENVD_CONTRACT_DIR/nextest.exit"
           printf '%s\n' "$startup_status" > "$OMP_ENVD_CONTRACT_DIR/startup.exit"
           printf '%s\n' "$doc_status" > "$OMP_ENVD_CONTRACT_DIR/doctests.exit"
-          if [ "$test_status" -ne 0 ] || [ "$startup_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
+          printf '%s\n' "$application_status" > "$OMP_ENVD_CONTRACT_DIR/application.exit"
+          if [ "$application_status" -ne 0 ] || [ "$test_status" -ne 0 ] || [ "$startup_status" -ne 0 ] || [ "$doc_status" -ne 0 ]; then exit 1; fi
       - name: Publish environment host result
         if: always()
         run: |
@@ -90,10 +94,10 @@ jobs:
           from pathlib import Path
           root = Path(os.environ['OMP_ENVD_CONTRACT_DIR'])
           summaries = {}
-          for name in ('nextest', 'startup'):
+          for name in ('nextest', 'startup', 'application'):
               log = (root/(name+'.log')).read_text(errors='replace') if (root/(name+'.log')).exists() else ''
               summaries[name] = re.findall(r'Summary[^\n]*', log)
-          exits = {name: int((root/(name+'.exit')).read_text()) if (root/(name+'.exit')).exists() else None for name in ('nextest', 'startup', 'doctests')}
+          exits = {name: int((root/(name+'.exit')).read_text()) if (root/(name+'.exit')).exists() else None for name in ('nextest', 'startup', 'application', 'doctests')}
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
               out.write('## Environment host execution\n\nRevision: `' + os.environ['GITHUB_SHA'] + '`\n\n')
               out.write('\n'.join(name + ': ' + ' '.join(rows) for name, rows in summaries.items()) + '\n\nExit codes: `' + str(exits) + '`\n')
