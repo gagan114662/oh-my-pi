@@ -568,6 +568,7 @@ fn receipt_and_compaction_facts_materialize_and_survive_reopen() {
 		.expect("frame blob");
 	assert_eq!(blob.hash.as_ref(), frame.hash.as_bytes());
 	assert_eq!(blob.size, frame.size);
+	drop(usages);
 	drop(reopened);
 	let orphan = store.put(b"unreferenced GC fixture").expect("orphan blob");
 	let before_gc = std::fs::read(&path).expect("pre-GC journal bytes");

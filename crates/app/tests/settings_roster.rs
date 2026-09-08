@@ -96,7 +96,10 @@ fn production_approval_and_fallback_maps_roundtrip_exact_values() {
 		let [_, arg @ omp_con::Arg::Kv(_)] = statement.args.as_slice() else {
 			panic!("one map")
 		};
-		assert_eq!(omp_con::coerce_one(arg, &omp_con::TypeSpec::KV).expect("typed map"), original);
+		let Ok(coerced) = omp_con::coerce_one(arg, &omp_con::TypeSpec::KV) else {
+			panic!("typed map coercion failed")
+		};
+		assert_eq!(coerced, original);
 		con.run(&format!("{name} {}", arg.to_script()))
 			.expect("production validator retained");
 		assert_eq!(con.get(name), Some(original));
