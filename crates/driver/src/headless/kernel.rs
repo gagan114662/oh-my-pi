@@ -694,7 +694,11 @@ impl ExternalToolExecutor for EnvToolExecutor {
 				invocation_id: request.call_id.to_string(),
 				name: request.identity.name.to_string(),
 				rev: request.identity.rev.to_string(),
-				deadline_ms: u64::try_from(request.blocking_limit.as_millis()).unwrap_or(u64::MAX),
+				deadline_ms: if request.executor_foreground {
+					0
+				} else {
+					u64::try_from(request.blocking_limit.as_millis()).unwrap_or(u64::MAX)
+				},
 				output_request: match request.output_request {
 					omp_tool::OutputRequest::Bounded => {
 						omp_env::frame::OutputRequest::Bounded as i32
@@ -920,6 +924,14 @@ impl ExternalToolExecutor for EnvToolExecutor {
 							};
 							(source_artifact, inline_json)
 						};
+						if let Some(job) = environment_detached_job(&bytes) {
+							if verdict.is_error {
+								yield ExternalDispatchEvent::Aborted(invalid_outcome_blob());
+							} else {
+								yield ExternalDispatchEvent::Detached(job);
+							}
+							return;
+						}
 						let outcome = match serde_json::from_slice::<
 							CallOutcome<serde_json::Value, serde_json::Value>,
 						>(&bytes) {
@@ -990,6 +1002,15 @@ impl ExternalToolExecutor for EnvToolExecutor {
 				}
 			}
 		})
+	}
+}
+
+fn environment_detached_job(bytes: &[u8]) -> Option<omp_tool::JobRef> {
+	match serde_json::from_slice::<omp_tool::ToolTerminal<serde_json::Value, serde_json::Value>>(
+		bytes,
+	) {
+		Ok(omp_tool::ToolTerminal::Detached(job)) => Some(job),
+		Ok(omp_tool::ToolTerminal::Done { .. }) | Err(_) => None,
 	}
 }
 
@@ -1969,10 +1990,16 @@ pub async fn compose_kernel(
 	} else {
 		usize::try_from(output_max_columns).unwrap_or(usize::MAX)
 	};
-	let policy = DispatchPolicy::new(spill)
+	let mut policy = DispatchPolicy::new(spill)
 		.with_limits(output_spill_bytes, max_line_bytes, Duration::from_secs(30))
 		.with_artifact_projection(artifact_head_bytes, artifact_tail_bytes, artifact_tail_lines)
 		.with_interrupt_grace(unit_grace.saturating_add(Duration::from_secs(1)));
+	if let Some(identity) = registry.resolved_identity("bash")
+		&& omp_tools::shell::owns_foreground_lifetime(&registry, &identity)
+	{
+		policy = policy.with_executor_foreground(identity);
+	}
+
 	let runtime_flags = RuntimeFlags {
 		automatic_compaction:     ctx
 			.get("ai_compaction_enabled")
@@ -2831,6 +2858,36 @@ fn install_prompt_facts(
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn environment_detached_wire_preserves_job_and_rejects_other_envelopes() {
+		let job = omp_tool::JobRef {
+			id:       omp_core::sf!("job-1"),
+			owner:    omp_tool::JobOwner::NamedProcess {
+				name:       omp_core::sf!("bash-bg-1"),
+				generation: 1,
+			},
+			metadata: Default::default(),
+			artifact: omp_tool::ExpectedArtifact {
+				description: omp_core::sf!("shell result"),
+				media_type:  Some(omp_core::sf!("application/json")),
+				lifetime:    omp_tool::ArtifactLifetime::Session,
+			},
+		};
+		let wire = serde_json::to_vec(
+			&omp_tool::ToolTerminal::<serde_json::Value, serde_json::Value>::Detached(job.clone()),
+		)
+		.expect("wire");
+		assert_eq!(super::environment_detached_job(&wire), Some(job));
+		for wire in [
+			br#"{"kind":"detached"}"#.as_slice(),
+			br#"{"kind":"ok","value":{}}"#,
+			br#"{"kind":"done","result":{"Ok":{}},"useless":false}"#,
+			b"broken",
+		] {
+			assert_eq!(super::environment_detached_job(wire), None);
+		}
+	}
+
 	use std::sync::Arc;
 
 	use omp_ai::{

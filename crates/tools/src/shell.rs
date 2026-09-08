@@ -477,6 +477,24 @@ impl ShellPromptSnapshot {
 	}
 }
 
+/// Whether this exact live native core shell owns its foreground lifetime.
+/// Same-name extension and MCP replacements retain generic dispatcher limits.
+pub fn owns_foreground_lifetime(
+	registry: &omp_tool::Registry,
+	identity: &omp_tool::ToolIdentity,
+) -> bool {
+	identity.name == "bash"
+		&& identity.rev.family.is_empty()
+		&& identity.rev.n == 2
+		&& registry.resolved_identity("bash").as_ref() == Some(identity)
+		&& registry
+			.claim("bash")
+			.is_some_and(|claim| claim.claimant == "omp/core")
+		&& registry
+			.route("bash")
+			.is_ok_and(|route| route == omp_tool::ToolRoute::Native)
+}
+
 /// Builds the host-free `bash@2` declaration from immutable prompt facts.
 pub fn spec(snapshot: &ShellPromptSnapshot) -> ToolSpec {
 	spec_described(snapshot.description())

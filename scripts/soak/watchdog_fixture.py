@@ -52,9 +52,30 @@ def timestamp(entry):
 
 
 def notices(entry, name):
-    if entry['event'] != 'patch@1' or entry.get('label') != 'kernel.notice':
+    """Match canonical kernel notice nodes, not authored text naming a guard.
+
+    Txn.label is diagnostic-only and is not serialized in patch@1. Producer
+    names serialize as custom:name. Authored user/assistant/hook content does
+    not become a warn/error notice merely by mentioning the watchdog.
+    """
+    if entry.get('event') != 'patch@1':
         return []
-    return [op[3] for op in entry['payload']['ops'] if len(op) == 4 and op[0] == 'ins' and op[3].get('tag') == 'notice' and dict(op[3].get('props', [])).get('name') == name]
+    found = []
+    for op in entry.get('payload', {}).get('ops', []):
+        if not isinstance(op, list) or len(op) != 4 or op[0] != 'ins':
+            continue
+        node = op[3]
+        if not isinstance(node, dict) or node.get('tag') != 'notice':
+            continue
+        pairs = node.get('props', [])
+        if not isinstance(pairs, list) or any(not isinstance(pair, list) or len(pair) != 2 or not isinstance(pair[0], str) for pair in pairs):
+            continue
+        props = dict(pairs)
+        if len(props) != len(pairs):
+            continue
+        if props.get('custom:name') == name and props.get('kind') in ('warn', 'error'):
+            found.append(node)
+    return found
 
 
 def calls(entries, payload):

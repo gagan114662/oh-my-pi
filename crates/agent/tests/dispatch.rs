@@ -804,6 +804,57 @@ async fn dispatch_timed_out_call_remains_observable_as_an_adopted_job() {
 	assert_eq!(dispatcher.jobs().list()[0].status, "cancelled");
 }
 
+#[tokio::test(start_paused = true)]
+async fn executor_foreground_survives_generic_budget_and_still_cancels() {
+	let directory = tempfile::tempdir().expect("temporary directory");
+	let tools = worker_registry();
+	let identity = tools.resolved_identity("worker").expect("worker identity");
+	let started = Arc::new(tokio::sync::Notify::new());
+	let dispatcher = Dispatcher::new(
+		Arc::clone(&tools),
+		DispatchPolicy::new(BlobStore::open(directory.path()).expect("blob store"))
+			.with_limits(64 * 1024, 512, Duration::from_secs(30))
+			.with_executor_foreground(identity.clone()),
+	)
+	.with_external_executor(Arc::new(StuckExternal {
+		honors_cancel: true,
+		started:       Arc::clone(&started),
+	}));
+	let mut session = session(&directory.path().join("foreground.oms"));
+	let (entry, args) = call(&mut session, &identity, "owned-foreground");
+	let turn = CancelTree::new().begin_turn();
+	let report = {
+		let dispatch = dispatcher.dispatch(
+			&mut session,
+			request(
+				entry,
+				identity,
+				args,
+				ToolCancellation::Foreground(turn.foreground_mutation()),
+				false,
+			),
+		);
+		tokio::pin!(dispatch);
+		tokio::select! {
+			 () = started.notified() => {},
+			 result = &mut dispatch => panic!("settled before startup: {result:?}"),
+		}
+		tokio::select! {
+			 () = tokio::time::sleep(Duration::from_secs(1860)) => {},
+			 result = &mut dispatch => panic!("executor-owned call detached at generic budget: {result:?}"),
+		}
+		assert!(dispatcher.jobs().list().is_empty());
+		turn.cancel_turn();
+		tokio::time::timeout(Duration::from_secs(1), &mut dispatch)
+			.await
+			.expect("cancellation remains bounded")
+			.expect("abort journals")
+	};
+	assert!(report.is_error);
+	assert!(report.detached.is_none());
+	assert_eq!(abort_kind(&session, "owned-foreground"), "interrupted");
+}
+
 /// The journaled `tool.result@1` abort kind for `call_id`, after proving the
 /// aborted result projects to the model.
 fn abort_kind(session: &omp_session::Session, call_id: &str) -> String {

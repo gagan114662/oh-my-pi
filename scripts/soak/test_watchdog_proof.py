@@ -25,13 +25,29 @@ class GateTests(unittest.TestCase):
             calls(entries, REPEAT)
 
     def test_notice_must_be_kernel_patch_not_authored_text(self):
-        node = {'tag': 'notice', 'props': [['name', 'loop-guard']], 'content': 'stopped'}
-        entry = {'event': 'patch@1', 'label': 'kernel.notice', 'payload': {'ops': [['ins', 1, None, node]]}}
+        # Actual canonical shape from hosted run34275220932; no Txn.label.
+        node = {'tag': 'notice', 'props': [['kind', 'warn'], ['custom:name', 'loop-guard']], 'content': 'stopped'}
+        entry = {'event': 'patch@1', 'payload': {'ops': [['ins', 18, 83, node]]}}
         self.assertEqual(notices(entry, 'loop-guard'), [node])
-        entry['label'] = 'user.message'
-        self.assertEqual(notices(entry, 'loop-guard'), [])
-        entry.update(event='tool.result@1', label='kernel.notice')
-        self.assertEqual(notices(entry, 'loop-guard'), [])
+        for kind in ('warn', 'error'):
+            candidate = copy.deepcopy(entry)
+            candidate['payload']['ops'][0][3]['props'][0][1] = kind
+            self.assertEqual(len(notices(candidate, 'loop-guard')), 1)
+        for tag in ('user', 'assistant', 'text'):
+            candidate = copy.deepcopy(entry)
+            candidate['payload']['ops'][0][3]['tag'] = tag
+            self.assertEqual(notices(candidate, 'loop-guard'), [])
+        for props in ([['name', 'loop-guard'], ['kind', 'warn']],
+                      [['custom:name', 'other'], ['kind', 'warn']],
+                      [['custom:name', 'loop-guard'], ['kind', 'hook']],
+                      [['custom:name', 'loop-guard']],
+                      [['custom:name', 'loop-guard'], ['kind', 'warn'], ['kind', 'error']]):
+            candidate = copy.deepcopy(entry)
+            candidate['payload']['ops'][0][3]['props'] = props
+            self.assertEqual(notices(candidate, 'loop-guard'), [])
+        for event in ('user.message@1', 'tool.result@1', 'stream@1'):
+            self.assertEqual(notices({**entry, 'event': event}, 'loop-guard'), [])
+        self.assertEqual(notices({'event': 'patch@1', 'payload': {'ops': [['ins', 1, None, 'loop-guard']]}}, 'loop-guard'), [])
 
     def test_repeat_gate_rejects17_or_success_or_no_notice(self):
         good = {'phase': 'repeat', 'matching_call_count': 16, 'loop_notice_ids': ['notice'], 'provider_requests': 16, 'terminal_status': 'incomplete'}

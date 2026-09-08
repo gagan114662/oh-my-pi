@@ -1,7 +1,7 @@
 # Real-duration watchdog proof (#124)
 
 This leaf prepares the external correctness phases required by issue #124.
-It does not claim either phase has run, or replace the full #105 soak. The
+The hosted evidence below records which phases ran; this does not replace the full #105 soak. The
 scripted OpenAI wire transport makes no Anthropic quality, cost, or performance
 claim (#41 A7). Production app, driver, kernel, shell host, and journal run from
 the selected source without fixture-specific production changes.
@@ -126,3 +126,58 @@ The production fixture, its ten-second readiness deadline, watchdog assertions,
 and `31 * 60` real observation duration are unchanged. The 25 offline soak tests
 passed locally; no new production watchdog phase has run. The existing leaf's
 `test_watchdog*.py` discovery includes the new startup regression automatically.
+
+## Hosted source 4379a98a: observed failures and follow-up
+
+Run [34275220932](https://github.com/gagan114662/oh-my-pi/actions/runs/34275220932)
+used head `4379a98a2782bc75bcd57b0796ac6e31cafdd846` and original parent
+`b59b952172f1f331c2a79a6bc22f6ea25a3e2135`. Both providers reached LISTENING.
+The parent naturally executed 100 matching calls / 100 results / 101 requests,
+exited0, and failed semantic acceptance as required. Head repeat naturally
+exited0 with an incomplete outcome,16 calls/results/requests, and **eight**
+actual kernel loop-guard patches. The checker incorrectly required a serialized
+Txn.label and `name` property; canonical patch@1 has no label and uses
+`custom:name`. The corrected parser requires an inserted notice with warn/error
+kind and the exact producer name, rejects authored text/hook kinds, and finds
+all eight notices in this retained journal. This retrospective parsing is not
+a new production run.
+
+Head idle observed1860.136s, but its external sleep survived only about29.255s.
+At30s the generic dispatcher detached the call and its foreground budget, also
+sent as the environment execution deadline, interrupted native bash. The CLI
+then exhausted the one-response provider script and exited1 at326.414s. No idle
+notice or1800s held execution was proved. The CLI log at20:44:59.757904Z records
+`environment verdict omitted output projection facts`; the resulting
+`effects_unknown` is **not evidence of a malformed detached JSON outcome**.
+The native timeout/fallback abort publisher omitted both retained outcome and
+projection metadata required by the driver.
+
+The follow-up separates these contracts:
+
+- Driver opts only the exact registered native core bash identity into
+  executor-owned foreground policy; replacement/worker tools retain generic
+  limits. Bash's configured auto-background switch/threshold and explicit
+  shell timeout govern its execution. Turn idle/wall/request bounds and
+  cancellation remain active.
+- Only an omitted (`deadline_ms=0`) execution deadline for that registered
+  native shell defers to shell policy. Any nonzero deadline wins; other tools
+  retain the default environment deadline. Admission remains bounded even
+  when the shell's execution deadline is omitted.
+- Native timeout/cancellation fallback aborts now retain canonical bytes and
+  publish matching projection facts. Worker/pre-admission abort publishing is
+  a separate existing path and is not claimed fixed by this change.
+- A separate source-level defect is corrected: native auto-background emits
+  `ToolTerminal::Detached`, which the old driver rejected as a non-CallOutcome.
+  The driver decodes that exact typed variant after artifact verification and
+  passes its real job reference through the existing durable detached lowering.
+  It does not present detached work as completed success.
+
+All25 offline soak tests pass, including canonical notice negatives. Rust
+regressions cover exact core identity, explicit/default execution deadlines,
+retained abort bytes/projection, detached decoding, and a paused-clock dispatcher
+call surviving its generic budget and still cancelling. Existing shell tests
+preserve timeout0 and positive timeout behavior; generic detachment tests remain.
+These Rust tests are **uncompiled/unrun locally**. The paused-clock test is a
+scheduler regression, never the31-minute acceptance proof. Fresh affected
+agent/tools/envd/driver suites and doctests, full CI, and a fresh actual
+>=1800s held-tool / >=1860s observation with verified cleanup remain required.
