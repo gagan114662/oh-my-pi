@@ -55,7 +55,18 @@ jobs:
       - name: Assert package graphs
         working-directory: source
         run: python3 ../proof-tools/scripts/check-feature-isolation.py --root . --output target/feature-isolation/graphs
+      - name: Check full workspace type compatibility
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          cargo check --locked --workspace --lib --bins --tests 2>&1 | tee target/feature-isolation/workspace-check.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'workspace-check=%s log_write=%s\n' "${codes[0]}" "${codes[1]}" > target/feature-isolation/workspace-exit.txt || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
       - name: Check and test each package independently
+        if: ${{ !cancelled() }}
         working-directory: source
         shell: bash
         run: |
@@ -87,10 +98,12 @@ jobs:
             echo '```text'
             git rev-parse HEAD
             if [ -f target/feature-isolation/exits.txt ]; then cat target/feature-isolation/exits.txt; else echo 'Package execution evidence missing'; fi
+            if [ -f target/feature-isolation/workspace-exit.txt ]; then cat target/feature-isolation/workspace-exit.txt; else echo 'Workspace compatibility evidence missing'; fi
             grep -hE 'Summary|test result:' target/feature-isolation/*-tests.log target/feature-isolation/*-doctests.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           test -f target/feature-isolation/exits.txt
+          test -f target/feature-isolation/workspace-exit.txt
       - name: Retain source-bound evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

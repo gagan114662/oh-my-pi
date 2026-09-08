@@ -40,6 +40,11 @@ the full selected workspace. This can produce separate cached dependency
 artifacts for different package selections; it avoids compiling audio C code
 for unrelated package builds.
 
+Use Cargo's `selected` mode: dependencies shared by packages in the same
+invocation still share their feature set. The `package` mode can build distinct
+copies of shared types and fails the workspace's transport interfaces on the
+pinned toolchain. See [Cargo feature unification](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#feature-unification).
+
 `omp-app` and `omp-chat` retain their realtime APIs and dependencies. Root serde
 explicitly enables `derive` and `rc`; hmac and sha2 retain their default features.
 The previously reported `omp-secrets` and `omp-catalog` package-isolation

@@ -52,7 +52,7 @@ feature-unification = true
 # Dependencies must declare the features they use rather than borrowing them
 # from other workspace members. Full workspace commands still select all members.
 [resolver]
-feature-unification = "package"
+feature-unification = "selected"
 # Config profiles outrank manifest profiles, so a user-global
 # ~/.cargo/config.toml [profile.dev] (e.g. line-tables-only + unpacked
 # split-debuginfo) would silently re-inflate the target dir with retained
