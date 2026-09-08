@@ -449,7 +449,7 @@ impl UiControlOwner for ChatUiOwner {
 				Ok(UiControlResult::Value(facts))
 			},
 			UiControlRequest::Commands => {
-				let commands = self
+				let mut commands = self
 					.con
 					.items()
 					.filter_map(|item| match item {
@@ -462,6 +462,14 @@ impl UiControlOwner for ChatUiOwner {
 						RegItem::Var(_) | RegItem::Action(_) => None,
 					})
 					.collect::<Vec<_>>();
+				commands.extend(self.con.dynamic_cmds().map(|(name, description)| {
+					json!({
+						"name": name,
+						"aliases": [],
+						"description": description.lines().next().unwrap_or_default(),
+						"source": "dynamic",
+					})
+				}));
 				Ok(UiControlResult::Value(json!({ "commands": commands })))
 			},
 			UiControlRequest::Icons { prefix } => {
@@ -1244,6 +1252,57 @@ mod tests {
 		let mut multi = single;
 		multi.multi = true;
 		assert!(remote_select(&[multi]).is_none(), "multi-step asks remain local");
+	}
+
+	#[tokio::test]
+	async fn command_roster_includes_registered_prompts_and_preserves_builtins() {
+		struct Prompts;
+		impl omp_chat::commands::prompts::PromptExpander for Prompts {
+			fn templates(&self) -> Vec<(Str, Str)> {
+				vec![(Str::new_static("review-fixture"), Str::new_static("Review changes\nDetails"))]
+			}
+
+			fn expand(&self, name: &str, _args: &[Str]) -> Option<Str> {
+				(name == "review-fixture").then(|| Str::new_static("Review the changes."))
+			}
+		}
+
+		let (owner, ctx, _) = owner();
+		let UiControlResult::Value(before) = owner
+			.request(context(), UiControlRequest::Commands)
+			.await
+			.expect("initial roster")
+		else {
+			panic!("expected command roster");
+		};
+		assert!(!before["commands"].as_array().unwrap().is_empty());
+		assert!(
+			before["commands"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.all(|row| row["name"] != "review-fixture")
+		);
+		assert!(omp_chat::commands::prompts::register(&ctx, Arc::new(Prompts)).is_empty());
+		let UiControlResult::Value(after) = owner
+			.request(context(), UiControlRequest::Commands)
+			.await
+			.expect("updated roster")
+		else {
+			panic!("expected command roster");
+		};
+		let rows = after["commands"].as_array().unwrap();
+		let matching = rows
+			.iter()
+			.filter(|row| row["name"] == "review-fixture")
+			.collect::<Vec<_>>();
+		assert_eq!(matching.len(), 1);
+		assert_eq!(matching[0]["description"], "Review changes");
+		assert_eq!(matching[0]["source"], "dynamic");
+		assert_eq!(matching[0]["aliases"], json!([]));
+		for builtin in before["commands"].as_array().unwrap() {
+			assert!(rows.contains(builtin), "existing builtin disappeared");
+		}
 	}
 
 	#[tokio::test]
