@@ -14225,3 +14225,7 @@ mod runtime_operation_contracts {
 #[cfg(test)]
 #[path = "http_egress_tests.rs"]
 mod http_egress_tests;
+
+#[cfg(test)]
+#[path = "http_baseline_tests.rs"]
+mod http_baseline_tests;

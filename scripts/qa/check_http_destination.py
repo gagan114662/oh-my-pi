@@ -13,6 +13,9 @@ import difflib
 
 FIXTURE = 'crates/envd/src/http_egress_tests.rs'
 FIXTURE_HASH = 'f6897c3ef1e7adf91d0dc00bd223091f45f1ba3eec4334880199d7a5cbc711d6'
+BASELINE = 'crates/envd/src/http_baseline_tests.rs'
+BASELINE_HASH = '766fa48cb29a350027f0ff2c0275ef9ae454528884d4ec6a126a37059457ae9c'
+PARENT_REVISION = 'b59b952172f1f331c2a79a6bc22f6ea25a3e2135'
 IMPLEMENTATION = 'crates/envd/src/http_egress.rs'
 PACKAGES = ('omp-envd', 'omp-env', 'omp-http', 'omp-driver')
 CASES = (
@@ -36,7 +39,7 @@ def git(*args, cwd=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=('normal', 'mutation'))
+    parser.add_argument('mode', choices=('normal', 'mutation', 'baseline-parent', 'baseline-head'))
     parser.add_argument('--proof-root', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
@@ -53,13 +56,13 @@ def main():
     def save():
         (out / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
 
-    def run(name, argv, cases=()):
+    def run(name, argv, cases=(), env=None):
         record = {'name': name, 'argv': argv, 'raw_exit': None, 'status': 'incomplete'}
         records.append(record)
         save()
         # Write subprocess output directly: no pipeline can hide the raw test exit.
         with (out / (name + '.log')).open('wb') as log:
-            result = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT)
+            result = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT, env=env)
         record['raw_exit'] = result.returncode
         log_text = (out / (name + '.log')).read_text(errors='replace')
         record['summaries'] = re.findall(r'Summary[^\n]*', log_text)
@@ -74,15 +77,43 @@ def main():
 
     try:
         report.update(source_revision=git('rev-parse', 'HEAD'), checker_revision=git('rev-parse', 'HEAD', cwd=proof), checker_sha256=digest(__file__), workflow_sha256=digest(proof / '.github/workflows/http-destination.yml'), source_status_before=git('status', '--porcelain=v1'))
-        assert digest(proof / FIXTURE) == FIXTURE_HASH, 'Proof fixture differs from frozen hash'
-        Path(FIXTURE).write_bytes((proof / FIXTURE).read_bytes())
+        if args.mode.startswith('baseline-'):
+            assert digest(proof / BASELINE) == BASELINE_HASH, 'Baseline fixture differs from frozen hash'
+            Path(BASELINE).write_bytes((proof / BASELINE).read_bytes())
+            server = Path('crates/envd/src/server.rs')
+            before = server.read_text()
+            inclusion = '\n#[cfg(test)]\n#[path = "http_baseline_tests.rs"]\nmod http_baseline_tests;\n'
+            if inclusion not in before:
+                assert 'mod http_baseline_tests;' not in before, 'Unexpected baseline module declaration'
+                server.write_text(before + inclusion)
+            (out / 'test-inclusion.diff').write_text(''.join(difflib.unified_diff(before.splitlines(True), server.read_text().splitlines(True), fromfile=str(server), tofile=str(server))))
+            report['baseline_fixture_sha256'] = digest(BASELINE)
+        else:
+            assert digest(proof / FIXTURE) == FIXTURE_HASH, 'Proof fixture differs from frozen hash'
+            Path(FIXTURE).write_bytes((proof / FIXTURE).read_bytes())
         report['source_status_after_fixture_copy'] = git('status', '--porcelain=v1')
         tracked = git('ls-files').splitlines()
         # Freeze every tracked test/source/config file for mutation restoration, not just the oracle.
         hashes = {p: digest(p) for p in tracked if Path(p).is_file()}
         report['source_file_sha256'] = hashes
         save()
-        if args.mode == 'normal':
+        if args.mode.startswith('baseline-'):
+            parent = args.mode == 'baseline-parent'
+            if parent:
+                assert report['source_revision'] == PARENT_REVISION, 'Parent baseline must use the frozen original source'
+            expectation = 'broad-parent' if parent else 'restricted-head'
+            case = 'native_http_parent_and_head_effectful_get_observation'
+            command, log = run('baseline', ['just', '--command', 'cargo', 'nextest', 'run', '--profile', 'ci', '--locked', '-p', 'omp-envd', '--lib', '--no-fail-fast', '--no-tests', 'fail', '--success-output', 'immediate', '-E', 'test(' + case + ')'], (case,), dict(os.environ, OMP_HTTP_BASELINE_EXPECTATION=expectation))
+            observations = re.findall(r'HTTP_BASELINE_OBSERVATION=(\{[^\n]*\})', log)
+            assert command['status'] == 'passed' and len(observations) == 1, 'Missing actual baseline execution; build/configuration errors are not semantic observations'
+            observation = json.loads(observations[0])
+            expected = {'expectation': expectation, 'method': 'GET', 'url': 'http://127.0.0.1:43843/mutate?value=1', 'capability': 'env.net', 'invocation': 'baseline-invocation', 'configuration_supported': not parent, 'response': 'http-200' if parent else 'permission-denied', 'destination_counter': 1 if parent else 0}
+            report['baseline_observation'] = observation
+            report['baseline_interpretation'] = 'Enhancement baseline: parent broad env.net has no new scope setting; comparison is not a violation of a preexisting parent guarantee.'
+            assert observation == expected, 'Unexpected destination or configuration observation'
+            assert digest(BASELINE) == BASELINE_HASH, 'Baseline fixture changed during execution'
+            report['status'] = 'passed'
+        elif args.mode == 'normal':
             focused('http-fixtures')
             for package, case in [('omp-driver', 'child_configuration_cannot_replace_captured_native_http_floor'), ('omp-env', 'native_http_and_its_cancel_follow_session_authority')]:
                 run(package + '-focused', ['just', '--command', 'cargo', 'nextest', 'run', '--profile', 'ci', '--locked', '-p', package, '--no-fail-fast', '--no-tests', 'fail', '-E', 'test(' + case + ')'], (case,))

@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [normal, mutation]
+        mode: [normal, mutation, baseline-parent, baseline-head]
     runs-on: macos-15
     timeout-minutes: 180
     env:
@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: source
-          ref: ${{ inputs.source_ref || github.sha }}
+          ref: ${{ matrix.mode == 'baseline-parent' && 'b59b952172f1f331c2a79a6bc22f6ea25a3e2135' || inputs.source_ref || github.sha }}
       - name: Record checkout identity before setup
         working-directory: source
         shell: bash
