@@ -56,6 +56,7 @@ pub struct Journal {
 	entry_count:          usize,
 	recovered_tail_bytes: u64,
 	integrity:            integrity::Verification,
+	write_failed:         bool,
 }
 
 impl Journal {
@@ -92,6 +93,7 @@ impl Journal {
 			entry_count: 0,
 			recovered_tail_bytes: 0,
 			integrity: integrity::Verification::default(),
+			write_failed: false,
 		})
 	}
 
@@ -167,6 +169,7 @@ impl Journal {
 				entry_count: entries.len(),
 				recovered_tail_bytes: truncated as u64,
 				integrity: verification,
+				write_failed: false,
 			},
 			entries,
 		))
@@ -198,6 +201,22 @@ impl Journal {
 	/// its payload is not single-line JSON or exceeds one mebibyte, identity
 	/// generation is exhausted, or the durable write fails.
 	pub fn append(&mut self, draft: EntryDraft) -> Result<Entry, JournalError> {
+		self.append_with_persistence(draft, |file, encoded| {
+			file.write_all(encoded)?;
+			file.sync_data()
+		})
+	}
+
+	// A narrow persistence boundary permits deterministic failure after actual
+	// partial/full file writes; production always uses write_all + sync_data.
+	fn append_with_persistence(
+		&mut self,
+		draft: EntryDraft,
+		persist: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
+	) -> Result<Entry, JournalError> {
+		if self.write_failed {
+			return Err(JournalError::WriterPoisoned);
+		}
 		self.require_sealed()?;
 		validate_draft(&draft, self.entry_count, &self.ids)?;
 		let id = EntryId::from(self.generator.generate()?);
@@ -212,8 +231,11 @@ impl Journal {
 		let mut encoded = Vec::with_capacity(entry.data.len() + 160);
 		let tip = integrity::encode(&entry, self.integrity.tip.unwrap_or_default(), &mut encoded)
 			.map_err(map_sse_write_error)?;
-		self.file.write_all(&encoded)?;
-		self.file.sync_data()?;
+		// A failed write or sync leaves durability and the physical EOF uncertain.
+		// Never append using the old cached predecessor after that boundary.
+		self.write_failed = true;
+		persist(&mut self.file, &encoded)?;
+		self.write_failed = false;
 		self.ids.insert(id);
 		self.entry_count += 1;
 		self.integrity.tip = Some(tip);
@@ -288,6 +310,9 @@ impl Journal {
 /// Journal creation, recovery, validation, and append failure.
 #[derive(Debug, Error)]
 pub enum JournalError {
+	/// A prior persistence failure left this writer's physical tip uncertain.
+	#[error("journal writer must be closed and reopened after a write or sync failure")]
+	WriterPoisoned,
 	/// A complete physical frame fails its seal or predecessor check.
 	#[error(transparent)]
 	Integrity(#[from] integrity::IntegrityError),
@@ -561,5 +586,78 @@ fn map_sse_write_error(source: SseError) -> JournalError {
 		SseError::MultilineLabel => JournalError::MultilineLabel,
 		SseError::InvalidData { source } => JournalError::InvalidData { source },
 		other => JournalError::Frame { source: other },
+	}
+}
+
+#[cfg(test)]
+mod persistence_tests {
+	use super::*;
+
+	fn draft(kind: KindName, by: Option<EntryId>) -> EntryDraft {
+		EntryDraft {
+			kind: Kind::known(kind),
+			by,
+			prior: None,
+			label: None,
+			data: Str::new_static("{}"),
+		}
+	}
+
+	fn failed_persistence_requires_reopen(full_write: bool) {
+		let directory = tempfile::tempdir().expect("tempdir");
+		let path = directory.path().join("failure.oms");
+		let mut journal = Journal::create(&path).expect("create");
+		let genesis = journal
+			.append(draft(KindName::Journal, None))
+			.expect("genesis");
+		let original_tip = journal.integrity.tip;
+		let error = journal.append_with_persistence(
+			draft(KindName::TurnStart, Some(genesis.id)),
+			|file, encoded| {
+				// Actual filesystem bytes, followed by the same error boundary as
+				// write_all (partial) or sync_data (complete write, failed sync).
+				let prefix = if full_write {
+					encoded
+				} else {
+					&encoded[..encoded.len() / 2]
+				};
+				file.write_all(prefix)?;
+				Err(io::Error::other("injected persistence failure"))
+			},
+		);
+		assert!(matches!(error, Err(JournalError::Io(_))));
+		assert_eq!(journal.integrity.tip, original_tip, "failed durability is not acknowledged");
+		assert_eq!(journal.entry_count, 1);
+		let after_failure = fs::read(&path).expect("actual bytes after failure");
+		let report = journal.verify().expect("complete prefix verifies");
+		assert_eq!(report.sealed_entries, if full_write { 2 } else { 1 });
+		assert_eq!(report.torn_tail_bytes == 0, full_write);
+		assert!(matches!(
+			journal.append(draft(KindName::TurnStart, Some(genesis.id))),
+			Err(JournalError::WriterPoisoned)
+		));
+		assert_eq!(fs::read(&path).expect("read blocked append"), after_failure);
+		drop(journal);
+		let (mut reopened, entries) =
+			Journal::open_verified(&path, None).expect("recover actual bytes");
+		assert_eq!(entries.len(), if full_write { 2 } else { 1 });
+		reopened
+			.append(draft(KindName::TurnStart, Some(genesis.id)))
+			.expect("append after recovery");
+		let final_report = reopened
+			.verify()
+			.expect("new append commits to recovered physical tip");
+		assert_eq!(final_report.sealed_entries, entries.len() + 1);
+		assert_eq!(final_report.torn_tail_bytes, 0);
+	}
+
+	#[test]
+	fn partial_write_failure_poison_prevents_appending_to_torn_frame() {
+		failed_persistence_requires_reopen(false);
+	}
+
+	#[test]
+	fn sync_failure_after_complete_write_poison_prevents_stale_predecessor() {
+		failed_persistence_requires_reopen(true);
 	}
 }

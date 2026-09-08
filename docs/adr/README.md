@@ -39,7 +39,7 @@ names real paths and says "not yet implemented" where true.
 - [0004](0004-lifecycle-derives-from-the-tree.md) — Rewind, fork, resume, replication, and prompts derive from the tree
 - [0005](0005-controller-actor-separation.md) — Controller owns state; views are projections
 
-- [0037](0037-journal-physical-integrity.md) — Physical integrity is distinct from journal authority
+- [0038](0038-journal-physical-integrity.md) — Physical integrity is distinct from journal authority
 
 ### Runtime
 - [0006](0006-host-policy-sandbox-stub.md) — Policy on the trusted host; an obedient bounded stub in the sandbox

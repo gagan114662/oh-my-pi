@@ -26,6 +26,8 @@ pub struct Verification {
 	/// Historical frames without seals. Such journals cannot be folded or
 	/// appended.
 	pub legacy_entries:  usize,
+	/// Complete unsealed bytes, including legacy spacer blocks.
+	pub legacy_bytes:    usize,
 	/// Byte immediately after the last complete frame.
 	pub committed_bytes: usize,
 	/// Incomplete final bytes, excluded from verification and recoverable on

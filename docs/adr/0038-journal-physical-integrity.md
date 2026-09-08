@@ -1,4 +1,4 @@
-# 0037. Journal physical integrity is distinct from journal authority
+# 0038. Journal physical integrity is distinct from journal authority
 
 Status: proposed
 Date: 2026-09-08
@@ -44,6 +44,10 @@ session replay, append and GC refuse legacy entries. Migration must be an
 explicit subsequent operation preserving source bytes and provenance; it
 must not assert the historical truth of newly hashed legacy bytes.
 
+A write or sync failure poisons the live writer until it is closed and reopened.
+Its cached tip cannot authorize another append after an uncertain persistence
+result. Reopen verifies actual complete bytes and recovers only a torn tail.
+
 The blank line remains the commit boundary. An incomplete suffix is reported
 and writable open recovers the complete prefix as before. This is not evidence
 that missing bytes were harmless. Complete suffix deletion and an edited last
@@ -71,7 +75,7 @@ not existence or integrity of separately stored bytes (the CAS owns that).
 
 ## Status in omp
 
-First implementation slice: `crates/journal/src/integrity.rs`, journal
+**Partial.** First implementation slice: `crates/journal/src/integrity.rs`, journal
 append/open/scan/GC, and the session open boundary. Added tests cover valid
 frames, byte edits in middle/final payloads, physical insertion/deletion/
 reordering, branch/prune behavior, torn suffixes, expected-tip mismatch and
