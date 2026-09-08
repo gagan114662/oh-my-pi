@@ -117,18 +117,8 @@ jobs:
           codes=("${PIPESTATUS[@]}")
           printf 'qa,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/read-tail/exits.csv || exit 1
           [ "${codes[1]}" -eq 0 ] || exit 1
-          if [ "$OMP_READ_TAIL_REVISION" = before ]; then
-            # Baseline must execute the checker and expose a semantic mismatch.
-            [ "${codes[0]}" -ne 0 ] || exit 1
-            python3 - <<'PYBASE'
-          import json
-          from pathlib import Path
-          runs = json.loads(Path('target/read-tail/qa/manifest.json').read_text())['runs']
-          assert any(row['case'] == 'local-large' and row.get('terminal_validated') and row.get('semantic_mismatch') for row in runs), 'Baseline did not reach an observable tool result'
-          PYBASE
-          else
-            [ "${codes[0]}" -eq 0 ]
-          fi
+          # Preserve the failing command exit on the baseline as well as head.
+          [ "${codes[0]}" -eq 0 ]
       - name: Run complete affected tests and doctests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: source
@@ -163,7 +153,7 @@ jobs:
           out.mkdir(parents=True, exist_ok=True)
           provenance = out / 'provenance.json'
           lines = ['## Tail selector evidence', '',
-                   'The binary is built from the selected source with a copied QA checker. No build cache is restored. The before build is the recorded parent of the first tail fix; only its QA semantic failure is expected, while all affected package tests must pass.',
+                   'The binary is built from the selected source with a copied QA checker. No build cache is restored. The before build is the recorded parent of the first tail fix; its QA semantic failure is expected and stays red, while all affected package tests must pass.',
                    'Missing, skipped, and failed execution is not passing evidence.', '', '```json',
                    provenance.read_text() if provenance.exists() else '{"error":"provenance missing"}', '```', '',
                    '| Check | Command exit | Log-write exit | Result |', '| --- | --- | --- | --- |']
@@ -173,8 +163,7 @@ jobs:
           failed = not provenance.exists()
           for name in ('build', 'qa', 'omp-tools-tests', 'omp-tools-doctests', 'omp-envd-tests', 'omp-envd-doctests', 'omp-driver-tests', 'omp-driver-doctests', 'omp-py-tests', 'omp-py-doctests'):
               codes = observed.get(name)
-              baseline_qa = name == 'qa' and os.environ['OMP_READ_TAIL_REVISION'] == 'before'
-              passed = bool(codes and codes[0] != '0' and codes[1] == '0') if baseline_qa else codes == ['0', '0']
+              passed = codes == ['0', '0']
               failed |= not passed
               lines.append(f"| {name} | {codes[0] if codes else 'missing'} | {codes[1] if codes else 'missing'} | {'PASS' if passed else 'FAIL / incomplete'} |")
           qa_summary = out / 'qa/summary.md'

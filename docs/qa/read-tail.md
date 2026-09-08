@@ -12,7 +12,7 @@ newlines, a directory listing, invalid zero/overflow counts, and Python artifact
 reads including 200,000 lines. The artifact probe asserts exact raw strings.
 Captured provider messages, process output, failures and expected/actual tables
 are retained per case. The before build must expose an observed semantic
-mismatch; missing execution is not a baseline reproduction. The after build
+mismatch and retain a failing QA exit; missing execution is not a baseline reproduction. The after build
 must pass every case. Complete tools/envd/driver/Python package tests and
 doctests run independently of the QA outcome.
 
