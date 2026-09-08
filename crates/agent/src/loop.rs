@@ -1,4 +1,3 @@
-use std::time::Duration;
 //! Journal-first agent turn kernel.
 
 use std::{
@@ -6,7 +5,7 @@ use std::{
 		Arc,
 		atomic::{AtomicBool, Ordering},
 	},
-	time::Instant,
+	time::{Duration, Instant},
 };
 
 use futures::StreamExt as _;
