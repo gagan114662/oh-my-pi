@@ -81,7 +81,7 @@ omp_con::var! {
 	};
 	/// Theme used when the terminal has a dark background.
 	pub static CL_THEME_DARK = cl_theme_dark: Str {
-		default: Str::new_static("titanium"),
+		default: Str::new_static("dark"),
 		flags: archive,
 		meta: {
 			"ui.tab": "appearance",

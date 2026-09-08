@@ -636,6 +636,41 @@ impl SettingsPanel {
 		Ok(Self::from_rows_with_inventory(rows, inventory, cx.ui))
 	}
 
+	/// Opens the existing theme editor for the terminal's active appearance.
+	/// Arrow keys preview; Enter persists through the settings command path;
+	/// Escape restores the original context without writing configuration.
+	pub fn open_theme(cx: &PanelCx<'_>) -> Result<Self, Str> {
+		let mut panel = Self::open(cx)?;
+		panel.focus_theme(cx.ui.appearance)?;
+		Ok(panel)
+	}
+
+	fn focus_theme(&mut self, appearance: omp_tui::Appearance) -> Result<(), Str> {
+		let setting = match appearance {
+			omp_tui::Appearance::Dark => &crate::settings::CL_THEME_DARK,
+			omp_tui::Appearance::Light => &crate::settings::CL_THEME_LIGHT,
+		};
+		let convar = setting.name();
+		let index = self
+			.rows
+			.iter()
+			.position(|row| row.convar == convar)
+			.ok_or_else(|| Str::new_static("Theme setting is not registered"))?;
+		self.tab = SETTING_TABS
+			.iter()
+			.position(|tab| tab.tab == self.rows[index].tab)
+			.ok_or_else(|| Str::new_static("Theme settings tab is not registered"))?;
+		self.reflow_items();
+		self.selected = self
+			.items
+			.iter()
+			.position(|item| *item == Item::Row(index))
+			.ok_or_else(|| Str::new_static("Theme setting is not visible"))?;
+		self.clamp_scroll();
+		let _ = self.activate();
+		Ok(())
+	}
+
 	#[cfg(test)]
 	#[must_use]
 	fn from_rows(rows: Vec<SettingRow>, ctx: &UiContext) -> Self {
@@ -2348,6 +2383,36 @@ mod tests {
 	use omp_tui::{Mods, Mouse, MouseButton, frame_text};
 
 	use super::*;
+
+	#[test]
+	fn theme_entry_uses_existing_preview_cancel_and_commit_authority() {
+		for (appearance, convar) in [
+			(omp_tui::Appearance::Dark, "cl_theme_dark"),
+			(omp_tui::Appearance::Light, "cl_theme_light"),
+		] {
+			let mut setting = row(
+				"Theme",
+				SettingTab::Appearance,
+				"Theme",
+				RowWidget::Submenu(vec![choice("dark", "Dark"), choice("light", "Light")]),
+				RowValue::Scalar(Str::new_static("dark")),
+			);
+			setting.convar = Str::new_static(convar);
+			let mut panel = SettingsPanel::from_rows(vec![setting], &UiContext::default());
+			panel.focus_theme(appearance).unwrap();
+			assert!(matches!(panel.key(Key::Down), PanelEvent::PreviewSetting { convar: name, value }
+				if name == convar && value == "light"));
+			assert_eq!(panel.rows[0].value, RowValue::Scalar(Str::new_static("dark")));
+			assert!(matches!(panel.key(Key::Esc), PanelEvent::CancelSettingPreview { convar: name }
+				if name == convar));
+			assert!(panel.pending.is_none());
+			panel.focus_theme(appearance).unwrap();
+			let _ = panel.key(Key::Down);
+			assert!(matches!(panel.key(Key::Enter), PanelEvent::RunSetting { convar: name, line }
+				if name == convar && line.contains("light") && line.ends_with("; writecfg")));
+			assert_eq!(panel.rows[0].value, RowValue::Scalar(Str::new_static("light")));
+		}
+	}
 
 	fn choice(value: &'static str, label: &'static str) -> Choice {
 		Choice {
