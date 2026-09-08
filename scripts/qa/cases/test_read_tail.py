@@ -81,7 +81,7 @@ class ReadTail(unittest.TestCase):
             # These are encoded videos, not mocked PNG responses. A tiny long
             # clip exercises the exact Appendix E timestamp without a large asset.
             for filename, source in (("demo.mp4", "testsrc2=size=64x48:rate=2:duration=4"),
-                                     ("long.mov", "color=c=blue:size=32x32:rate=1:duration=3944")):
+                                     ("long.mov", "color=c=red:size=32x32:rate=1:duration=3944,drawbox=color=blue:t=fill:enable='gte(t,3942)'")):
                 generated = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", source,
                     "-c:v", "libx264", "-threads", "1", "-y", str(project / filename)],
                     capture_output=True, timeout=30)
@@ -97,6 +97,13 @@ class ReadTail(unittest.TestCase):
                     check=True, capture_output=True, timeout=15).stdout
                 (output / f"oracle-frame-{frame_number}.png").write_bytes(oracle)
             self.assertNotEqual((output / "oracle-frame-0.png").read_bytes(), (output / "oracle-frame-2.png").read_bytes())
+            for timestamp in (0, 3942):
+                oracle = subprocess.run(["ffmpeg", "-v", "error", "-i", str(project / "long.mov"),
+                    "-ss", str(timestamp), "-vf", "scale=1280:720:force_original_aspect_ratio=decrease",
+                    "-frames:v", "1", "-threads", "1", "-f", "image2pipe", "-c:v", "png", "pipe:1"],
+                    check=True, capture_output=True, timeout=15).stdout
+                (output / f"oracle-time-{timestamp}.png").write_bytes(oracle)
+            self.assertNotEqual((output / "oracle-time-0.png").read_bytes(), (output / "oracle-time-3942.png").read_bytes())
             (project / "demo';echo-not-executed.mp4").write_bytes((project / "demo.mp4").read_bytes())
             (project / "corrupt.mp4").write_bytes(b"not video")
             outside = root / "outside.mp4"
@@ -231,6 +238,8 @@ print('ARTIFACT_TAIL_PARITY_OK')
                                     self.assertEqual(row["png_dimensions"], [960, 540])
                                 if name in ("video-frame", "video-time"):
                                     self.assertEqual(png, (output / "oracle-frame-2.png").read_bytes(), "selected image must equal independently decoded frame 2, not frame 0")
+                                if name == "video-appendix-e":
+                                    self.assertEqual(png, (output / "oracle-time-3942.png").read_bytes(), "long timestamp must select the changed blue frame, not the red starting frame")
                                 if name == "video-time":
                                     self.assertEqual(png, (output / "video-frame/frame.png").read_bytes(), "frame index and timestamp must select the same actual frame")
                             if name in ("video-disguised-playlist", "video-network-reference"):
