@@ -304,34 +304,60 @@ fn spawn_chat(
 	ChatProcess { process, drain, _slave: pty.slave }
 }
 
-fn debug_request(path: &Path, request: &Value) -> Result<Value, String> {
-	let stream = UnixStream::connect(path).map_err(|error| error.to_string())?;
+#[derive(Debug, thiserror::Error)]
+enum DebugRequestError {
+	#[error("debug socket connection failed: {0}")]
+	Connect(#[source] std::io::Error),
+	#[error("debug socket configuration failed: {0}")]
+	Configure(#[source] std::io::Error),
+	#[error("debug request encoding failed: {0}")]
+	Encode(#[source] serde_json::Error),
+	#[error("debug request write failed: {0}")]
+	Write(#[source] std::io::Error),
+	#[error("debug socket connected, but response read failed: {0}")]
+	Read(#[source] std::io::Error),
+	#[error("debug response decoding failed: {0}")]
+	Decode(#[source] serde_json::Error),
+	#[error("debug server rejected request: {0}")]
+	Rejected(Value),
+}
+
+fn debug_request(path: &Path, request: &Value) -> Result<Value, DebugRequestError> {
+	let stream = UnixStream::connect(path).map_err(DebugRequestError::Connect)?;
 	stream
 		.set_read_timeout(Some(IO_TIMEOUT))
-		.map_err(|error| error.to_string())?;
+		.map_err(DebugRequestError::Configure)?;
 	stream
 		.set_write_timeout(Some(IO_TIMEOUT))
-		.map_err(|error| error.to_string())?;
-	let mut writer = stream.try_clone().map_err(|error| error.to_string())?;
-	serde_json::to_writer(&mut writer, request).map_err(|error| error.to_string())?;
-	writer.write_all(b"\n").map_err(|error| error.to_string())?;
-	writer.flush().map_err(|error| error.to_string())?;
+		.map_err(DebugRequestError::Configure)?;
+	let mut writer = stream.try_clone().map_err(DebugRequestError::Configure)?;
+	serde_json::to_writer(&mut writer, request).map_err(DebugRequestError::Encode)?;
+	writer.write_all(b"\n").map_err(DebugRequestError::Write)?;
+	writer.flush().map_err(DebugRequestError::Write)?;
 	let mut line = String::new();
 	BufReader::new(stream)
 		.read_line(&mut line)
-		.map_err(|error| error.to_string())?;
-	let response: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
+		.map_err(DebugRequestError::Read)?;
+	let response: Value = serde_json::from_str(&line).map_err(DebugRequestError::Decode)?;
 	if response.get("ok").and_then(Value::as_bool) == Some(true) {
 		Ok(response)
 	} else {
-		Err(format!("debug request failed: {response}"))
+		Err(DebugRequestError::Rejected(response))
 	}
 }
 
-fn wait_for_resumed_frame(path: &Path) -> String {
-	let deadline = Instant::now() + READY_TIMEOUT;
+fn wait_for_resumed_frame(path: &Path, process: &mut OwnedProcess) -> String {
+	let started = Instant::now();
+	let deadline = started + READY_TIMEOUT;
 	let mut problem;
 	loop {
+		if let Some(status) = process.try_wait().expect("inspect resumed process") {
+			panic!(
+				"resumed OMP exited before its frame became ready after {:?}: {status}",
+				started.elapsed()
+			);
+		}
+
 		match debug_request(path, &json!({ "op": "frame" })) {
 			Ok(response) => {
 				let frame = response
@@ -347,9 +373,15 @@ fn wait_for_resumed_frame(path: &Path) -> String {
 				}
 				problem = format!("resumed frame did not contain durable blocks:\n{frame}");
 			},
-			Err(error) => problem = error,
+			Err(error) => problem = error.to_string(),
 		}
-		assert!(Instant::now() < deadline, "resumed chat never became ready: {problem}");
+		assert!(
+			Instant::now() < deadline,
+			"resumed process was running at last check; elapsed {:?}; frame readiness bound {:?}; \
+			 last observation: {problem}",
+			started.elapsed(),
+			READY_TIMEOUT
+		);
 		std::thread::sleep(Duration::from_millis(20));
 	}
 }
@@ -431,7 +463,7 @@ async fn p6_killed_real_streaming_omp_resumes_durable_prefix_through_cli() {
 		&resume_debug,
 		true,
 	);
-	let frame = wait_for_resumed_frame(&resume_debug);
+	let frame = wait_for_resumed_frame(&resume_debug, &mut resumed.process);
 	assert!(!frame.contains(LOST_SUFFIX), "resumed host displayed an uncommitted suffix\n{frame}");
 	debug_request(&resume_debug, &json!({ "op": "keys", "keys": "ctrl+c ctrl+c" }))
 		.expect("quit resumed chat through its real input path");
