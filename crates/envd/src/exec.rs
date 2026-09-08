@@ -2954,14 +2954,15 @@ impl OutputCapture {
 		}
 		let artifact = self.stage.take().map(BlobStage::finish).transpose()?;
 		let projection = v1::OutputProjection {
-			request:      match self.request {
+			request:        match self.request {
 				omp_tool::OutputRequest::Bounded => v1::OutputRequest::Bounded as i32,
 				omp_tool::OutputRequest::Complete => v1::OutputRequest::Complete as i32,
 			},
-			source_bytes: self.source_bytes,
-			inline_bytes: u64::try_from(self.projected_bytes).unwrap_or(u64::MAX),
-			omitted:      self.spilled,
-			artifact:     artifact.as_ref().map(wire_blob),
+			source_bytes:   self.source_bytes,
+			inline_bytes:   u64::try_from(self.projected_bytes).unwrap_or(u64::MAX),
+			omitted:        self.spilled,
+			artifact:       artifact.as_ref().map(wire_blob),
+			complete_parts: None,
 		};
 		Ok((self.spilled.then_some(artifact).flatten(), projection))
 	}

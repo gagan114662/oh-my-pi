@@ -15,18 +15,37 @@ verdict is published. The existing driver path then verifies and replicates
 those references into the session blob store before journaling the projected
 result. Missing, corrupt, or malformed media produces a failed outcome rather
 than a successful text-only result. Detached outcomes keep their existing path.
-The wire schema, driver fallback, output limits, and video PNG oracles are
-unchanged. This applies to all registered native tool prompt projections, not
-only video reads; Python worker result projection is unchanged.
+This applies to all registered native tool prompt projections. Output limits,
+driver fallback, and video PNG oracles remain unchanged.
+
+Schema revision 19 adds `OutputProjection.complete_parts`: an invocation-scoped
+JSON artifact containing the full canonical wire parts whenever their preview
+exceeds the existing wire limit. Native and Python worker forwarding retain
+this artifact before clipping. Raw outcome sizes, omission, and integrity checks
+remain independent. The driver retrieves and decodes the full parts through the
+existing hash-checked, cancellable, 64 MiB maximum artifact transfer, then applies
+media replication and the agent's existing central model-output bounding. It
+replaces the preview instead of appending it, so text and media are not doubled.
+Central bounding can now produce truthful omission receipts and complete text
+recovery while preserving media references that were outside the wire preview.
+An oversized or unavailable recovery artifact fails the invocation; no clipped
+success is published without recoverable content. The environment handshake
+minimum is now 19: older readers must not silently ignore the recovery field.
 
 The focused regression exercises actual native terminal forwarding with a
 registered typed tool and a managed blob host: it requires the media part on
 the verdict, the exact retained bytes, an invocation-scoped delivery lease,
 and one terminal message. Separate cases reject absent bytes, invalid hashes,
 and malformed media types. These test media transport, not PNG decoding.
+Additional layered regressions cover a compact typed payload whose prompt
+expands beyond the wire limit with trailing media, exact retained recovery and
+media leases, driver invocation-scoped transfer and decoder restoration without
+preview duplication, the retrieval ceiling, and the central omission receipt
+with complete text recovery. These are component proofs, not a single joined
+production request through all three components.
 Existing production QA remains the independent preview/frame/timestamp PNG
 oracle and must be rerun against a binary built from the new source.
 
 Static formatting and diff checks passed. New Rust tests, complete affected
-`omp-envd`/`omp-driver` targets and doctests, and production read-tail QA remain
+`omp-proto`/`omp-envd`/`omp-driver`/`omp-agent` targets and doctests, and production read-tail QA remain
 pending; no runtime success is claimed from the source diagnosis alone.
