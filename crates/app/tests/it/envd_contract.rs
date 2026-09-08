@@ -446,6 +446,32 @@ OMP_TOOLS = [
 ]
 
 "#;
+// This fixture explicitly serializes calls so the second connection exercises
+// cancellation before dispatch, independently of the running owner's authority.
+const SERIAL_WORKER_CANCEL_EXTENSION: &str = r#"
+import ctypes
+import os
+import signal
+import omp
+
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+_sleep = ctypes.CDLL(None).sleep
+_sleep.argtypes = [ctypes.c_uint]
+_sleep.restype = ctypes.c_uint
+
+@omp.tool("worker_block", serial=True)
+def block(started: str, seconds: int) -> dict:
+    with open(started, "w", encoding="utf-8") as marker:
+        marker.write(str(os.getpid()))
+        marker.flush()
+    _sleep(seconds)
+    return {"unexpected": "completed"}
+
+@omp.tool("worker_echo")
+def echo(message: str) -> dict:
+    return {"message": message}
+"#;
+
 fn test_provenance(key: &HostKey) -> Provenance {
 	Provenance::new(
 		sf!("test-publisher"),
@@ -2742,9 +2768,17 @@ async fn worker_cancel_forwards_effects_unknown_once_and_respawn_serves_next_req
 #[tokio::test]
 async fn same_worker_invocation_id_on_two_connections_cancels_only_its_owner() {
 	let site = tempfile::tempdir().expect("worker collision scratch");
-	fs::write(site.path().join("envd_cancel_tools.py"), WORKER_CANCEL_EXTENSION)
+	fs::write(site.path().join("envd_cancel_tools.py"), SERIAL_WORKER_CANCEL_EXTENSION)
 		.expect("write worker collision extension");
-	let mut worker = extension_worker("envd_cancel_tools", Some(site.path().to_owned()));
+	let mut worker = test_config();
+	let key = HostKey::new("workspace", "trusted", "envd_cancel_tools");
+	let manifest = test_manifest(&key, "envd_cancel_tools", [
+		ToolDeclarationKey::new("worker_block", "", 1),
+		ToolDeclarationKey::new("worker_echo", "", 1),
+	]);
+	let mut extension = ExtHostSpec::new(key, manifest);
+	extension.python_site = Some(site.path().to_owned());
+	worker.extensions.push(extension);
 	worker.interrupt_grace = omp_core::Duration::new(100, omp_core::DurationUnit::Milliseconds);
 	let respawn_timeout = worker.spawn_timeout;
 	let harness = Harness::start_with_worker(Registry::new(), worker).await;
@@ -2757,7 +2791,7 @@ async fn same_worker_invocation_id_on_two_connections_cancels_only_its_owner() {
 		.invoke(v1::InvokeTool {
 			invocation_id: "shared-id".into(),
 			name: "worker_block".into(),
-			rev: "r.1".into(),
+			rev: "1".into(),
 			..Default::default()
 		})
 		.await
@@ -2793,7 +2827,7 @@ async fn same_worker_invocation_id_on_two_connections_cancels_only_its_owner() {
 		.invoke(v1::InvokeTool {
 			invocation_id: "shared-id".into(),
 			name: "worker_block".into(),
-			rev: "r.1".into(),
+			rev: "1".into(),
 			..Default::default()
 		})
 		.await
@@ -2858,7 +2892,7 @@ async fn same_worker_invocation_id_on_two_connections_cancels_only_its_owner() {
 		.invoke(v1::InvokeTool {
 			invocation_id: "shared-id".into(),
 			name: "worker_echo".into(),
-			rev: "r.1".into(),
+			rev: "1".into(),
 			..Default::default()
 		})
 		.await
