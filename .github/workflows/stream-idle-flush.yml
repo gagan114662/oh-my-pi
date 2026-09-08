@@ -59,6 +59,7 @@ jobs:
                     'cargo_config_sha256': digest('.cargo/config.toml')}
           Path('target/stream-idle-flush/provenance.json').write_text(json.dumps(report, indent=2) + '\n')
           PY
+      - uses: taiki-e/install-action@nextest
       - name: Prepare documented build prerequisites
         working-directory: source
         shell: bash
@@ -68,7 +69,6 @@ jobs:
           rustup show active-toolchain 2>&1 | tee target/stream-idle-flush/toolchain.log
           just setup-python 2>&1 | tee target/stream-idle-flush/python.log
           just doctor 2>&1 | tee target/stream-idle-flush/doctor.log
-      - uses: taiki-e/install-action@nextest
       - name: Build the selected production application host
         id: host
         working-directory: source
@@ -76,7 +76,7 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          cargo build --locked -p omp-e2e --bin omp_e2e_host 2>&1 | tee target/stream-idle-flush/host-build.log
+          just --command cargo build --locked -p omp-e2e --bin omp_e2e_host 2>&1 | tee target/stream-idle-flush/host-build.log
           codes=("${PIPESTATUS[@]}")
           printf 'host-build,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/stream-idle-flush/exits.csv || exit 1
           [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ] || exit 1
@@ -91,10 +91,10 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          cargo nextest run --locked --profile ci --no-fail-fast -p omp-e2e --test p6_crash_resume --no-tests fail 2>&1 | tee target/stream-idle-flush/p6.log
+          just --command cargo nextest run --locked --profile ci --no-fail-fast -p omp-e2e --test p6_crash_resume --no-tests fail 2>&1 | tee target/stream-idle-flush/p6.log
           codes=("${PIPESTATUS[@]}")
           printf 'p6,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/stream-idle-flush/exits.csv || exit 1
-          cargo test --locked --doc --no-fail-fast -p omp-e2e 2>&1 | tee target/stream-idle-flush/e2e-doctests.log
+          just --command cargo test --locked --doc --no-fail-fast -p omp-e2e 2>&1 | tee target/stream-idle-flush/e2e-doctests.log
           docs=("${PIPESTATUS[@]}")
           printf 'e2e-doctests,%s,%s\n' "${docs[0]}" "${docs[1]}" >> target/stream-idle-flush/exits.csv || exit 1
           [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ] && [ "${docs[0]}" -eq 0 ] && [ "${docs[1]}" -eq 0 ]
@@ -107,7 +107,7 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          python3 scripts/p6-latency.py contended --output target/stream-idle-flush/latency -- cargo nextest run --locked --profile ci --no-fail-fast -p omp-e2e --test p6_crash_resume --no-tests fail 2>&1 | tee target/stream-idle-flush/p6-contended.log
+          python3 scripts/p6-latency.py contended --output target/stream-idle-flush/latency -- just --command cargo nextest run --locked --profile ci --no-fail-fast -p omp-e2e --test p6_crash_resume --no-tests fail 2>&1 | tee target/stream-idle-flush/p6-contended.log
           codes=("${PIPESTATUS[@]}")
           printf 'p6-contended,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/stream-idle-flush/exits.csv || exit 1
           [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
@@ -132,9 +132,9 @@ jobs:
           set -uo pipefail
           failed=0
           for package in omp-agent omp-driver omp-app; do
-            cargo nextest run --locked --profile ci --no-fail-fast -p "$package" 2>&1 | tee "target/stream-idle-flush/$package-tests.log"
+            just --command cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/stream-idle-flush/$package-tests.log"
             tests=("${PIPESTATUS[@]}")
-            cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/stream-idle-flush/$package-doctests.log"
+            just --command cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/stream-idle-flush/$package-doctests.log"
             docs=("${PIPESTATUS[@]}")
             printf '%s-tests,%s,%s\n' "$package" "${tests[0]}" "${tests[1]}" >> target/stream-idle-flush/exits.csv || failed=1
             printf '%s-doctests,%s,%s\n' "$package" "${docs[0]}" "${docs[1]}" >> target/stream-idle-flush/exits.csv || failed=1
