@@ -216,13 +216,22 @@ pub struct RunControl {
 	deadline:              Option<Instant>,
 	max_requests:          Option<u32>,
 	request_budget_notice: bool,
+	/// Set when the kernel filled a missing bound from its runtime flags, so
+	/// crossing it is journaled as `turn-limit` rather than a caller budget.
+	kernel_bounded:        bool,
 }
 
 impl RunControl {
 	/// Creates turn control from an external cancellation token and deadline.
 	#[must_use]
 	pub const fn new(cancellation: CancellationToken, deadline: Option<Instant>) -> Self {
-		Self { cancellation, deadline, max_requests: None, request_budget_notice: true }
+		Self {
+			cancellation,
+			deadline,
+			max_requests: None,
+			request_budget_notice: true,
+			kernel_bounded: false,
+		}
 	}
 
 	/// Limits the number of provider requests this turn may start.
@@ -254,6 +263,31 @@ impl RunControl {
 			&& self.max_requests.is_some_and(|maximum| started == maximum)
 	}
 
+	/// Fills a missing deadline or request budget from the kernel's runtime
+	/// flags; a caller-set bound is never loosened.
+	#[must_use]
+	pub(crate) fn bounded_by(mut self, flags: &RuntimeFlags) -> Self {
+		if self.deadline.is_none()
+			&& let Some(wall) = flags.turn_max_wall
+		{
+			self.deadline = Some(Instant::now() + wall);
+			self.kernel_bounded = true;
+		}
+		if self.max_requests.is_none() && flags.turn_max_requests > 0 {
+			self.max_requests = Some(flags.turn_max_requests);
+			self.kernel_bounded = true;
+		}
+		self
+	}
+
+	/// Whether the deadline, if any, has passed.
+	#[must_use]
+	pub fn deadline_expired(&self) -> bool {
+		self
+			.deadline
+			.is_some_and(|deadline| Instant::now() >= deadline)
+	}
+
 	/// Reports whether cancellation or the deadline has already fired.
 	#[must_use]
 	pub fn is_expired(&self) -> bool {
@@ -279,6 +313,64 @@ impl Default for RunControl {
 	fn default() -> Self {
 		Self::new(CancellationToken::new(), None)
 	}
+}
+
+/// Journals the `<notice kind=warn name=turn-limit>` that ends a turn at a
+/// kernel-applied bound (#124).
+fn append_turn_limit_notice(
+	session: &mut Session,
+	turn: Handle,
+	body: Str,
+) -> Result<(), SessionError> {
+	append_named_notice(
+		session,
+		turn,
+		Str::new_static("warn"),
+		Some(Str::new_static("turn-limit")),
+		body,
+	)
+}
+
+/// Stable fingerprint of a round's tool calls: target and arguments, in
+/// order, ignoring call ids.
+fn calls_fingerprint(calls: &[PreparedCall]) -> u64 {
+	use std::hash::{Hash, Hasher};
+	let mut hasher = std::collections::hash_map::DefaultHasher::new();
+	for call in calls {
+		crate::dispatch::call_target(call).hash(&mut hasher);
+		call.args().map(|args| args.get()).hash(&mut hasher);
+	}
+	hasher.finish()
+}
+
+/// Fingerprint of the last exchange in a projected request: the newest
+/// assistant message and every message after it (its tool results), by
+/// semantic content only. `None` when no assistant message exists yet.
+fn last_exchange_fingerprint(messages: &[omp_ai::Message]) -> Option<u64> {
+	use std::hash::{Hash, Hasher};
+	let start = messages
+		.iter()
+		.rposition(|message| message.role == omp_ai::Role::Assistant)?;
+	let mut hasher = std::collections::hash_map::DefaultHasher::new();
+	for message in &messages[start..] {
+		format!("{:?}", message.role).hash(&mut hasher);
+		for part in message.content.iter() {
+			match part {
+				omp_ai::ContentPart::Text { text, .. } => ("text", text.as_str()).hash(&mut hasher),
+				omp_ai::ContentPart::Reasoning { text, .. } => {
+					("reasoning", text.as_str()).hash(&mut hasher)
+				},
+				omp_ai::ContentPart::ToolCall { name, arguments, .. } => {
+					("call", name.as_str(), arguments.0.to_string()).hash(&mut hasher);
+				},
+				omp_ai::ContentPart::ToolResult { name, content, is_error, .. } => {
+					("result", name.as_deref(), *is_error, format!("{content:?}")).hash(&mut hasher);
+				},
+				other => format!("{other:?}").hash(&mut hasher),
+			}
+		}
+	}
+	Some(hasher.finish())
 }
 
 /// Turn-loop construction, inference, dispatch, or session failure.
@@ -372,6 +464,16 @@ pub struct RuntimeFlags {
 	pub autolearn_min_tool_calls: usize,
 	/// Whether plain-text sloppy edit payloads become real edit calls.
 	pub recover_inline_edits:     bool,
+	/// Provider requests one turn may start when the caller sets no budget;
+	/// zero leaves the turn unbounded (#124).
+	pub turn_max_requests:        u32,
+	/// Wall-clock bound for one turn when the caller sets no deadline; `None`
+	/// leaves the turn unbounded (#124).
+	pub turn_max_wall:            Option<Duration>,
+	/// Consecutive identical tool rounds (same calls, same results, no text)
+	/// executed before the next identical round is refused; the turn settles
+	/// after the same number of refusals. Zero disables the guard (#124).
+	pub loop_guard_limit:         u32,
 }
 
 impl Default for RuntimeFlags {
@@ -382,6 +484,9 @@ impl Default for RuntimeFlags {
 			autolearn_enabled:        false,
 			autolearn_min_tool_calls: 5,
 			recover_inline_edits:     true,
+			turn_max_requests:        500,
+			turn_max_wall:            Some(Duration::from_secs(6 * 60 * 60)),
+			loop_guard_limit:         8,
 		}
 	}
 }
@@ -1175,9 +1280,26 @@ impl<C: Inference> Kernel<C> {
 		let mut request_budget_notice_sent = false;
 		let mut last_model: Option<Str> = None;
 		let turn_started = Instant::now();
+		let bounded_control = control.clone().bounded_by(&self.runtime_flags);
+		let control = &bounded_control;
+		let loop_guard_limit = self.runtime_flags.loop_guard_limit;
+		let mut last_exchange_fp: Option<u64> = None;
+		let mut last_calls_fp: Option<u64> = None;
+		let mut identical_rounds = 0_u32;
+		let mut refused_rounds = 0_u32;
 
 		loop {
 			if control.is_expired() || turn_cancel.is_turn_cancelled() {
+				if control.kernel_bounded && control.deadline_expired() {
+					append_turn_limit_notice(
+						session,
+						turn,
+						sf!(
+							"Turn wall-clock cap reached after {} s; the turn stops here",
+							turn_started.elapsed().as_secs()
+						),
+					)?;
+				}
 				self.notify_deadline_or_interrupt(session, turn, control, turn_started);
 				turn_cancel.cancel_turn();
 				return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
@@ -1221,17 +1343,29 @@ impl<C: Inference> Kernel<C> {
 			if self.deliver_settlements(session, turn)? {
 				self.apply_live_components(session)?;
 			}
+			let mut results_repeat = false;
 			let driven = if let Some(calls) = replay.take() {
 				DrivenInference::replayed(calls)
 			} else {
 				if !control.permits_request(requests_started, request_budget_notice_sent) {
-					append_named_notice(
-						session,
-						turn,
-						Str::new_static("warn"),
-						Some(Str::new_static("request-budget")),
-						Str::new_static("Subagent request budget exhausted before another inference"),
-					)?;
+					if control.kernel_bounded {
+						append_turn_limit_notice(
+							session,
+							turn,
+							sf!(
+								"Turn request cap reached after {requests_started} provider requests; the \
+								 turn stops here"
+							),
+						)?;
+					} else {
+						append_named_notice(
+							session,
+							turn,
+							Str::new_static("warn"),
+							Some(Str::new_static("request-budget")),
+							Str::new_static("Subagent request budget exhausted before another inference"),
+						)?;
+					}
 					self.apply_live_components(session)?;
 					return Ok(outcome(TurnStop::Completed, total_text, tokens_in, tokens_out));
 				}
@@ -1389,6 +1523,11 @@ impl<C: Inference> Kernel<C> {
 				}
 				let director_cx = DirectorCx::new(turn, &route);
 				directors.prepare_inference(session.dom(), &director_cx, &mut request);
+				// Loop guard: the last exchange (previous calls and their results)
+				// as the model is about to see it.
+				let exchange_fp = last_exchange_fingerprint(&request.messages);
+				results_repeat = exchange_fp.is_some() && exchange_fp == last_exchange_fp;
+				last_exchange_fp = exchange_fp;
 				let request_started = Instant::now();
 				requests_started = requests_started.saturating_add(1);
 				let opening_control = CallControl::new(
@@ -1470,7 +1609,60 @@ impl<C: Inference> Kernel<C> {
 			let director_cx = DirectorCx::new(turn, &route);
 			let had_tool_calls = driven.had_tool_calls;
 			let mut settled_reports = Vec::new();
-			if had_tool_calls {
+			// Loop guard bookkeeping: identical calls after identical exchanges
+			// with no visible text are a dead loop, not progress.
+			let calls_fp = had_tool_calls.then(|| calls_fingerprint(&driven.calls));
+			let same_calls = calls_fp.is_some() && calls_fp == last_calls_fp;
+			if loop_guard_limit > 0 && same_calls && driven.text.trim().is_empty() {
+				if refused_rounds > 0 || identical_rounds.saturating_add(2) >= loop_guard_limit {
+					refused_rounds = refused_rounds.saturating_add(1);
+				} else if results_repeat {
+					identical_rounds = identical_rounds.saturating_add(1);
+				} else {
+					identical_rounds = 0;
+				}
+			} else {
+				identical_rounds = 0;
+				refused_rounds = 0;
+			}
+			last_calls_fp = calls_fp;
+			if refused_rounds > 0 && had_tool_calls {
+				let calls = std::mem::take(&mut driven.calls);
+				let count = calls.len();
+				let settle = refused_rounds >= loop_guard_limit;
+				let reason = sf!(
+					"loop guard: this exact tool call and its result repeated {} times without textual \
+					 progress; change approach instead of repeating it",
+					loop_guard_limit
+				);
+				for prepared in calls {
+					self
+						.dispatcher
+						.abort_prepared(session, prepared, Abort::Skipped { reason: reason.clone() })?;
+				}
+				append_named_notice(
+					session,
+					turn,
+					Str::new_static(if settle { "error" } else { "warn" }),
+					Some(Str::new_static("loop-guard")),
+					if settle {
+						sf!(
+							"Loop guard: {count} identical tool call(s) refused {refused_rounds} times \
+							 after {loop_guard_limit} identical executions; the turn stops here"
+						)
+					} else {
+						sf!(
+							"Loop guard: {count} identical tool call(s) refused (repeat {refused_rounds} \
+							 of {loop_guard_limit} before the turn stops)"
+						)
+					},
+				)?;
+				self.apply_live_components(session)?;
+				if settle {
+					return Ok(outcome(TurnStop::Completed, total_text, tokens_in, tokens_out));
+				}
+			}
+			if had_tool_calls && !driven.calls.is_empty() {
 				if let Some(hooks) = &self.lifecycle_hooks {
 					for call in &driven.calls {
 						hooks.notify(

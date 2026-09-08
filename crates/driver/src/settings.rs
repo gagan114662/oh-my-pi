@@ -36,6 +36,28 @@ pub enum ShareStore {
 omp_con::con_enum!(ShareStore);
 
 omp_con::var! {
+	/// Provider requests one turn may start before it settles with a `turn-limit` notice; 0 leaves
+	/// turns unbounded. Callers with their own request budget are not loosened.
+	pub static SV_TURN_MAX_REQUESTS = sv_turn_max_requests: u32 {
+		default: 500,
+		min: 0,
+		max: 100_000,
+		flags: archive,
+		meta: {
+			"legacy.path": "turn.maxRequests",
+		},
+	};
+	/// Wall-clock minutes one turn may run before it settles with a `turn-limit` notice; 0 leaves
+	/// turns unbounded. Callers with their own deadline are not loosened.
+	pub static SV_TURN_MAX_WALL_MINUTES = sv_turn_max_wall_minutes: u32 {
+		default: 360,
+		min: 0,
+		max: 10_080,
+		flags: archive,
+		meta: {
+			"legacy.path": "turn.maxWallMinutes",
+		},
+	};
 	/// Enables skill commands.
 	pub static SV_SKILLS_ENABLE_SKILL_COMMANDS = sv_skills_enable_skill_commands: bool {
 		default: true,

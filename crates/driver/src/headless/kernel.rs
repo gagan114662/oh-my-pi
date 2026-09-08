@@ -2009,6 +2009,29 @@ pub async fn compose_kernel(
 				_ => None,
 			})
 			.unwrap_or(true),
+		turn_max_requests:        ctx
+			.get("sv_turn_max_requests")
+			.and_then(|value| match value {
+				omp_con::Value::Int(value) => u32::try_from(value).ok(),
+				_ => None,
+			})
+			.unwrap_or(500),
+		turn_max_wall:            ctx
+			.get("sv_turn_max_wall_minutes")
+			.and_then(|value| match value {
+				omp_con::Value::Int(value) => u64::try_from(value).ok(),
+				_ => None,
+			})
+			.map_or(Some(Duration::from_secs(6 * 60 * 60)), |minutes| {
+				(minutes > 0).then(|| Duration::from_secs(minutes.saturating_mul(60)))
+			}),
+		loop_guard_limit:         ctx
+			.get("sv_tools_loop_guard_limit")
+			.and_then(|value| match value {
+				omp_con::Value::Int(value) => u32::try_from(value).ok(),
+				_ => None,
+			})
+			.unwrap_or(8),
 	};
 	let kernel = Kernel::new(inference, registry, policy, prompt)
 		.with_director_registry(director_registry)
