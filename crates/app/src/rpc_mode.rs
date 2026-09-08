@@ -73,7 +73,8 @@ async fn run_inner(args: ChatArgs, ui_enabled: bool) -> miette::Result<()> {
 		launch.model.clone(),
 		kernel.mailbox(),
 	)
-	.into_diagnostic()?;
+	.into_diagnostic()?
+	.with_facts_of(&session);
 	let ui = ui_enabled.then(RpcUiBridge::new);
 	if let Some(ui) = &ui {
 		kernel

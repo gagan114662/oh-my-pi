@@ -3329,6 +3329,61 @@ mod tests {
 	}
 
 	#[test]
+	fn session_home_refresh_preserves_historical_prompt_facts() {
+		let scratch = tempfile::tempdir().expect("tempdir");
+		let path = scratch.path().join("history.oms");
+		let mut session =
+			omp_session::Session::create(&path, omp_session::ComponentRegistry::standard())
+				.expect("session");
+		let historical = crate::discovery::PromptFacts {
+			context_files: vec![serde_json::json!({"content": "historical instructions"})],
+			..Default::default()
+		};
+		install_prompt_facts(
+			&mut session,
+			scratch.path(),
+			"provider/model",
+			&PromptOverrides::default(),
+			&historical,
+			true,
+		)
+		.expect("historical facts");
+		let checkpoint = session.head().expect("facts checkpoint");
+		drop(session);
+		let original = std::fs::read(&path).expect("original journal");
+		let current = crate::discovery::PromptFacts {
+			context_files: vec![serde_json::json!({"content": "current instructions"})],
+			..Default::default()
+		};
+		let (up, _receiver) = flume::unbounded();
+		let home = super::SessionHome::new(
+			&scratch.path().join("data"),
+			scratch.path(),
+			&KernelOptions::default(),
+			omp_core::Str::new_static("provider/model"),
+			up,
+		)
+		.expect("session home")
+		.with_facts(current.clone());
+		let refreshed = home.open(&path).expect("refresh current facts");
+		assert_eq!(super::journaled_prompt_facts(&refreshed), current);
+		drop(refreshed);
+		assert!(
+			std::fs::read(&path)
+				.expect("updated journal")
+				.starts_with(&original)
+		);
+		let mut reopened =
+			omp_session::Session::open(&path, omp_session::ComponentRegistry::standard())
+				.expect("reopen persisted facts");
+		assert_eq!(super::journaled_prompt_facts(&reopened), current);
+		reopened
+			.rewind(checkpoint)
+			.expect("replay historical checkpoint");
+		assert_eq!(super::journaled_prompt_facts(&reopened), historical);
+	}
+
+	#[test]
 	fn cwd_inside_a_repository_journals_no_active_repository() {
 		let scratch = tempfile::tempdir().expect("tempdir");
 		let path = scratch.path().join("facts.oms");

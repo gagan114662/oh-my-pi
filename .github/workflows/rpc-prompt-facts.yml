@@ -1,0 +1,196 @@
+name: RPC prompt facts
+
+on:
+  push:
+    branches: [fix/rpc-session-facts-142]
+  pull_request:
+    branches: [main, omp2]
+    paths:
+      - crates/app/**
+      - crates/driver/**
+      - crates/agent/src/prompt/**
+      - scripts/qa/**
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - justfile
+      - .github/workflows/rpc-prompt-facts.yml
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source revision to build; empty uses the workflow revision
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  rpc-facts:
+    name: Production RPC facts and complete app/driver targets
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Install the same QA checker and record provenance
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/rpc-prompt-facts
+          git status --porcelain=v1 > target/rpc-prompt-facts/source-before.txt
+          cp ../proof-tools/scripts/qa/cases/test_rpc_prompt_facts.py scripts/qa/cases/test_rpc_prompt_facts.py
+          python3 - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          def git(*args, cwd='.'):
+              return subprocess.check_output(['git', *args], cwd=cwd, text=True).strip()
+          def digest(path):
+              return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          report = {
+              'source_revision': git('rev-parse', 'HEAD'),
+              'checker_revision': git('rev-parse', 'HEAD', cwd='../proof-tools'),
+              'checker_sha256': digest('scripts/qa/cases/test_rpc_prompt_facts.py'),
+              'source_harness_sha256': digest('scripts/qa/harness.py'),
+              'workflow_sha256': digest('../proof-tools/.github/workflows/rpc-prompt-facts.yml'),
+              'cargo_config_sha256': digest('.cargo/config.toml'),
+              'source_status_before_checker_copy': Path('target/rpc-prompt-facts/source-before.txt').read_text(),
+              'source_status_after_checker_copy': git('status', '--porcelain=v1'),
+              'scope': 'Selected source with QA checker copied from the proof checkout; status fields identify whether the copy changed source bytes.',
+          }
+          Path('target/rpc-prompt-facts/provenance.json').write_text(json.dumps(report, indent=2) + '\n')
+          PY
+      - name: Install documented prerequisites
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install just cmake ninja lld@22 uv 2>&1 | tee target/rpc-prompt-facts/install.log
+          rustup show active-toolchain 2>&1 | tee target/rpc-prompt-facts/toolchain.log
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare Python and check prerequisites
+        id: setup
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          just setup-python 2>&1 | tee target/rpc-prompt-facts/python-setup.log
+          just doctor 2>&1 | tee target/rpc-prompt-facts/doctor.log
+          /opt/homebrew/opt/lld@22/bin/ld64.lld --version | tee target/rpc-prompt-facts/linker.log
+          df -h . | tee target/rpc-prompt-facts/free-space.log
+      - name: Build the selected production binary
+        id: build
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          just build 2>&1 | tee target/rpc-prompt-facts/build.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'build,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/rpc-prompt-facts/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ] || exit 1
+          shasum -a 256 target/debug/omp > target/rpc-prompt-facts/binary.sha256
+      - name: Exercise real RPC and RPC-UI session transitions
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: source
+        shell: bash
+        env:
+          OMP_RPC_FACTS_EVIDENCE_DIR: ${{ github.workspace }}/source/target/rpc-prompt-facts/qa
+        run: |
+          set +e
+          set -uo pipefail
+          python3 scripts/qa/cases/test_rpc_prompt_facts.py -v 2>&1 | tee target/rpc-prompt-facts/qa.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'qa,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/rpc-prompt-facts/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Run complete app and driver tests and doctests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          suite_status=0
+          for package in omp-app omp-driver; do
+            cargo nextest run --locked --profile ci --no-fail-fast -p "$package" 2>&1 | tee "target/rpc-prompt-facts/$package-tests.log"
+            test_codes=("${PIPESTATUS[@]}")
+            cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/rpc-prompt-facts/$package-doctests.log"
+            doc_codes=("${PIPESTATUS[@]}")
+            printf '%s-tests,%s,%s\n' "$package" "${test_codes[0]}" "${test_codes[1]}" >> target/rpc-prompt-facts/exits.csv || suite_status=1
+            printf '%s-doctests,%s,%s\n' "$package" "${doc_codes[0]}" "${doc_codes[1]}" >> target/rpc-prompt-facts/exits.csv || suite_status=1
+            for code in "${test_codes[@]}" "${doc_codes[@]}"; do
+              if [ "$code" -ne 0 ]; then suite_status=1; fi
+            done
+          done
+          exit "$suite_status"
+      - name: Publish complete and missing evidence
+        if: always()
+        working-directory: source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import csv, json, os
+          from pathlib import Path
+          out = Path('target/rpc-prompt-facts')
+          out.mkdir(parents=True, exist_ok=True)
+          provenance = out / 'provenance.json'
+          lines = ['## RPC instruction facts evidence', '',
+                   'The binary is built from the selected source with a copied QA checker. No build cache is restored.',
+                   'Missing, skipped, and failed execution is not passing evidence.', '', '```json',
+                   provenance.read_text() if provenance.exists() else '{"error":"provenance missing"}', '```', '',
+                   '| Check | Command exit | Log-write exit | Result |', '| --- | --- | --- | --- |']
+          exits = out / 'exits.csv'
+          rows = list(csv.reader(exits.open())) if exits.exists() else []
+          observed = {row[0]: row[1:] for row in rows}
+          failed = not provenance.exists()
+          for name in ('build', 'qa', 'omp-app-tests', 'omp-app-doctests', 'omp-driver-tests', 'omp-driver-doctests'):
+              codes = observed.get(name)
+              passed = codes == ['0', '0']
+              failed |= not passed
+              lines.append(f"| {name} | {codes[0] if codes else 'missing'} | {codes[1] if codes else 'missing'} | {'PASS' if passed else 'FAIL / incomplete'} |")
+          qa_summary = out / 'qa/summary.md'
+          qa_manifest = out / 'qa/manifest.json'
+          if qa_summary.exists() and qa_manifest.exists():
+              lines += ['', qa_summary.read_text()]
+              try:
+                  runs = json.loads(qa_manifest.read_text())['runs']
+                  if not runs:
+                      raise ValueError('QA manifest contains no runs')
+                  for run in runs:
+                      if not run['files'] or not run['rows']:
+                          raise ValueError('QA run lacks files or transition observations')
+                      for name in run['files']:
+                          path = (out / 'qa' / name).resolve()
+                          if not path.is_relative_to((out / 'qa').resolve()) or not path.is_file():
+                              raise ValueError(f'Missing or invalid QA evidence path: {name}')
+              except (KeyError, TypeError, ValueError) as error:
+                  failed = True
+                  lines += ['', f'**Incomplete QA evidence:** {error}']
+          else:
+              failed = True
+              lines += ['', '**Incomplete:** QA transition summary or raw-evidence manifest is missing.']
+          lines += ['', '### Test counts reported by runners', '', '```text']
+          for log in sorted(out.glob('*tests.log')):
+              lines += [log.name] + [line for line in log.read_text(errors='replace').splitlines()
+                                            if 'Summary' in line or 'test result:' in line]
+          lines += ['```', '', 'Runner logs, provenance, and any produced QA request/journal evidence are retained in the artifact. Missing QA evidence is a failing result.']
+          summary = '\n'.join(lines) + '\n'
+          (out / 'summary.md').write_text(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
+              stream.write(summary)
+          raise SystemExit(1 if failed else 0)
+          PY
+      - name: Upload evidence even after failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rpc-prompt-facts
+          path: source/target/rpc-prompt-facts/
+          if-no-files-found: error
