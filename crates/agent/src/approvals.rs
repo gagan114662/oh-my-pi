@@ -582,6 +582,10 @@ pub struct ApprovalRequest {
 	/// Prompt awaiting a decision.
 	pub ticket: ApprovalTicket,
 	reply:      flume::Sender<ApprovalDecision>,
+	/// The verdict the requesting policy applied on its own (a route
+	/// timeout) before it stopped waiting; the sweep journals it as the
+	/// prompt's decision instead of a bare withdrawal (#121).
+	verdict:    Arc<Mutex<Option<ApprovalDecision>>>,
 }
 
 impl ApprovalRequest {
@@ -598,6 +602,12 @@ impl ApprovalRequest {
 	#[must_use]
 	pub fn is_abandoned(&self) -> bool {
 		self.reply.is_disconnected()
+	}
+
+	/// The decision the requester recorded before abandoning, if any.
+	#[must_use]
+	pub fn abandon_verdict(&self) -> Option<ApprovalDecision> {
+		self.verdict.lock().clone()
 	}
 }
 
@@ -718,13 +728,26 @@ impl ApprovalDesk {
 				.filter(|(_, requests)| requests.iter().all(ApprovalRequest::is_abandoned))
 				.map(|(id, _)| id.clone())
 				.collect::<Vec<_>>();
-			for id in &ids {
-				pending.remove(id);
-			}
-			ids
+			ids.into_iter()
+				.map(|id| {
+					let verdict = pending
+						.remove(&id)
+						.unwrap_or_default()
+						.iter()
+						.find_map(ApprovalRequest::abandon_verdict);
+					(id, verdict)
+				})
+				.collect::<Vec<_>>()
 		};
-		for id in abandoned {
-			self.book.withdraw(session, id.as_str())?;
+		for (id, verdict) in abandoned {
+			match verdict {
+				// The policy decided on its own (route timeout): journal that
+				// decision so the tree says why the call was denied.
+				Some(decision) => {
+					self.book.decide(session, id.as_str(), decision)?;
+				},
+				None => self.book.withdraw(session, id.as_str())?,
+			}
 		}
 		Ok(())
 	}
@@ -860,6 +883,7 @@ impl ApprovalRoute {
 			created_at_ms,
 		};
 		let (reply, response) = flume::bounded(1);
+		let verdict: Arc<Mutex<Option<ApprovalDecision>>> = Arc::new(Mutex::new(None));
 		self
 			.inner
 			.pending
@@ -891,7 +915,7 @@ impl ApprovalRoute {
 		if self
 			.inner
 			.tx
-			.deliver(ApprovalRequest { ticket: ticket.clone(), reply })
+			.deliver(ApprovalRequest { ticket: ticket.clone(), reply, verdict: Arc::clone(&verdict) })
 			.is_err()
 		{
 			let decision = unreachable_decision(&ticket, "approval host disconnected");
@@ -916,15 +940,9 @@ impl ApprovalRoute {
 						Ok(Err(_)) => unreachable_decision(&ticket, "approval host became unreachable"),
 						Err(_) => {
 							let decision = timeout_decision(&ticket);
-							// Journal the timeout as the prompt's decision, the way a
-							// host answer is, so the tree records why the call was
-							// denied instead of a bare withdrawal at the next sweep.
-							if let RouteSink::Kernel(mailbox) = &self.inner.tx {
-								let _ = mailbox.send(crate::Up::Approve {
-									id:       ticket_id.clone(),
-									decision: decision.clone(),
-								});
-							}
+							// Recorded on the shared request so the desk's sweep journals
+							// this as the prompt's decision, not a bare withdrawal.
+							*verdict.lock() = Some(decision.clone());
 							decision
 						},
 					}
