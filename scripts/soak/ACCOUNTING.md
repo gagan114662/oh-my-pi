@@ -50,3 +50,14 @@ Offline script regression checks:
 ```sh
 python3 -m unittest discover -s scripts/soak -p 'test_*.py'
 ```
+
+The separate `turn-accounting.yml` leaf builds the selected real app and runs
+two print/resume turns with tool continuations, then runs every affected
+journal/session/agent/driver/app target and its doctests. An independent job
+builds the frozen original parent with the identical Python fixture; the
+expected negative requires actual successful process execution and inference
+receipts but zero terminal markers. Build or transport errors do not qualify.
+The raw negative checker exit and its expected-control result are separate.
+This two-turn smoke proof does not replace the >=500-turn, >=60-minute soak.
+The existing lifecycle hook field `summary.committed_turns` retains its prior
+inference-request meaning; the new accounting does not interpret that field.
