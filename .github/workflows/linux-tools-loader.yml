@@ -1,10 +1,6 @@
 name: Linux tools loader backend diagnosis
 
 on:
-  # Bootstrap registration: only changes to this leaf on its own proof branch.
-  push:
-    branches: [fix/read-tail-31]
-    paths: [.github/workflows/linux-tools-loader.yml]
   workflow_dispatch:
     inputs:
       source_ref:
@@ -80,13 +76,18 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import gzip, hashlib, json, os, shutil, subprocess
+          import gzip, hashlib, json, os, shutil, struct, subprocess
           from pathlib import Path
           out = Path('target/read-tail-linux')
           binaries = json.loads((out / 'binaries.json').read_text())['rust-binaries']
           binary = binaries['omp-tools']['binary-path']
           report = {'backend': os.environ['DIAGNOSTIC_BACKEND'], 'binary': binary, 'sha256': hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
                     'command': [binary, '--list', '--format', 'terse']}
+          header = Path(binary).read_bytes()[:64]
+          if header[:6] != b'\x7fELF\x02\x01':
+              raise SystemExit('expected x86_64 little-endian ELF64 libtest')
+          report['elf_entry'] = struct.unpack_from('<Q', header, 24)[0]
+          report['elf_entry_nonzero'] = report['elf_entry'] != 0
           try:
               result = subprocess.run(report['command'], capture_output=True, timeout=120)
               report['returncode'] = result.returncode
@@ -120,7 +121,7 @@ jobs:
               (out / 'gdb.stderr').write_bytes(error.stderr or b'')
               report['gdb_error'] = 'debugger timed out after 120 seconds'
           (out / 'discovery.json').write_text(json.dumps(report, indent=2) + '\n')
-          raise SystemExit(0 if report['returncode'] == 0 else 1)
+          raise SystemExit(0 if report['returncode'] == 0 and report['elf_entry_nonzero'] else 1)
           PY
       - name: Report Linux discovery without treating baseline crashes as passes
         if: always()
