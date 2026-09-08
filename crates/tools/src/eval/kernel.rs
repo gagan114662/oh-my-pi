@@ -25,7 +25,7 @@ use std::{
 	ffi, future, io, mem, ptr,
 	sync::{
 		Arc, LazyLock, Weak,
-		atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+		atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering},
 	},
 	thread,
 	time::Duration as StdDuration,
@@ -46,7 +46,7 @@ use pyo3::{
 	ffi::c_str,
 	prelude::*,
 	pyclass, pymethods,
-	sync::PyOnceLock,
+	sync::{MutexExt as _, PyOnceLock},
 	types::{PyAnyMethods, PyByteArray, PyBytes, PyDict, PyDictMethods, PyModule, PyTuple},
 };
 use serde_json::Value;
@@ -476,9 +476,51 @@ struct WorkerState {
 	interrupt_grace: StdDuration,
 }
 
+/// The first observed stop request determines the terminal reason. A later
+/// watchdog still escalates an unresponsive cancellation, without relabeling
+/// it.
+#[derive(Default)]
+struct CellCancellation {
+	requested: AtomicBool,
+	cause:     AtomicU8,
+}
+
+impl CellCancellation {
+	const CANCELLED: u8 = 1;
+	const RUNNING: u8 = 0;
+	const TIMED_OUT: u8 = 2;
+
+	fn cancel(&self) {
+		let _ = self.cause.compare_exchange(
+			Self::RUNNING,
+			Self::CANCELLED,
+			Ordering::AcqRel,
+			Ordering::Acquire,
+		);
+		self.requested.store(true, Ordering::Release);
+	}
+
+	fn timeout(&self) {
+		let _ = self.cause.compare_exchange(
+			Self::RUNNING,
+			Self::TIMED_OUT,
+			Ordering::AcqRel,
+			Ordering::Acquire,
+		);
+	}
+
+	fn is_cancelled(&self) -> bool {
+		self.requested.load(Ordering::Acquire)
+	}
+
+	fn is_timed_out(&self) -> bool {
+		self.cause.load(Ordering::Acquire) == Self::TIMED_OUT
+	}
+}
+
 struct ActiveCell {
 	cell_id:   Bytes,
-	cancelled: Arc<AtomicBool>,
+	cancelled: Arc<CellCancellation>,
 }
 
 struct Command {
@@ -486,29 +528,29 @@ struct Command {
 	session:   Bytes,
 	request:   RunRequest,
 	events:    Sender<Result<RunEvent, Fault>>,
-	cancelled: Arc<AtomicBool>,
-	timed_out: Arc<AtomicBool>,
+	cancelled: Arc<CellCancellation>,
 	runtime:   Option<Handle>,
 	epoch:     u64,
 }
 
 impl WorkerState {
-	fn begin_interrupt(&self, target: &Arc<AtomicBool>) -> bool {
-		let cell_id = {
-			let active = self.active.lock();
+	fn begin_interrupt(&self, target: &Arc<CellCancellation>) -> bool {
+		let cell_id = self.engine.attach(|py| {
+			let active = self.active.lock_py_attached(py);
 			let Some(active) = active
 				.as_ref()
 				.filter(|active| Arc::ptr_eq(&active.cancelled, target))
 			else {
-				return false;
+				return None;
 			};
-			active.cell_id.clone()
-		};
+			Some(active.cell_id.clone())
+		});
+		let Some(cell_id) = cell_id else { return false };
 		self.installer.cancel_cell(&cell_id);
 		true
 	}
 
-	async fn interrupt_after_grace(&self, target: &Arc<AtomicBool>) -> Result<(), Fault> {
+	async fn interrupt_after_grace(&self, target: &Arc<CellCancellation>) -> Result<(), Fault> {
 		if !self.begin_interrupt(target) {
 			return Ok(());
 		}
@@ -520,7 +562,7 @@ impl WorkerState {
 		let Some(cancelled) = self.active_cancellation() else {
 			return Ok(());
 		};
-		cancelled.store(true, Ordering::Release);
+		cancelled.cancel();
 		self.interrupt_after_grace(&cancelled).await
 	}
 
@@ -528,16 +570,18 @@ impl WorkerState {
 		let Some(cancelled) = self.active_cancellation() else {
 			return;
 		};
-		cancelled.store(true, Ordering::Release);
+		cancelled.cancel();
 		self.schedule_interrupt(cancelled);
 	}
 
-	fn active_cancellation(&self) -> Option<Arc<AtomicBool>> {
-		let active = self.active.lock();
-		active.as_ref().map(|active| Arc::clone(&active.cancelled))
+	fn active_cancellation(&self) -> Option<Arc<CellCancellation>> {
+		self.engine.attach(|py| {
+			let active = self.active.lock_py_attached(py);
+			active.as_ref().map(|active| Arc::clone(&active.cancelled))
+		})
 	}
 
-	fn schedule_interrupt(self: &Arc<Self>, target: Arc<AtomicBool>) {
+	fn schedule_interrupt(self: &Arc<Self>, target: Arc<CellCancellation>) {
 		if !self.begin_interrupt(&target) {
 			return;
 		}
@@ -552,24 +596,31 @@ impl WorkerState {
 		});
 	}
 
-	fn interrupt_if_active(&self, target: &Arc<AtomicBool>) -> Result<(), Fault> {
-		// Raise while holding the registration lock: the worker removes its
-		// registration under this lock before its thread can finish the cell
-		// and exit, so the loaded ident always names a live worker thread and
-		// the exception can never land on a recycled thread id.
-		let active = self.active.lock();
-		if !active
-			.as_ref()
-			.is_some_and(|active| Arc::ptr_eq(&active.cancelled, target))
-		{
-			return Ok(());
-		}
-		self.interrupt_thread()
+	fn interrupt_if_active(&self, target: &Arc<CellCancellation>) -> Result<(), Fault> {
+		// Attach before taking the registration lock. The worker also takes
+		// this lock while attached; blocking attachment with it held can
+		// deadlock interpreter synchronization against worker cleanup.
+		self.engine.attach(|py| {
+			let active = self.active.lock_py_attached(py);
+			if !active
+				.as_ref()
+				.is_some_and(|active| Arc::ptr_eq(&active.cancelled, target))
+			{
+				return Ok(());
+			}
+			// Keep the identity guard through injection: cleanup cannot retire
+			// this cell or permit the Python thread id to be recycled here.
+			self.interrupt_thread_attached(py)
+		})
 	}
 
 	fn interrupt_thread(&self) -> Result<(), Fault> {
+		self.engine.attach(|py| self.interrupt_thread_attached(py))
+	}
+
+	fn interrupt_thread_attached(&self, py: Python<'_>) -> Result<(), Fault> {
 		let id = self.thread_id.load(Ordering::Acquire);
-		let changed = self.engine.attach(|py| interrupt(py, id as u64));
+		let changed = interrupt(py, id as u64);
 		if changed {
 			return Ok(());
 		}
@@ -1016,7 +1067,7 @@ impl DisplayCollector {
 pub struct EmbeddedRun {
 	events:    Receiver<Result<RunEvent, Fault>>,
 	state:     Arc<WorkerState>,
-	cancelled: Arc<AtomicBool>,
+	cancelled: Arc<CellCancellation>,
 	reset:     bool,
 }
 
@@ -1194,14 +1245,13 @@ impl EvalExec for EmbeddedPython {
 		let cell_id =
 			Bytes::from(format!("{}:cell-{number}", String::from_utf8_lossy(session.id.as_ref())));
 		let (events, receiver) = flume::bounded(1);
-		let cancelled = Arc::new(AtomicBool::new(false));
+		let cancelled = Arc::new(CellCancellation::default());
 		let command = Command {
 			cell_id,
 			session: session.id.clone(),
 			request,
 			events,
 			cancelled: Arc::clone(&cancelled),
-			timed_out: Arc::new(AtomicBool::new(false)),
 			runtime,
 			epoch,
 		};
@@ -1229,13 +1279,13 @@ impl EvalRun for EmbeddedRun {
 	}
 
 	fn cancel(&self) -> impl Future<Output = Result<(), Fault>> + Send + '_ {
-		self.cancelled.store(true, Ordering::Release);
+		self.cancelled.cancel();
 		self.state.interrupt_after_grace(&self.cancelled)
 	}
 }
 impl Drop for EmbeddedRun {
 	fn drop(&mut self) {
-		self.cancelled.store(true, Ordering::Release);
+		self.cancelled.cancel();
 		self.state.schedule_interrupt(Arc::clone(&self.cancelled));
 	}
 }
@@ -1488,14 +1538,14 @@ fn worker_main(
 				.events
 				.send(Ok(RunEvent::Started { cell_id: command.cell_id.clone() }));
 			{
-				let mut active = state.active.lock();
+				let mut active = state.active.lock_py_attached(py);
 				*active = Some(ActiveCell {
 					cell_id:   command.cell_id.clone(),
 					cancelled: Arc::clone(&command.cancelled),
 				});
 			}
 			if command_is_stale(state, &command) && !command.request.reset {
-				clear_active(state, &command.cancelled);
+				clear_active(py, state, &command.cancelled);
 				send_cancelled(&command);
 				continue;
 			}
@@ -1504,7 +1554,7 @@ fn worker_main(
 				{
 					Ok(fresh) => namespace = fresh,
 					Err(error) => {
-						clear_active(state, &command.cancelled);
+						clear_active(py, state, &command.cancelled);
 						let _ = command.events.send(Err(Fault::Resource {
 							operation: sf!("reset"),
 							message:   Str::new(format_python_error(py, error)),
@@ -1514,7 +1564,7 @@ fn worker_main(
 				}
 			}
 			if command_is_stale(state, &command) {
-				clear_active(state, &command.cancelled);
+				clear_active(py, state, &command.cancelled);
 				send_cancelled(&command);
 				continue;
 			}
@@ -1528,22 +1578,25 @@ fn worker_main(
 				installer,
 				&idle_sigint,
 			);
-			clear_active(state, &command.cancelled);
+			clear_active(py, state, &command.cancelled);
 			match result {
-				Ok(completion) if command.timed_out.load(Ordering::Acquire) => {
+				Ok(completion) if command.cancelled.is_timed_out() => {
 					let _ = command
 						.events
 						.send(Ok(RunEvent::Completed(timed_out_completion(completion))));
 				},
+				Ok(_) if command.cancelled.is_cancelled() => {
+					send_cancelled(&command);
+				},
 				Ok(completion) => {
 					let _ = command.events.send(Ok(RunEvent::Completed(completion)));
 				},
-				Err(_) if command.timed_out.load(Ordering::Acquire) => {
+				Err(_) if command.cancelled.is_timed_out() => {
 					let _ = command
 						.events
 						.send(Ok(RunEvent::Completed(timed_out_completion(cancelled_completion()))));
 				},
-				Err(_) if command.cancelled.load(Ordering::Acquire) => {
+				Err(_) if command.cancelled.is_cancelled() => {
 					send_cancelled(&command);
 				},
 				Err(error) => {
@@ -1561,11 +1614,11 @@ fn worker_main(
 	});
 }
 fn command_is_stale(state: &WorkerState, command: &Command) -> bool {
-	command.cancelled.load(Ordering::Acquire) || command.epoch != state.epoch.load(Ordering::Acquire)
+	command.cancelled.is_cancelled() || command.epoch != state.epoch.load(Ordering::Acquire)
 }
 
-fn clear_active(state: &WorkerState, cancelled: &Arc<AtomicBool>) {
-	let mut active = state.active.lock();
+fn clear_active(py: Python<'_>, state: &WorkerState, cancelled: &Arc<CellCancellation>) {
+	let mut active = state.active.lock_py_attached(py);
 	if active
 		.as_ref()
 		.is_some_and(|current| Arc::ptr_eq(&current.cancelled, cancelled))
@@ -1577,7 +1630,11 @@ fn clear_active(state: &WorkerState, cancelled: &Arc<AtomicBool>) {
 fn send_cancelled(command: &Command) {
 	let _ = command
 		.events
-		.send(Ok(RunEvent::Completed(cancelled_completion())));
+		.send(Ok(RunEvent::Completed(if command.cancelled.is_timed_out() {
+			timed_out_completion(cancelled_completion())
+		} else {
+			cancelled_completion()
+		})));
 }
 
 const fn cancelled_completion() -> RunCompletion {
@@ -1693,10 +1750,9 @@ fn spawn_watchdog(
 		let watchdog = watchdog.clone();
 		let state = Arc::clone(state);
 		let cancelled = Arc::clone(&command.cancelled);
-		let timed_out = Arc::clone(&command.timed_out);
 		runtime.spawn(async move {
 			watchdog.expired().await;
-			timed_out.store(true, Ordering::Release);
+			cancelled.timeout();
 			let _ = state.interrupt_after_grace(&cancelled).await;
 		})
 	})
@@ -2260,10 +2316,61 @@ print("right")"#
 		assert_eq!(next.result.expect("idle SIGINT preserved kernel").json, Some(Value::from(42)));
 	}
 
+	#[test]
+	fn waiting_interrupt_rechecks_retired_cell_identity() {
+		let _globals = PROCESS_GLOBALS.read();
+		let old = Arc::new(CellCancellation::default());
+		old.cancel();
+		let replacement = Arc::new(CellCancellation::default());
+		let state = Arc::new(WorkerState {
+			engine:          Arc::clone(&ENGINE),
+			// No real target exists. A stale injection would fail rather than
+			// interrupting an unrelated test worker.
+			thread_id:       AtomicI64::new(0),
+			epoch:           AtomicU64::new(0),
+			alive:           AtomicBool::new(true),
+			active:          Mutex::new(Some(ActiveCell {
+				cell_id:   Bytes::from_static(b"old"),
+				cancelled: Arc::clone(&old),
+			})),
+			installer:       Arc::new(EmptyNamespaceInstaller),
+			interrupt_grace: StdDuration::from_millis(1),
+		});
+		let (enter_tx, enter_rx) = std::sync::mpsc::channel();
+		let (done_tx, done_rx) = std::sync::mpsc::channel();
+		ENGINE.attach(|py| {
+			let mut active = state.active.lock_py_attached(py);
+			let interrupting = Arc::clone(&state);
+			thread::spawn(move || {
+				enter_tx.send(()).expect("announce interruption");
+				let result = interrupting.interrupt_if_active(&old);
+				done_tx.send(result).expect("report interruption");
+			});
+			py.detach(move || enter_rx.recv_timeout(StdDuration::from_secs(2)))
+				.expect("interrupt thread entered");
+			assert!(matches!(done_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+			*active = Some(ActiveCell {
+				cell_id:   Bytes::from_static(b"replacement"),
+				cancelled: Arc::clone(&replacement),
+			});
+			drop(active);
+			py.detach(move || done_rx.recv_timeout(StdDuration::from_secs(2)))
+				.expect("interruption completed after retirement")
+				.expect("stale identity must not inject into thread zero");
+			let active = state.active.lock_py_attached(py);
+			assert!(Arc::ptr_eq(
+				&active.as_ref().expect("replacement retained").cancelled,
+				&replacement
+			));
+		});
+		assert!(!replacement.is_cancelled());
+	}
+
 	#[tokio::test]
 	async fn cancel_before_a_queued_cell_becomes_active_is_not_lost() {
 		let _globals = PROCESS_GLOBALS.read();
 		let runtime = runtime();
+		eprintln!("queued-cancel phase: opening session");
 		let session = runtime.open_session().await.expect("session opens");
 		let mut active = runtime
 			.run(&session, RunRequest {
@@ -2276,6 +2383,7 @@ print("right")"#
 			.expect("active cell starts");
 		assert!(matches!(active.next_event().await.unwrap(), Some(RunEvent::Started { .. })));
 
+		eprintln!("queued-cancel phase: active Started observed; enqueueing second cell");
 		let mut queued = runtime
 			.run(&session, RunRequest {
 				code:    sf!("queued_effect = True"),
@@ -2285,11 +2393,16 @@ print("right")"#
 			})
 			.await
 			.expect("queued cell accepted");
+		eprintln!("queued-cancel phase: cancelling queued cell");
 		queued.cancel().await.expect("queued cell cancels");
+		eprintln!("queued-cancel phase: cancelling active cell");
 		active.cancel().await.expect("active cell interrupts");
 
+		eprintln!("queued-cancel phase: awaiting active completion");
 		assert_eq!(completion(&mut active).await.status.outcome, CellOutcome::Cancelled);
+		eprintln!("queued-cancel phase: awaiting queued completion");
 		assert_eq!(completion(&mut queued).await.status.outcome, CellOutcome::Cancelled);
+		eprintln!("queued-cancel phase: checking no queued effect");
 		let (_, observed) =
 			run_to_completion(&runtime, &session, "'queued_effect' in globals()", false).await;
 		assert_eq!(
@@ -2340,6 +2453,124 @@ print("right")"#
 		assert_eq!(completion(&mut stale).await.status.outcome, CellOutcome::Cancelled);
 		let reset = completion(&mut reset).await;
 		assert_eq!(reset.result.expect("reset result").json, Some(serde_json::json!([false, false])));
+	}
+
+	#[pyclass]
+	struct DeadlineHold {
+		entered: Sender<()>,
+		release: Receiver<()>,
+	}
+
+	#[pymethods]
+	impl DeadlineHold {
+		fn wait(&self, py: Python<'_>) -> PyResult<()> {
+			let _ = self.entered.send(());
+			// Release interpreter attachment while the native operation holds
+			// completion. Bound even the failure path if the test unwinds.
+			py.detach(|| self.release.recv_timeout(StdDuration::from_secs(6)))
+				.map_err(|error| PyRuntimeError::new_err(error.to_string()))
+		}
+	}
+
+	struct DeadlineInstaller {
+		entered:    Sender<()>,
+		release:    Receiver<()>,
+		interrupts: Sender<()>,
+		watchdog:   TimeoutHandle,
+	}
+
+	impl NamespaceInstaller for DeadlineInstaller {
+		fn install(&self, py: Python<'_>, globals: &Bound<'_, PyDict>) -> PyResult<()> {
+			globals.set_item(
+				"hold",
+				Py::new(py, DeadlineHold {
+					entered: self.entered.clone(),
+					release: self.release.clone(),
+				})?,
+			)
+		}
+
+		fn begin_cell(
+			&self,
+			_py: Python<'_>,
+			_globals: &Bound<'_, PyDict>,
+			_cell: &Bytes,
+			timeout: Option<StdDuration>,
+		) -> PyResult<TimeoutHandle> {
+			assert_eq!(timeout, Some(StdDuration::from_secs(2)));
+			Ok(self.watchdog.clone())
+		}
+
+		fn cancel_cell(&self, _cell: &Bytes) {
+			let _ = self.interrupts.send(());
+		}
+	}
+
+	#[tokio::test]
+	async fn first_stop_reason_survives_later_watchdog_or_cancel_during_native_wait() {
+		let _globals = PROCESS_GLOBALS.read();
+		for cancel_first in [true, false] {
+			let (entered_tx, entered_rx) = flume::unbounded();
+			let (release_tx, release_rx) = flume::unbounded();
+			let (interrupt_tx, interrupt_rx) = flume::unbounded();
+			let watchdog = TimeoutHandle::new(Some(StdDuration::from_secs(2)));
+			// Exclude worker initialization from the interleaving. Resume the
+			// unchanged two-second window only after the native wait is entered.
+			let setup_pause = watchdog.pause();
+			let runtime = EmbeddedPython::with_installer(
+				Arc::clone(&ENGINE),
+				Arc::new(DeadlineInstaller {
+					entered: entered_tx,
+					release: release_rx,
+					interrupts: interrupt_tx,
+					watchdog,
+				}),
+				TEST_INTERRUPT_GRACE,
+			)
+			.expect("runtime");
+			let session = runtime.open_session().await.expect("session");
+			let mut run = runtime
+				.run(&session, RunRequest {
+					code:    sf!("hold.wait()"),
+					timeout: Some(StdDuration::from_secs(2)),
+					reset:   false,
+					runtime: RuntimeSnapshot::default(),
+				})
+				.await
+				.expect("held cell");
+			assert!(matches!(run.next_event().await.expect("event"), Some(RunEvent::Started { .. })));
+			time::timeout(StdDuration::from_secs(2), entered_rx.recv_async())
+				.await
+				.expect("native wait entered promptly")
+				.expect("entry signal");
+			if cancel_first {
+				run.cancel().await.expect("explicit cancellation");
+				interrupt_rx
+					.recv_async()
+					.await
+					.expect("explicit cancellation reached host");
+			}
+			drop(setup_pause);
+			time::timeout(StdDuration::from_secs(3), interrupt_rx.recv_async())
+				.await
+				.expect("actual two-second watchdog escalated")
+				.expect("watchdog host signal");
+			if !cancel_first {
+				run.cancel().await.expect("late cancellation");
+			}
+			release_tx.send(()).expect("release native operation");
+			let done = time::timeout(StdDuration::from_secs(2), completion(&mut run))
+				.await
+				.expect("held operation completes after release");
+			assert_eq!(
+				done.status.outcome,
+				if cancel_first {
+					CellOutcome::Cancelled
+				} else {
+					CellOutcome::Timeout
+				}
+			);
+		}
 	}
 
 	#[tokio::test]
@@ -2744,7 +2975,7 @@ __omp_display(first)
 		eprintln!(
 			"first pre-cancel: since submission={:?}, cancelled={}, worker_alive={}, target_active={}",
 			first_submitted.elapsed(),
-			first.cancelled.load(Ordering::Acquire),
+			first.cancelled.is_cancelled(),
 			first.state.alive.load(Ordering::Acquire),
 			first
 				.state
@@ -2757,7 +2988,7 @@ __omp_display(first)
 		eprintln!(
 			"first cancellation returned after {:?}, cancelled={}",
 			first_submitted.elapsed(),
-			first.cancelled.load(Ordering::Acquire)
+			first.cancelled.is_cancelled()
 		);
 		assert_eq!(completion(&mut first).await.status.outcome, CellOutcome::Cancelled);
 		assert!(
@@ -2770,7 +3001,7 @@ __omp_display(first)
 			"second pre-cancel: since submission={:?}, cancelled={}, worker_alive={}, \
 			 target_active={}",
 			second_submitted.elapsed(),
-			second.cancelled.load(Ordering::Acquire),
+			second.cancelled.is_cancelled(),
 			second.state.alive.load(Ordering::Acquire),
 			second
 				.state
@@ -2783,7 +3014,7 @@ __omp_display(first)
 		eprintln!(
 			"second cancellation returned after {:?}, cancelled={}",
 			second_submitted.elapsed(),
-			second.cancelled.load(Ordering::Acquire)
+			second.cancelled.is_cancelled()
 		);
 		assert_eq!(completion(&mut second).await.status.outcome, CellOutcome::Cancelled);
 	}

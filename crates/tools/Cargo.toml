@@ -44,7 +44,7 @@ omp-macros.workspace = true
 omp-walker.workspace = true
 parking_lot.workspace = true
 pdf-inspector.workspace = true
-pyo3.workspace = true
+pyo3 = { workspace = true, features = ["parking_lot"] }
 quick-xml.workspace = true
 regex.workspace = true
 resvg.workspace = true
