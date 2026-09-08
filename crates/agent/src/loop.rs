@@ -1929,7 +1929,7 @@ impl<C: Inference> Kernel<C> {
 					Some(control.clone()),
 					self.approvals.clone(),
 				);
-				let stream = {
+				let opened = {
 					let hooks = self.lifecycle_hooks.clone();
 					let opening = self.client.chat(request);
 					tokio::pin!(opening);
@@ -1937,7 +1937,7 @@ impl<C: Inference> Kernel<C> {
 						tokio::select! {
 							biased;
 							result = &mut opening => match result {
-								Ok(stream) => break stream,
+								Ok(stream) => break Ok(stream),
 								Err(error) => {
 									if recover_context_overflow(&mut self.observed_context_window, session, turn, &error, request_tokens, &mut overflow_compactions)? {
 										overflow_pending = true;
@@ -1969,14 +1969,8 @@ impl<C: Inference> Kernel<C> {
 										));
 									},
 									Received::Rewound(work) => {
-										self.settle_lifecycle(session, &work, control).await;
 										turn_cancel.cancel_turn();
-										return Ok(outcome(
-											TurnStop::Cancelled,
-											total_text,
-											tokens_in,
-											tokens_out,
-										));
+										break Err(work);
 									},
 									Received::None
 									| Received::Steering
@@ -1986,6 +1980,16 @@ impl<C: Inference> Kernel<C> {
 							},
 						}
 					}
+				};
+				let stream = match opened {
+					Ok(stream) => stream,
+					Err(work) => {
+						// The abandoned provider-open future is dropped before
+						// cleanup borrows the kernel. Keep the job board's guarded
+						// abort-and-join path after cancelling the accepted turn.
+						self.settle_lifecycle(session, &work, control).await;
+						return Ok(outcome(TurnStop::Cancelled, total_text, tokens_in, tokens_out));
+					},
 				};
 				let driven = match self
 					.drive_inference(session, stream, control, turn_cancel, request_started)
