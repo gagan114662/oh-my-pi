@@ -175,7 +175,7 @@ print('ARTIFACT_TAIL_PARITY_OK')
                                            OMP_CACHE_DIR=str(root / name / "cache"), OMP_STATE_DIR=str(root / name / "state"))
                         with MockModel(reply, "ack") as mock:
                             (data / "models.toml").write_text(MODELS_TOML.format(port=mock.port) + 'input = ["text", "image"]\n')
-                            process = subprocess.Popen([str(OMP_BINARY), "print", "--mode", "json", "--yolo", "--model", "mock",
+                            process = subprocess.Popen([str(OMP_BINARY), "print", "--mode", "json", "--yolo", "--py-eval", "--model", "mock",
                                 "--project", str(project), "--session-dir", str(root / name / "sessions"), "--max-time", "90s", "Run the requested tool."],
                                 cwd=project, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, start_new_session=True)
@@ -192,6 +192,10 @@ print('ARTIFACT_TAIL_PARITY_OK')
                                     (directory / "stderr.log").write_text(stderr)
                             self.assertEqual(process.returncode, 0, stderr)
                             captures = mock.state()["captures"]
+                            self.assertTrue(captures, "provider must receive the tool catalog")
+                            advertised = {tool.get("function", {}).get("name") for tool in captures[0].get("tools", [])}
+                            self.assertIn("eval" if name == "artifact-python-parity" else "read", advertised,
+                                          "requested fixture tool must be enabled before inference")
                             self.assertEqual(len(captures), 2, "tool result must reach the next provider request")
                             results = [message for message in captures[1]["messages"] if message.get("role") == "tool"]
                             self.assertTrue(results, "provider must receive actual tool output")

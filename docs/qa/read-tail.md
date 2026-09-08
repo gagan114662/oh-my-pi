@@ -68,3 +68,23 @@ results also equal an independently decoded frame-2 oracle, verified distinct
 from frame 0. Normal Unix Rust tests cover a held file surviving replacement,
 symlink rejection at final/ancestor components, output bounds and bounded child
 reaping after deadline/output-limit failure. No new ignore annotations are used.
+
+## First production QA failure and corrections
+
+[Head run 34250672559](https://github.com/gagan114662/oh-my-pi/actions/runs/34250672559)
+(source eca75da104) reached real tool results. `large.txt:-2` returned lines
+199998–200000: tail resolution had reused absolute-range formatting, which adds
+one leading context line. Tail formatting now preserves the requested count;
+absolute ranges retain their established context behavior. A 200,000-line
+formatter regression asserts both outputs, and the production fixture still
+forbids line 199998 for `:-2`.
+
+The artifact eval case in both that run and
+[parent run 34250899450](https://github.com/gagan114662/oh-my-pi/actions/runs/34250899450)
+never invoked eval: captured catalogs advertised only bash/edit/glob/grep/hub/task/read.
+The fixture omitted the explicit `--py-eval` CLI opt-in. QA now requests that
+capability and asserts the requested tool appears in the actual provider catalog
+before asserting its output. This does not change the artifact parity assertions.
+Parent additionally failed the unsupported tail reads, as expected. Both old
+runs predate video support; neither supplies video execution evidence. These
+corrections still require fresh production execution, not just static checks.
