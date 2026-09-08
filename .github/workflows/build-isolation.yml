@@ -162,6 +162,41 @@ jobs:
           codes=("${PIPESTATUS[@]}")
           printf 'container=%s log_write=%s\n' "${codes[0]}" "${codes[1]}" > pristine-evidence/exit.txt || exit 1
           for code in "${codes[@]}"; do if [ "$code" -ne 0 ]; then exit 1; fi; done
+      - name: Prove checker rejects a disabled prerequisite diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a pristine-source pristine-negative-source
+          mkdir -p pristine-evidence/negative
+          python3 - <<'PY'
+          import difflib, hashlib
+          from pathlib import Path
+          original = Path('pristine-source/scripts/build-doctor.py').read_text()
+          disabled = '# Deliberate negative control in a disposable source copy.\nraise SystemExit(0)\n'
+          Path('pristine-negative-source/scripts/build-doctor.py').write_text(disabled)
+          Path('pristine-evidence/negative/mutation.diff').write_text(''.join(difflib.unified_diff(original.splitlines(True), disabled.splitlines(True), fromfile='original/scripts/build-doctor.py', tofile='disabled/scripts/build-doctor.py')))
+          Path('pristine-evidence/negative/checker.sha256').write_text(hashlib.sha256(Path('proof-tools/scripts/pristine-host/check.py').read_bytes()).hexdigest() + '\n')
+          PY
+          set +e
+          docker run --rm --network none \
+            --mount "type=bind,src=$PWD/pristine-negative-source,dst=/source,readonly" \
+            --mount "type=bind,src=$PWD/proof-tools/scripts/pristine-host,dst=/checker,readonly" \
+            --mount "type=bind,src=$PWD/pristine-evidence/negative,dst=/evidence" \
+            omp-pristine-doctor 2>&1 | tee pristine-evidence/negative/container.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'checker=%s log_write=%s\n' "${codes[0]}" "${codes[1]}" > pristine-evidence/negative/exit.txt
+          set -e
+          test "${codes[0]}" -eq 1
+          test "${codes[1]}" -eq 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('pristine-evidence/negative/result.json').read_text())
+          assert result['exit_code'] == 0, 'Disabled doctor must actually execute and return success'
+          for tool in ('cmake', 'ninja'):
+              assert f'missing actionable real {tool} diagnostic' in result['violations']
+          Path('pristine-evidence/negative/control-result.json').write_text(json.dumps({'status': 'passed', 'meaning': 'Unchanged checker rejected a successfully executed disabled doctor; raw checker failure retained.'}) + '\n')
+          PY
       - name: Publish minimal-container evidence and scope
         if: always()
         shell: bash
