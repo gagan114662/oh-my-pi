@@ -10,6 +10,15 @@ import re
 IDENTITY = re.compile(r'[0-7][0-9A-HJKMNP-TV-Z]{25}\Z')
 
 
+def unique_object(pairs):
+	result = {}
+	for key, value in pairs:
+		if key in result:
+			raise ValueError('duplicate JSON object key')
+		result[key] = value
+	return result
+
+
 def completed_turns(path: Path, head: str | None = None) -> dict:
 	content = path.read_bytes()
 	frames = content.split(b'\n\n')
@@ -30,7 +39,7 @@ def completed_turns(path: Path, head: str | None = None) -> dict:
 			raise ValueError('missing, invalid, or duplicate journal identity')
 		if not fields.get('event') or 'data' not in fields:
 			raise ValueError('incomplete committed journal frame')
-		fields['payload'] = json.loads(fields['data'])
+		fields['payload'] = json.loads(fields['data'], object_pairs_hook=unique_object)
 		parent = fields.get('prior', previous)
 		if previous is None:
 			if fields['event'] != 'journal@1' or parent is not None or 'by' in fields:

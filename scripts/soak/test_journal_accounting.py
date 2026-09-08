@@ -102,3 +102,11 @@ class JournalAccountingTests(unittest.TestCase):
 			report = json.loads((directory / 'turn-accounting.json').read_text())
 			self.assertEqual(len(report['turn_ids']), 500)
 			self.assertEqual(report['head'], identity(1001))
+
+	def test_duplicate_terminal_status_keys_fail_in_either_order(self):
+		base = frame(1, 'journal') + frame(2, 'turn.start', 1)
+		for first, second in (('failed', 'completed'), ('completed', 'failed')):
+			terminal = frame(3, 'turn.outcome', 2, status='completed')
+			terminal = terminal.replace('{"status": "completed"}', '{"status":"' + first + '","status":"' + second + '"}')
+			with self.subTest(first=first), self.assertRaises(ValueError):
+				self.count(base + terminal)
