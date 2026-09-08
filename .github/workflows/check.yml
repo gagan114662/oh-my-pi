@@ -67,9 +67,13 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
-      - name: cargo check --workspace --all-targets
-        run: cargo check --workspace --all-targets --locked
+      # Examples are excluded: crates/webview's `child` example uses the
+      # macOS-only `Engine::system` and does not compile on Linux (run
+      # 34224250836). Libs, bins and every test target are what the CI
+      # workflow compiles on this runner.
+      - name: cargo check --workspace --lib --bins --tests
+        run: cargo check --workspace --lib --bins --tests --locked
 
       - name: cargo clippy (workspace, warnings visible, not fatal)
         continue-on-error: true
-        run: cargo clippy --workspace --all-targets --locked 2>&1 | tail -60
+        run: cargo clippy --workspace --lib --bins --tests --locked 2>&1 | tail -60
