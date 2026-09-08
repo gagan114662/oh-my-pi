@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     env:
-      SOAK: ${{ runner.temp }}/soak
+      SOAK: /home/runner/work/_temp/soak
       DURATION_MIN: ${{ github.event.inputs.duration_min || '60' }}
       MIN_TURNS: ${{ github.event.inputs.min_turns || '500' }}
       MAX_MIN: ${{ github.event.inputs.max_min || '120' }}
@@ -239,7 +239,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: soak-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/soak/out
+          path: /home/runner/work/_temp/soak/out
           if-no-files-found: error
           retention-days: 30
 
