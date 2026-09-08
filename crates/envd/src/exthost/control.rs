@@ -3846,6 +3846,32 @@ mod convar_tests {
 	}
 
 	async fn bootstrap_readiness_exchange(acknowledge: bool, stale_generation: bool) {
+		// A paused Tokio clock otherwise auto-advances to the startup deadline
+		// while real Unix socket readiness is pending. Keep a blocking task
+		// alive to inhibit only auto-advance (Tokio's documented mechanism),
+		// so the exchange below owns every virtual clock advance. The sender
+		// drops on panic too, releasing the blocker without a detached leak.
+		let (release, wait) = std::sync::mpsc::channel();
+		let (started, ready) = tokio::sync::oneshot::channel();
+		let blocker = tokio::task::spawn_blocking(move || {
+			let _ = started.send(());
+			wait.recv_timeout(std::time::Duration::from_secs(30))
+		});
+		ready.await.expect("auto-advance inhibitor started");
+		bootstrap_readiness_exchange_with_manual_clock(acknowledge, stale_generation).await;
+		release
+			.send(())
+			.expect("inhibitor remained alive throughout exchange");
+		blocker
+			.await
+			.expect("clock inhibitor joined")
+			.expect("clock inhibitor released");
+	}
+
+	async fn bootstrap_readiness_exchange_with_manual_clock(
+		acknowledge: bool,
+		stale_generation: bool,
+	) {
 		use tokio::{io::AsyncWriteExt as _, time};
 
 		use super::*;
