@@ -1174,15 +1174,20 @@ where
 				{
 					Ok(outcome) => outcome,
 					Err(error) => {
-						let _ = accounts.set_enabled(&account, false);
-						if hooks.credential_disabled_subscribed() {
-							hooks.observe_credential_disabled(CredentialDisabledObservation {
-								provider: record.provider.clone(),
-								account:  Some(account.clone()),
-								cause:    sf!("provider_refresh"),
-							});
+						let mapped = oauth_manager_error(error);
+						// Only a permanent rejection retires the account; a
+						// transient failure leaves it enabled for the retry (#117).
+						if mapped.action == RetryAction::Never {
+							let _ = accounts.set_enabled(&account, false);
+							if hooks.credential_disabled_subscribed() {
+								hooks.observe_credential_disabled(CredentialDisabledObservation {
+									provider: record.provider.clone(),
+									account:  Some(account.clone()),
+									cause:    sf!("provider_refresh"),
+								});
+							}
 						}
-						return Err(oauth_manager_error(error));
+						return Err(mapped);
 					},
 				};
 				if !accounts
@@ -1879,6 +1884,19 @@ fn auth_unavailable() -> Error {
 	)
 }
 
+/// An authentication step that failed for a reason the next attempt may
+/// not see (token endpoint unreachable or 5xx, a lost refresh lease): the
+/// same route is retried on the ordinary ladder instead of ending the
+/// turn (#117).
+fn auth_transient() -> Error {
+	Error::new(
+		ErrorKind::Authentication,
+		ErrorPhase::Authentication,
+		RetryAction::SameRoute { after: time::Duration::from_secs(5) },
+		ExecutionReceipt::default(),
+	)
+}
+
 fn auth_store_failure() -> Error {
 	Error::new(
 		ErrorKind::InternalInvariant,
@@ -1973,10 +1991,23 @@ fn oauth_error(error: OAuthError) -> Error {
 			ExecutionReceipt::default(),
 		),
 		OAuthError::PrincipalUnresolved => principal_unresolved().detail(detail),
-		OAuthError::Provider { status, code, .. } => auth_unavailable()
+		// The token endpoint could not be reached: nothing about the
+		// credential is known to be wrong.
+		OAuthError::Transport(_) => auth_transient().detail(detail),
+		OAuthError::Provider { status, code, retryable } => {
+			let transient = retryable || status == 408 || status == 429 || status >= 500;
+			if transient {
+				auth_transient()
+			} else {
+				auth_unavailable()
+			}
 			.status(Some(status))
 			.code(Str::new(code.as_str()))
-			.detail(detail),
+			.detail(detail)
+		},
+		// The provider rejected the grant itself (`invalid_grant`,
+		// `invalid_client`, access denied): only a new login can fix this.
+		OAuthError::RefreshRejected(_) => auth_unavailable().detail(detail),
 		OAuthError::ProvisioningRejected { status } => {
 			auth_unavailable().status(Some(status)).detail(detail)
 		},
@@ -1993,10 +2024,28 @@ fn oauth_custom_error(error: OAuthCustomDispatchError) -> Error {
 	}
 }
 
+/// Coordination lost a race or a lease: the credential itself was not
+/// rejected, so the next attempt may succeed (#117).
+fn refresh_failure_is_transient(kind: &crate::account::RefreshErrorKind) -> bool {
+	matches!(
+		kind,
+		crate::account::RefreshErrorKind::LeaseLost
+			| crate::account::RefreshErrorKind::CoordinationExhausted
+			| crate::account::RefreshErrorKind::LeaderCancelled
+			| crate::account::RefreshErrorKind::Store(_)
+	)
+}
+
 fn oauth_manager_error(error: OAuthCredentialManagerError) -> Error {
 	match error {
 		OAuthCredentialManagerError::OAuth(error) => oauth_error(*error),
-		OAuthCredentialManagerError::Refresh(_) => auth_unavailable(),
+		OAuthCredentialManagerError::Refresh(refresh) => {
+			if refresh_failure_is_transient(&refresh.kind) {
+				auth_transient()
+			} else {
+				auth_unavailable()
+			}
+		},
 		OAuthCredentialManagerError::Expired => Error::new(
 			ErrorKind::Authentication,
 			ErrorPhase::Authentication,
@@ -2541,5 +2590,46 @@ mod tests {
 		drop(session);
 		drop(engine);
 		let _ = fs::remove_file(store_path);
+	}
+}
+
+#[cfg(test)]
+mod refresh_classification_tests {
+	use super::*;
+	use crate::auth::{
+		lease::{AuthRejection, AuthRejectionKind},
+		oauth::{OAuthError, OAuthProviderCode},
+	};
+
+	#[test]
+	fn a_provider_outage_at_the_token_endpoint_is_retryable_authentication() {
+		let error = oauth_error(OAuthError::Provider {
+			status:    503,
+			code:      OAuthProviderCode::ServerError,
+			retryable: true,
+		});
+		assert_eq!(error.kind, ErrorKind::Authentication);
+		assert!(matches!(error.action, RetryAction::SameRoute { .. }), "{:?}", error.action);
+		assert_eq!(error.status, Some(503));
+	}
+
+	#[test]
+	fn a_rejected_refresh_grant_is_terminal() {
+		let error = oauth_error(OAuthError::RefreshRejected(AuthRejection {
+			kind:        AuthRejectionKind::RefreshRejected,
+			status:      Some(400),
+			code:        Some(sf!("invalid_grant")),
+			refreshable: false,
+		}));
+		assert_eq!(error.kind, ErrorKind::Authentication);
+		assert_eq!(error.action, RetryAction::Never);
+	}
+
+	#[test]
+	fn a_lost_refresh_lease_is_retryable_but_a_stale_generation_is_not() {
+		use crate::account::RefreshErrorKind;
+		assert!(refresh_failure_is_transient(&RefreshErrorKind::LeaseLost));
+		assert!(refresh_failure_is_transient(&RefreshErrorKind::CoordinationExhausted));
+		assert!(!refresh_failure_is_transient(&RefreshErrorKind::StaleGeneration { actual: 7 }));
 	}
 }
