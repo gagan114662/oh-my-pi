@@ -34,7 +34,7 @@ jobs:
           mkdir -p target/journal-integrity
           git rev-parse HEAD > target/journal-integrity/source-revision.txt
           git status --porcelain=v1 > target/journal-integrity/source-status.txt
-          brew install just cmake ninja lld@22 uv 2>&1 | tee target/journal-integrity/install.log
+          brew install just cmake ninja lld@22 uv zstd 2>&1 | tee target/journal-integrity/install.log
           rustup show active-toolchain 2>&1 | tee target/journal-integrity/toolchain.log
       - uses: taiki-e/install-action@nextest
       - name: Prepare embedded Python and check prerequisites
@@ -78,7 +78,7 @@ jobs:
         if: always()
         shell: bash
         run: python3 scripts/journal-integrity/summarize.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: journal-integrity-${{ github.sha }}

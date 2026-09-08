@@ -215,12 +215,12 @@ fn actual_cli_reports_exact_tamper_location_and_never_repairs_legacy_or_torn_byt
 		}
 	}
 	let target = target.expect("middle user entry");
-	evidence("expected", "oracle.json", serde_json::to_vec_pretty(&serde_json::json!({"id": target.entry.id, "offset": target.span.start, "original_tip": tip, "source": "actual Session fixture before byte edit"})).expect("oracle JSON").as_slice());
 	let mut changed = original.clone();
 	let local = changed[target.span.clone()]
 		.windows(5)
 		.position(|value| value == b"alpha")
 		.expect("payload");
+	evidence("expected", "oracle.json", serde_json::to_vec_pretty(&serde_json::json!({"id": target.entry.id, "offset": target.span.start, "frame_end": target.span.end, "changed_byte_offset": target.span.start + local, "original_tip": tip, "source": "actual Session fixture before byte edit"})).expect("oracle JSON").as_slice());
 	changed[target.span.start + local] = b'o';
 	fs::write(&path, &changed).expect("flip valid JSON byte");
 	let refused = Session::open(&path, ComponentRegistry::standard())

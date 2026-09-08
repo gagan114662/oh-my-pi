@@ -47,7 +47,7 @@ def main():
         original = (FIXTURE / 'valid/journal.oms').read_bytes()
         tampered = (FIXTURE / 'tampered/journal.oms').read_bytes()
         changed = [index for index, (a, b) in enumerate(zip(original, tampered)) if a != b]
-        exact_edit = len(original) == len(tampered) and len(changed) == 1 and changed[0] >= oracle['offset']
+        exact_edit = len(original) == len(tampered) and len(changed) == 1 and changed[0] == oracle['changed_byte_offset'] and oracle['offset'] <= changed[0] < oracle['frame_end']
         rows.append(('byte edit', 'one byte inside divergent frame', changed, exact_edit))
         if not exact_edit:
             failures.append('byte edit is not the declared mutation')
