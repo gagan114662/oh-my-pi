@@ -154,6 +154,9 @@ async fn inline_recovery(flags_enabled: bool, family: &str, text: &str) -> (usiz
 		autolearn_enabled:        false,
 		autolearn_min_tool_calls: 5,
 		recover_inline_edits:     flags_enabled,
+		turn_max_requests:        0,
+		turn_max_wall:            None,
+		loop_guard_limit:         0,
 	});
 	let mut session = fresh_session(&temp.path().join("inline.oms"));
 	kernel
