@@ -281,6 +281,94 @@ impl Default for RunControl {
 	}
 }
 
+/// Decides whether a provider error is a context overflow this turn may
+/// still recover from. On the first overflow it journals a
+/// `context-overflow` notice and a `context-window-observed` fact (the
+/// local estimate of the rejected request), caps the route's window to
+/// it, and returns `true` so the caller compacts and retries. A later
+/// overflow in the same turn journals why the turn fails and returns
+/// `false`.
+fn recover_context_overflow(
+	observed_context_window: &mut Option<u64>,
+	session: &mut Session,
+	turn: Handle,
+	error: &omp_ai::Error,
+	request_tokens: u64,
+	overflow_compactions: &mut u8,
+) -> Result<bool, KernelError> {
+	if error.kind != omp_ai::ErrorKind::ContextOverflow {
+		return Ok(false);
+	}
+	if *overflow_compactions > 0 {
+		append_named_notice(
+			session,
+			turn,
+			Str::new_static("error"),
+			Some(Str::new_static("context-overflow")),
+			sf!(
+				"Provider rejected the request as too long again after {} overflow compaction(s); the \
+				 turn stops here",
+				*overflow_compactions
+			),
+		)?;
+		return Ok(false);
+	}
+	*overflow_compactions = overflow_compactions.saturating_add(1);
+	let observed = request_tokens.max(1);
+	*observed_context_window = Some(match *observed_context_window {
+		Some(current) => current.min(observed),
+		None => observed,
+	});
+	append_named_notice(
+		session,
+		turn,
+		Str::new_static("warn"),
+		Some(Str::new_static("context-window-observed")),
+		sf!("context window observed: {observed} tokens"),
+	)?;
+	append_named_notice(
+		session,
+		turn,
+		Str::new_static("warn"),
+		Some(Str::new_static("context-overflow")),
+		sf!(
+			"Provider rejected the request as too long (~{observed} tokens); compacting and retrying \
+			 once"
+		),
+	)?;
+	Ok(true)
+}
+
+/// The smallest `context-window-observed` notice in the session, so a
+/// restart keeps the cap a provider overflow taught this session (#112).
+fn observed_context_window(dom: &omp_dom::Dom) -> Option<u64> {
+	let handles = dom.select("body turn notice").ok()?;
+	let mut observed: Option<u64> = None;
+	for handle in handles {
+		let Some(node) = dom.get(handle) else {
+			continue;
+		};
+		if node
+			.prop(&PropKey::Custom(Str::new_static("name")))
+			.and_then(Value::as_str)
+			!= Some("context-window-observed")
+		{
+			continue;
+		}
+		let Some(tokens) = node
+			.content
+			.as_deref()
+			.and_then(|text| text.strip_prefix("context window observed: "))
+			.and_then(|rest| rest.strip_suffix(" tokens"))
+			.and_then(|digits| digits.parse::<u64>().ok())
+		else {
+			continue;
+		};
+		observed = Some(observed.map_or(tokens, |current| current.min(tokens)));
+	}
+	observed
+}
+
 /// Turn-loop construction, inference, dispatch, or session failure.
 #[derive(Debug, Error)]
 pub enum KernelError {
@@ -388,25 +476,29 @@ impl Default for RuntimeFlags {
 
 /// Agent kernel composed from inference, tool, prompt, and Director registries.
 pub struct Kernel<C> {
-	client:                C,
-	pub(crate) dispatcher: Dispatcher,
-	pub(crate) cancel:     CancelTree,
-	turn_active:           Arc<AtomicBool>,
-	reply_obligations:     ReplyObligations,
-	director_registry:     DirectorRegistry,
-	live_components:       Vec<Box<dyn LiveComponent>>,
-	lifecycle_hooks:       Option<crate::LifecycleHooks>,
-	state_bridges:         Vec<Arc<dyn SessionStateBridge>>,
-	file_mentions:         Option<FileMentionService>,
-	pub(crate) events:     crate::events::KernelEvents,
-	prompt:                Arc<dyn PromptSource>,
-	route:                 RouteFacts,
-	con:                   Option<Arc<omp_con::Ctx>>,
-	runtime_flags:         RuntimeFlags,
-	pub(crate) mailbox_tx: flume::Sender<Up>,
-	mailbox_rx:            flume::Receiver<Up>,
+	client:                  C,
+	pub(crate) dispatcher:   Dispatcher,
+	pub(crate) cancel:       CancelTree,
+	turn_active:             Arc<AtomicBool>,
+	reply_obligations:       ReplyObligations,
+	director_registry:       DirectorRegistry,
+	live_components:         Vec<Box<dyn LiveComponent>>,
+	lifecycle_hooks:         Option<crate::LifecycleHooks>,
+	state_bridges:           Vec<Arc<dyn SessionStateBridge>>,
+	file_mentions:           Option<FileMentionService>,
+	pub(crate) events:       crate::events::KernelEvents,
+	prompt:                  Arc<dyn PromptSource>,
+	route:                   RouteFacts,
+	/// Context window learned from a provider overflow, journaled as a
+	/// `context-window-observed` notice and re-read on open; caps the catalog
+	/// window until a restart proves it wrong (#112).
+	observed_context_window: Option<u64>,
+	con:                     Option<Arc<omp_con::Ctx>>,
+	runtime_flags:           RuntimeFlags,
+	pub(crate) mailbox_tx:   flume::Sender<Up>,
+	mailbox_rx:              flume::Receiver<Up>,
 	/// Reply channels of the approval prompts journaled from the mailbox.
-	approvals:             crate::ApprovalDesk,
+	approvals:               crate::ApprovalDesk,
 }
 
 impl<C> Kernel<C> {
@@ -447,6 +539,7 @@ impl<C> Kernel<C> {
 			events,
 			prompt: Arc::new(prompt),
 			route: RouteFacts::default(),
+			observed_context_window: None,
 			con: None,
 			runtime_flags: RuntimeFlags::default(),
 			mailbox_tx,
@@ -1175,8 +1268,15 @@ impl<C: Inference> Kernel<C> {
 		let mut request_budget_notice_sent = false;
 		let mut last_model: Option<Str> = None;
 		let turn_started = Instant::now();
+		if self.observed_context_window.is_none() {
+			self.observed_context_window = observed_context_window(session.dom());
+		}
+		// A provider context overflow is recovered once per turn by a forced
+		// compaction and a retry; a second overflow after that fails the turn.
+		let mut overflow_compactions = 0_u8;
+		let mut overflow_pending = false;
 
-		loop {
+		'rounds: loop {
 			if control.is_expired() || turn_cancel.is_turn_cancelled() {
 				self.notify_deadline_or_interrupt(session, turn, control, turn_started);
 				turn_cancel.cancel_turn();
@@ -1260,6 +1360,32 @@ impl<C: Inference> Kernel<C> {
 				self.flush_session_state(session)?;
 				if let Some(con) = &self.con {
 					directors.apply_binds(session.dom(), con);
+				}
+				if std::mem::take(&mut overflow_pending) {
+					let landed = self
+						.compact_now(
+							session,
+							turn,
+							CompactionDirector::overflow(),
+							control.clone(),
+							turn_cancel.clone(),
+						)
+						.await?;
+					if !landed {
+						append_named_notice(
+							session,
+							turn,
+							Str::new_static("error"),
+							Some(Str::new_static("context-overflow")),
+							Str::new_static(
+								"Provider rejected the request as too long and nothing could be compacted",
+							),
+						)?;
+						self.apply_live_components(session)?;
+						return Ok(outcome(TurnStop::Completed, total_text, tokens_in, tokens_out));
+					}
+					directors = DirectorStack::from_dom(session.dom(), &self.director_registry);
+					route = self.current_route();
 				}
 				let mut request = self.finish_request(self.project_request(session)?).await?;
 				let model = self.client.selected_model();
@@ -1391,6 +1517,7 @@ impl<C: Inference> Kernel<C> {
 				directors.prepare_inference(session.dom(), &director_cx, &mut request);
 				let request_started = Instant::now();
 				requests_started = requests_started.saturating_add(1);
+				let request_tokens = crate::directors::compaction::estimate_request_tokens(&request);
 				let opening_control = CallControl::new(
 					self.mailbox_rx.clone(),
 					turn_cancel.clone(),
@@ -1405,7 +1532,16 @@ impl<C: Inference> Kernel<C> {
 					loop {
 						tokio::select! {
 							biased;
-							result = &mut opening => break result?,
+							result = &mut opening => match result {
+								Ok(stream) => break stream,
+								Err(error) => {
+									if recover_context_overflow(&mut self.observed_context_window, session, turn, &error, request_tokens, &mut overflow_compactions)? {
+										overflow_pending = true;
+										continue 'rounds;
+									}
+									return Err(error.into());
+								},
+							},
 							() = control.cancelled() => {
 								notify_deadline_or_interrupt(hooks.as_ref(), turn, control, turn_started);
 								turn_cancel.cancel_turn();
@@ -1447,9 +1583,26 @@ impl<C: Inference> Kernel<C> {
 						}
 					}
 				};
-				let driven = self
+				let driven = match self
 					.drive_inference(session, stream, control, turn_cancel, request_started)
-					.await?;
+					.await
+				{
+					Ok(driven) => driven,
+					Err(KernelError::Inference(error))
+						if recover_context_overflow(
+							&mut self.observed_context_window,
+							session,
+							turn,
+							&error,
+							request_tokens,
+							&mut overflow_compactions,
+						)? =>
+					{
+						overflow_pending = true;
+						continue 'rounds;
+					},
+					Err(error) => return Err(error),
+				};
 				tokens_in = tokens_in.saturating_add(driven.usage.input_tokens);
 				tokens_out = tokens_out.saturating_add(driven.usage.output_tokens);
 				total_text.push_str(driven.text.as_str());
@@ -1998,7 +2151,13 @@ impl<C: Inference> Kernel<C> {
 	/// selection when inference resolves `ai_model` per request, else the
 	/// facts fixed at composition.
 	pub(crate) fn current_route(&self) -> RouteFacts {
-		self.client.route_facts().unwrap_or(self.route)
+		let mut route = self.client.route_facts().unwrap_or(self.route);
+		if let Some(observed) = self.observed_context_window
+			&& (route.context_window == 0 || observed < route.context_window)
+		{
+			route.context_window = observed;
+		}
+		route
 	}
 
 	/// The `thread_projection` gate over an owned projection, then the
@@ -3135,10 +3294,26 @@ impl<C: Inference> Kernel<C> {
 		let Ok(turn) = current_turn(session) else {
 			return Ok(false);
 		};
-		let request = self.finish_request(self.project_request(session)?).await?;
-		let director = CompactionDirector::manual(focus).with_method(method);
-		let route = self.current_route();
 		let turn_cancel = self.cancel.begin_turn();
+		let director = CompactionDirector::manual(focus).with_method(method);
+		self
+			.compact_now(session, turn, director, control, turn_cancel)
+			.await
+	}
+
+	/// The manual compaction body shared by [`Self::compact_with`] (between
+	/// turns) and the in-turn recovery of a provider context overflow, which
+	/// runs it under the live turn's cancellation.
+	async fn compact_now(
+		&mut self,
+		session: &mut Session,
+		turn: Handle,
+		director: CompactionDirector,
+		control: RunControl,
+		turn_cancel: crate::TurnCancellation,
+	) -> Result<bool, KernelError> {
+		let request = self.finish_request(self.project_request(session)?).await?;
+		let route = self.current_route();
 		let preflight_control = CallControl::new(
 			self.mailbox_rx.clone(),
 			turn_cancel.clone(),
