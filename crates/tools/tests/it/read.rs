@@ -2086,10 +2086,7 @@ async fn tail_reads_reach_the_end_of_a_200k_line_file_and_record_only_visible_li
 	let sources = Sources::default();
 	sources.file("long.txt", numbered_lines(200_000));
 	let (output, diags) = text_with_diags(sources.clone(), r#"{"path":"long.txt:-2"}"#).await;
-	assert_eq!(
-		output,
-		"[long.txt#A1B2]\n199998:line 199998\n199999:line 199999\n200000:line 200000"
-	);
+	assert_eq!(output, "[long.txt#A1B2]\n199999:line 199999\n200000:line 200000");
 	assert!(
 		!diags
 			.iter()
@@ -2097,7 +2094,7 @@ async fn tail_reads_reach_the_end_of_a_200k_line_file_and_record_only_visible_li
 	);
 	let snapshots = sources.snapshots.lock();
 	assert_eq!(snapshots.last().unwrap().seen, vec![read::SeenRange {
-		start_line: 199_998,
+		start_line: 199_999,
 		end_line:   200_000,
 	}]);
 	drop(snapshots);
@@ -2169,6 +2166,13 @@ async fn artifact_tail_indexes_200k_lines_and_reuses_the_index_for_raw_tail() {
 	let tail = read::selector::parse_selector(Some("-2")).unwrap();
 	assert_eq!(
 		&*resolver.read("7", &tail).await.unwrap(),
+		b"199999:line 199999\n200000:line 200000"
+	);
+	// Explicit absolute ranges retain their surrounding context; a tail count
+	// is exact in both numbered and raw modes.
+	let absolute = read::selector::parse_selector(Some("199999-200000")).unwrap();
+	assert_eq!(
+		&*resolver.read("7", &absolute).await.unwrap(),
 		b"199998:line 199998\n199999:line 199999\n200000:line 200000"
 	);
 	let scans = ranges.lock().len();

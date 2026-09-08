@@ -88,3 +88,21 @@ before asserting its output. This does not change the artifact parity assertions
 Parent additionally failed the unsupported tail reads, as expected. Both old
 runs predate video support; neither supplies video execution evidence. These
 corrections still require fresh production execution, not just static checks.
+
+### Artifact tail correction after the Linux package run
+
+Run 34258361687 on `a398e610f7` executed 1,793 tests: 1,790 passed,
+two failed, one timed out, and two additional tests were skipped. The new
+200,000-line local tail fixture still expected the old extra context line,
+despite the exact-count formatter fix. Its exact output and seen-range
+assertions now require two lines. No baseline assertion was removed.
+
+The same inspection found that immutable artifact tail selection lost its
+relative-selector identity before context expansion, so artifacts still
+returned three numbered lines for `:-2`. The resolver now preserves that
+identity and suppresses only tail context expansion. Its regression requires
+exactly two numbered lines, keeps raw-window cache coverage, and separately
+requires the original three-line context for an explicit absolute range.
+Runtime verification of this correction remains pending. The separate driver
+lock-directory failure and queued-cell cancellation timeout from that run
+remain failures; correcting tail expectations does not resolve them.
