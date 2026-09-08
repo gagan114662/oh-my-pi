@@ -79,3 +79,20 @@ caused the historical hosted failure. Startup logs identify imports and bind
 phases, and a stack dump after nine seconds diagnoses stalls before the
 existing readiness gate. A fresh hosted parent execution must still run the
 real turns before it can qualify as the semantic negative.
+
+Run `34263807696` exercised the same fixture on head
+`05a13d28e52bf4782bfbc11f3cca4d115406da1b` and the frozen parent above.
+Both executed two successful app processes, four provider requests, four
+receipts, and two tool results. The head recorded two distinct completed-turn
+markers; the parent recorded zero and the fixture exited 1 with
+`failure_kind=completed_turn_count`. Thus this run supplies a semantic negative,
+unlike the earlier startup failure. The retained journals were independently
+recounted after download, with SHA-256 matching each report.
+
+The head's overall job still failed: its app target suite had 314 passes and
+one failure in
+`envd_contract::worker_cancel_forwards_effects_unknown_once_and_respawn_serves_next_request`
+after replacement-host startup hit its event deadline. The journal, session,
+agent, and driver target suites and all five paired doctest commands exited 0.
+This is evidence for the two-turn accounting behavior, not a passing combined
+acceptance gate or the required long soak.
