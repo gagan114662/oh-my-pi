@@ -568,6 +568,30 @@ fn receipt_and_compaction_facts_materialize_and_survive_reopen() {
 		.expect("frame blob");
 	assert_eq!(blob.hash.as_ref(), frame.hash.as_bytes());
 	assert_eq!(blob.size, frame.size);
+	drop(reopened);
+	let orphan = store.put(b"unreferenced GC fixture").expect("orphan blob");
+	let before_gc = std::fs::read(&path).expect("pre-GC journal bytes");
+	let collected = omp_journal::gc::collect_blobs(
+		&store,
+		std::slice::from_ref(&path),
+		omp_journal::blob::GcPolicy {
+			unreferenced_grace: std::time::Duration::ZERO,
+			temporary_grace:    std::time::Duration::ZERO,
+		},
+	)
+	.expect("collect blobs rooted by actual compaction journal");
+	assert_eq!(collected.journals_scanned, 1);
+	assert!(!store.has(&orphan), "unreferenced content is actually removed");
+	assert_eq!(store.get(&summary).expect("summary retained").as_ref(), b"# Summary");
+	assert_eq!(store.get(&frame).expect("frame retained").as_ref(), b"snapcompact png");
+	assert_eq!(std::fs::read(&path).expect("post-GC journal bytes"), before_gc);
+	assert_eq!(
+		omp_journal::Journal::verify_path(&path, sealed.tip).expect("GC retains verified history"),
+		sealed
+	);
+	let after_gc = Session::open(&path, ComponentRegistry::default()).expect("replay after blob GC");
+	assert_eq!(after_gc.dom().snapshot(), live);
+	assert_eq!(omp_session::project_thread(after_gc.dom()), projected);
 }
 
 #[test]

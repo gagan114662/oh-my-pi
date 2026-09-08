@@ -2,7 +2,7 @@ name: Journal integrity evidence
 
 on:
   push:
-    branches: [fix/journal-integrity-49]
+    branches: [fix/journal-integrity-49, fix/journal-operation-proof]
   pull_request:
     branches: [main, omp2, fix/audit-ci-gates]
     paths:
@@ -55,16 +55,21 @@ jobs:
           codes=("${PIPESTATUS[@]}")
           printf 'proof,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/journal-integrity/exits.csv || exit 1
           [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
-      - name: Complete affected app journal and session targets and doctests
+      - name: Complete affected app journal session and agent targets and doctests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         shell: bash
         run: |
           set +e
           set -uo pipefail
           failed=0
-          for package in omp-app omp-journal omp-session; do
+          for package in omp-app omp-journal omp-session omp-agent; do
+            rm -f target/nextest/ci/junit.xml || { failed=1; continue; }
             just --command cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/journal-integrity/$package-tests.log"
             tests=("${PIPESTATUS[@]}")
+            cp target/nextest/ci/junit.xml "target/journal-integrity/$package.junit.xml"
+            junit=$?
+            printf '%s-junit,%s,0\n' "$package" "$junit" >> target/journal-integrity/exits.csv || failed=1
+            if [ "$junit" -ne 0 ]; then failed=1; fi
             just --command cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/journal-integrity/$package-docs.log"
             docs=("${PIPESTATUS[@]}")
             printf '%s-tests,%s,%s\n' "$package" "${tests[0]}" "${tests[1]}" >> target/journal-integrity/exits.csv || failed=1
@@ -72,6 +77,27 @@ jobs:
             for code in "${tests[@]}" "${docs[@]}"; do
               if [ "$code" -ne 0 ]; then failed=1; fi
             done
+          done
+          exit "$failed"
+      - name: Complete real P10 lift proof and paired e2e doctests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          failed=0
+          rm -f target/nextest/ci/junit.xml || exit 1
+          just --command cargo nextest run --locked --profile ci --no-fail-fast -p omp-e2e --test p10_lift_idempotence 2>&1 | tee target/journal-integrity/omp-e2e-tests.log
+          tests=("${PIPESTATUS[@]}")
+          cp target/nextest/ci/junit.xml target/journal-integrity/omp-e2e.junit.xml
+          junit=$?
+          just --command cargo test --locked --doc --no-fail-fast -p omp-e2e 2>&1 | tee target/journal-integrity/omp-e2e-docs.log
+          docs=("${PIPESTATUS[@]}")
+          printf 'omp-e2e-tests,%s,%s\n' "${tests[0]}" "${tests[1]}" >> target/journal-integrity/exits.csv || failed=1
+          printf 'omp-e2e-docs,%s,%s\n' "${docs[0]}" "${docs[1]}" >> target/journal-integrity/exits.csv || failed=1
+          printf 'omp-e2e-junit,%s,0\n' "$junit" >> target/journal-integrity/exits.csv || failed=1
+          for code in "${tests[@]}" "${docs[@]}" "$junit"; do
+            if [ "$code" -ne 0 ]; then failed=1; fi
           done
           exit "$failed"
       - name: Publish verification table and missing evidence

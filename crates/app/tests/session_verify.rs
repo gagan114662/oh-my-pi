@@ -188,7 +188,30 @@ fn actual_cli_reports_exact_tamper_location_and_never_repairs_legacy_or_torn_byt
 	let path = scratch.path().join("session.oms");
 	let mut session = Session::create(&path, ComponentRegistry::standard()).expect("session");
 	session.begin_turn().expect("first turn");
-	session.user("alpha payload", Vec::new()).expect("user");
+	session
+		.user("deterministic tool-result integrity fixture", Vec::new())
+		.expect("user");
+	session
+		.assistant_start("fixture-model", "fixture-provider", "fixture-route")
+		.expect("assistant");
+	let call = session
+		.call(
+			"fixture",
+			1,
+			"fixture-call",
+			None,
+			Some(serde_json::value::to_raw_value(&serde_json::json!({})).expect("args")),
+			None,
+		)
+		.expect("call");
+	session.assistant_end("tool_calls").expect("assistant end");
+	let result = session
+		.settle(
+			call,
+			serde_json::value::to_raw_value(&serde_json::json!({"text": "alpha payload"}))
+				.expect("result payload"),
+		)
+		.expect("settled result");
 	session.begin_turn().expect("successor");
 	let entries = Journal::scan(&path).expect("entries");
 	let original = fs::read(&path).expect("bytes");
@@ -210,17 +233,23 @@ fn actual_cli_reports_exact_tamper_location_and_never_repairs_legacy_or_torn_byt
 	let mut target = None;
 	while let Some(frame) = scanner.next() {
 		let frame = frame.expect("frame");
-		if frame.entry.kind == Kind::known(KindName::MsgUser) {
+		if frame.entry.kind == Kind::known(KindName::ToolResult) {
 			target = Some(frame);
 		}
 	}
-	let target = target.expect("middle user entry");
+	let target = target.expect("middle tool result entry");
+	assert_eq!(target.entry.id, result);
+	assert_eq!(target.entry.by, Some(call));
+	assert!(
+		target.span.start > 0 && target.span.end < original.len(),
+		"edited result must have predecessor and successor frames"
+	);
 	let mut changed = original.clone();
 	let local = changed[target.span.clone()]
 		.windows(5)
 		.position(|value| value == b"alpha")
 		.expect("payload");
-	evidence("expected", "oracle.json", serde_json::to_vec_pretty(&serde_json::json!({"id": target.entry.id, "offset": target.span.start, "frame_end": target.span.end, "changed_byte_offset": target.span.start + local, "original_tip": tip, "source": "actual Session fixture before byte edit"})).expect("oracle JSON").as_slice());
+	evidence("expected", "oracle.json", serde_json::to_vec_pretty(&serde_json::json!({"id": target.entry.id, "offset": target.span.start, "frame_end": target.span.end, "changed_byte_offset": target.span.start + local, "original_tip": tip, "kind": target.entry.kind.to_string(), "call_id": call, "source": "actual Session fixture before byte edit"})).expect("oracle JSON").as_slice());
 	changed[target.span.start + local] = b'o';
 	fs::write(&path, &changed).expect("flip valid JSON byte");
 	let refused = Session::open(&path, ComponentRegistry::standard())
