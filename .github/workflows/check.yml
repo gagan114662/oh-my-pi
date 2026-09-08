@@ -74,6 +74,35 @@ jobs:
       - name: cargo check --workspace --lib --bins --tests
         run: cargo check --workspace --lib --bins --tests --locked
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      # Tests of the crates this branch touches, against the integration
+      # branch. Linux-runnable evidence per push; the full CI workflow on
+      # macOS remains the acceptance proof.
+      - name: nextest for touched crates
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=200 origin fix/audit-ci-gates
+          base=$(git merge-base origin/fix/audit-ci-gates HEAD || echo origin/fix/audit-ci-gates)
+          dirs=$(git diff --name-only "$base" HEAD -- crates | cut -d/ -f2 | sort -u)
+          pkgs=""
+          for d in $dirs; do
+            [ -f "crates/$d/Cargo.toml" ] || continue
+            name=$(sed -n 's/^name = "\(.*\)"/\1/p' "crates/$d/Cargo.toml" | head -1)
+            case "$name" in omp-e2e|"") continue;; esac
+            pkgs="$pkgs -p $name"
+          done
+          if [ -z "$pkgs" ]; then echo "no touched crates"; exit 0; fi
+          echo "testing:$pkgs"
+          cargo nextest run --profile ci --no-fail-fast --locked $pkgs 2>&1 | tee target/touched-tests.log
+          {
+            echo "### Touched-crate tests"
+            echo '```'
+            grep -E '^\s+(Summary|FAIL|PASS \[.*slow)' target/touched-tests.log | tail -30
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: cargo clippy (workspace, warnings visible, not fatal)
         continue-on-error: true
         run: cargo clippy --workspace --lib --bins --tests --locked 2>&1 | tail -60
