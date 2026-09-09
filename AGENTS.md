@@ -637,6 +637,19 @@ master stream to a VT emulator (e.g. `pyte`) for screen assertions.
   gate.
 - TUI changes MUST be exercised on a real PTY via `.omp/tools/tui.ts` (or the
   hooks above): input, resize, clean quit restoration.
+- Python PTY acceptance scripts (`scripts/qa/cases/*.py`) driving the `omp`
+  binary MUST launch it with `pty_debug.launch()`, never raw
+  `subprocess.Popen(..., start_new_session=True)`: a session leader over a
+  PTY slave gets that slave revoked by macOS on exit, so a later
+  `termios.tcgetattr(slave)` clean-quit check fails with `ENOTTY`. See
+  `scripts/qa/pty_debug.py`'s `launch()` docstring.
 - No numeric coverage target. Coverage = changed observable behavior defended:
   branch edges, precedence, state transitions, malformed input, cancellation,
   recovery. Narrow test → affected crate → relevant E2E proof.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
