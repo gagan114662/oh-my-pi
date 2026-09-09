@@ -15,7 +15,7 @@ use std::{
 	pin::Pin,
 	sync::Arc,
 	task::{Context, Poll},
-	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use flume::{Receiver, r#async::RecvStream};
@@ -38,6 +38,12 @@ use omp_tool::{
 use serde_json::value::RawValue;
 use thiserror::Error;
 use tokio::task::{JoinError, JoinHandle};
+// Deadlines and the grace-expiry sweep are compared against and scheduled
+// through `tokio::time::sleep_until`, so they must live in tokio's clock
+// domain: `std::time::Instant` diverges from it under a paused test clock
+// (ADR 0011's ladder relies on `sleep_until` and this `Instant` agreeing on
+// "now").
+use tokio::time::Instant;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use crate::{
@@ -2283,7 +2289,7 @@ async fn control_recv(control: Option<&CallControl>) -> Up {
 
 async fn sleep_until(at: Option<Instant>) {
 	match at {
-		Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+		Some(at) => tokio::time::sleep_until(at).await,
 		None => std::future::pending().await,
 	}
 }
