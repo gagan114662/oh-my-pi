@@ -24,7 +24,7 @@ import pyte
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness import MODELS_TOML, OMP_BINARY, MockModel
-from pty_debug import request as debug_request, kill_and_reap
+from pty_debug import request as debug_request, kill_and_reap, launch
 
 
 def main():
@@ -92,9 +92,9 @@ def main():
             fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
             env['OMP_TTY'] = os.ttyname(slave)
             with (output / 'stdout.log').open('wb') as stdout, (output / 'stderr.log').open('wb') as stderr:
-                process = subprocess.Popen([str(OMP_BINARY), 'chat', '--model', 'mock', '--project',
+                process = launch([str(OMP_BINARY), 'chat', '--model', 'mock', '--project',
                     str(root / 'project'), '--envd-idle-timeout', '2'], cwd=root / 'project', env=env,
-                    stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
+                    stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
                 deadline = time.monotonic() + 40
                 while True:
                     drain()
