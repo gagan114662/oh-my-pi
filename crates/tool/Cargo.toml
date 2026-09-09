@@ -1,0 +1,32 @@
+[package]
+name = "omp-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Typed, revisioned tool contracts and registry for the OMP agent mesh"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-stream.workspace = true
+bytes.workspace = true
+flume.workspace = true
+futures.workspace = true
+omp-core.workspace = true
+omp-catalog.workspace = true
+omp-ai.workspace = true
+parking_lot.workspace = true
+omp-proto.workspace = true
+serde.workspace = true
+schemars.workspace = true
+smallvec.workspace = true
+strum.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true

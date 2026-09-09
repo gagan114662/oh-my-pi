@@ -1,0 +1,71 @@
+[package]
+name = "omp-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Resource-owning built-in executors for the OMP environment"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+anydoc.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+bytecount.workspace = true
+bytes.workspace = true
+dashmap.workspace = true
+encoding_rs.workspace = true
+cfb.workspace = true
+flate2.workspace = true
+flume.workspace = true
+futures.workspace = true
+hayro.workspace = true
+html-to-markdown-rs.workspace = true
+image.workspace = true
+libc.workspace = true
+omp-ast.workspace = true
+omp-ar.workspace = true
+omp-con.workspace = true
+omp-core.workspace = true
+omp-env.workspace = true
+omp-edit.workspace = true
+omp-memory.workspace = true
+omp-proto.workspace = true
+omp-py.workspace = true
+omp-shell-builtins.workspace = true
+omp-shell.workspace = true
+omp-tool.workspace = true
+omp-macros.workspace = true
+omp-walker.workspace = true
+parking_lot.workspace = true
+pdf-inspector.workspace = true
+pyo3 = { workspace = true, features = ["parking_lot"] }
+quick-xml.workspace = true
+regex.workspace = true
+resvg.workspace = true
+rusqlite.workspace = true
+rustc-demangle.workspace = true
+serde.workspace = true
+schemars.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+smallvec.workspace = true
+strum.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+url.workspace = true
+xutf.workspace = true
+
+[build-dependencies]
+flate2.workspace = true
+
+[dev-dependencies]
+omp-ai.workspace = true
+tempfile.workspace = true

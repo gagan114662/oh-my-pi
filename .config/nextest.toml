@@ -3,11 +3,10 @@
 # one-binary-at-a-time execution has to declare that here.
 #
 # Doctests are NOT run by nextest (upstream limitation: they have no stable
-# libtest-json interface). `scripts/run-rs-task.ts` pairs the nextest run with
-# `cargo test --doc`. That pass executes nothing today — pi-natives is a
-# `cdylib` (rustdoc collects no doctests from it) and pi-builtins' examples are
-# `ignore`d vendored uutils docs — and is kept so the first runnable doctest
-# added to a lib crate actually runs.
+# libtest-json interface). The `just test` / CI recipes pair every nextest
+# invocation with `cargo test --doc`; omp has doctests in 25+ modules under
+# crates/core and crates/shell-*, so dropping that step silently deletes real
+# coverage.
 
 [profile.default]
 # Print each failure when it happens and again in the final summary — a run
@@ -15,10 +14,33 @@
 failure-output = "immediate-final"
 # Report every failing test in one pass instead of stopping at the first.
 fail-fast = false
+# Nothing in the unit/integration tier should take a minute; warn at 60s and
+# kill at 4 minutes so one deadlocked test cannot wedge a whole local sweep.
+slow-timeout = { period = "60s", terminate-after = 4 }
 
 [profile.ci]
 failure-output = "immediate-final"
 fail-fast = false
-# No retries: a flaky test is a bug we want to see, not paper over.
+# No retries: a flaky acceptance proof is a bug we want to see, not paper over.
 retries = 0
+# Nothing in the unit/integration tier should take a minute; kill runaways
+# rather than letting a hung PTY test burn the job's wall clock.
 slow-timeout = { period = "60s", terminate-after = 4 }
+
+# Retained by scripts/test-inventory.py for each CI test phase.
+[profile.ci.junit]
+path = "junit.xml"
+
+# The e2e acceptance proofs (P1-P8) drive real PTYs, spawn daemons, and bind
+# sockets. They were written against `cargo test`, which runs one test binary
+# at a time; under nextest they would otherwise race each other.
+[[profile.default.overrides]]
+filter = 'package(omp-e2e)'
+threads-required = "num-cpus"
+# Real PTYs and daemon startup are legitimately slow; kill only after 10 min.
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+[[profile.ci.overrides]]
+filter = 'package(omp-e2e)'
+threads-required = "num-cpus"
+slow-timeout = { period = "120s", terminate-after = 5 }

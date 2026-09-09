@@ -1,0 +1,132 @@
+name: Default theme evidence
+
+on:
+  push:
+    branches: [fix/theme-defaults-24]
+  pull_request:
+    branches: [main, omp2]
+    paths:
+      - crates/tui/**
+      - crates/chat/src/settings.rs
+      - crates/app/src/chat_cmd.rs
+      - crates/app/tests/theme_defaults.rs
+      - crates/chat/src/commands/settings.rs
+      - crates/chat/src/overlays/settings.rs
+      - scripts/qa/cases/theme_live_pty.py
+      - scripts/qa/pty_debug.py
+      - scripts/qa/test_pty_debug.py
+      - .github/workflows/theme-defaults.yml
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source revision; empty uses this workflow revision
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  themes:
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      OMP_THEME_PROOF_DIR: ${{ github.workspace }}/source/target/theme-proof
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Install the same acceptance test into selected source
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/theme-proof
+          git rev-parse HEAD > target/theme-proof/source-sha.txt
+          git -C ../proof rev-parse HEAD > target/theme-proof/checker-sha.txt
+          cp ../proof/crates/app/tests/theme_defaults.rs crates/app/tests/theme_defaults.rs
+          cp ../proof/scripts/qa/cases/theme_live_pty.py scripts/qa/cases/theme_live_pty.py
+          cp ../proof/scripts/qa/pty_debug.py scripts/qa/pty_debug.py
+          cp ../proof/scripts/qa/test_pty_debug.py scripts/qa/test_pty_debug.py
+          shasum -a 256 crates/app/tests/theme_defaults.rs scripts/qa/cases/theme_live_pty.py scripts/qa/pty_debug.py scripts/qa/test_pty_debug.py scripts/qa/harness.py > target/theme-proof/checker.sha256
+          git status --porcelain=v1 > target/theme-proof/source-status.txt
+      - name: Verify PTY request pump and cleanup mechanics
+        working-directory: source
+        run: python3 scripts/qa/test_pty_debug.py
+      - name: Install prerequisites
+        run: brew install just cmake ninja lld@22 uv
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare pinned runtime
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain 2>&1 | tee target/theme-proof/toolchain.log
+          just setup-python 2>&1 | tee target/theme-proof/python-setup.log
+          just doctor 2>&1 | tee target/theme-proof/doctor.log
+      - name: Complete affected tests and doctests
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          status=0
+          for package in omp-tui omp-chat omp-app; do
+            cargo nextest run --locked --profile ci --no-fail-fast -p "$package" 2>&1 | tee "target/theme-proof/$package-tests.log"
+            test_codes=("${PIPESTATUS[@]}")
+            cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/theme-proof/$package-docs.log"
+            doc_codes=("${PIPESTATUS[@]}")
+            printf '%s tests=%s docs=%s log_writes=%s,%s\n' "$package" "${test_codes[0]}" "${doc_codes[0]}" "${test_codes[1]}" "${doc_codes[1]}" >> target/theme-proof/exits.txt || status=1
+            for code in "${test_codes[@]}" "${doc_codes[@]}"; do
+              if [ "$code" -ne 0 ]; then status=1; fi
+            done
+          done
+          exit "$status"
+      - name: Build and exercise production theme PTY
+        if: ${{ !cancelled() }}
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          just build 2>&1 | tee target/theme-proof/build.log
+          build_codes=("${PIPESTATUS[@]}")
+          printf 'build=%s log_write=%s\n' "${build_codes[0]}" "${build_codes[1]}" >> target/theme-proof/exits.txt
+          if [ "${build_codes[0]}" -ne 0 ] || [ "${build_codes[1]}" -ne 0 ]; then exit 1; fi
+          shasum -a 256 target/debug/omp > target/theme-proof/binary.sha256 || exit 1
+          uv run --with pyte==0.8.2 python scripts/qa/cases/theme_live_pty.py 2>&1 | tee target/theme-proof/live-pty.log
+          pty_codes=("${PIPESTATUS[@]}")
+          printf 'pty=%s log_write=%s\n' "${pty_codes[0]}" "${pty_codes[1]}" >> target/theme-proof/exits.txt
+          for code in "${pty_codes[@]}"; do if [ "$code" -ne 0 ]; then exit 1; fi; done
+      - name: Publish enumeration and explicit proof limits
+        if: always()
+        working-directory: source
+        shell: bash
+        run: |
+          {
+            echo '## Default theme resolution'
+            echo 'Selected source plus copied acceptance test; revisions and changed paths:'
+            echo '```text'
+            cat target/theme-proof/source-sha.txt target/theme-proof/checker-sha.txt target/theme-proof/source-status.txt
+            if [ -f target/theme-proof/exits.txt ]; then cat target/theme-proof/exits.txt; else echo 'Test execution incomplete'; fi
+            echo '```'
+            if [ -f target/theme-proof/summary.md ]; then cat target/theme-proof/summary.md; else echo '**Enumeration/frames missing: proof incomplete.**'; fi
+            if [ -f target/theme-proof/live-pty/summary.md ]; then cat target/theme-proof/live-pty/summary.md; else echo '**Live PTY proof missing.**'; fi
+            echo 'PNG uses the existing monochrome encoder; live color proof is in VT cell JSON/HTML and raw terminal ANSI.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test -s target/theme-proof/summary.md
+          test -s target/theme-proof/live-pty/summary.md
+          test -s target/theme-proof/themes.json
+          test -s target/theme-proof/cl_theme_dark-dark.png
+          test -s target/theme-proof/cl_theme_light-light.png
+      - name: Retain all proof artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: theme-defaults
+          path: source/target/theme-proof/
+          if-no-files-found: error

@@ -1,0 +1,20 @@
+{
+  "category": "operations",
+  "fixtures": [
+    {
+      "id": "operations.blob.payload.v1",
+      "path": "blob-payload.bin",
+      "secret_free": true,
+      "sha256": "ac4bbaf8590c9de84b2be78bd0f467b7594d0a90d9302df0d8e935af15ca70ea",
+      "source": "archive/llm-legacy/llm-gateway/tests/blob_grpc.rs::remote_chunked_blob_lifecycle_ranges_limits_and_cancellation"
+    },
+    {
+      "id": "operations.native.wire.facades.v1",
+      "path": "native-wire-facades.json",
+      "secret_free": true,
+      "sha256": "bc3ed3019b606762da0eac320e4e49a1da649a74594b1ad5321624e0542abeed",
+      "source": "archive/llm-legacy/llm-gateway/src/facade/mod.rs::Router::route"
+    }
+  ],
+  "schema_version": 1
+}

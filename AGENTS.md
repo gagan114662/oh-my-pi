@@ -1,336 +1,642 @@
-# Development Rules
-
-## Default Context
-
-This repo contains multiple packages, but **`packages/coding-agent/`** is the primary focus. Unless otherwise specified, assume work refers to this package.
-
-**Terminology**: When the user says "agent" or asks "why is agent doing X", they mean the **coding-agent package implementation**, not you (the assistant). The coding-agent is a CLI tool — questions about its behavior refer to code in `packages/coding-agent/`, not your current session.
-
-### Package Structure
-
-| Package                 | Description                                                                             |
-| ----------------------- | --------------------------------------------------------------------------------------- |
-| `packages/ai`           | Multi-provider LLM client with streaming support                                        |
-| `packages/catalog`      | Model catalog: bundled models.json, provider descriptors, model identity/classification |
-| `packages/agent`        | Agent runtime with tool calling and state management                                    |
-| `packages/coding-agent` | Main CLI application (primary focus)                                                    |
-| `packages/tui`          | Terminal UI library with differential rendering                                         |
-| `packages/natives`      | Bindings for native text/image/grep operations                                          |
-| `packages/stats`        | Local observability dashboard (`omp stats`)                                             |
-| `packages/omptype`      | ArkType-compatible schema validation with a lazy JIT runtime                            |
-| `packages/utils`        | Shared utilities (logger, streams, temp files)                                          |
-| `crates/pi-natives`     | Rust crate for performance-critical text/grep ops                                       |
-
-**Catalog import convention**: code in this repo imports catalog _values_ (bundled models, model-thinking helpers, identity, descriptors, model manager/cache) from `@oh-my-pi/pi-catalog/<module>` — never via `@oh-my-pi/pi-ai`. The pi-ai barrel re-exports only the model/effort _types_ its own signatures use (`Model`, `Api`, `ThinkingConfig`, `Effort`, …); type-only imports of those from `@oh-my-pi/pi-ai` are fine.
-
-## GitHub
-
-Unless user tells you exactly what to write:
-
-- **Never comment on GitHub** (issues, PRs, discussions).
-- **Never create issues on GitHub**.
-
-## Code Quality
-
-- No `any` unless absolutely necessary.
-- **NEVER use `ReturnType<>`** — use the actual type name.
-- **NEVER use inline imports** — no `await import()`, no `import("pkg").Type` in type positions, no dynamic type imports. Always top-level.
-- Check `node_modules` for external API types instead of guessing.
-- **Barrel exports**: prefer `export * from "./module"` over named re-exports, including `export type { ... } from`. In pure `index.ts` barrels, use star re-exports even for single-specifier cases. If stars create ambiguity, remove the redundant export path; do not keep duplicates.
-- **Class privacy**: use ES `#private` fields; leave externally accessible members bare. **No `private`/`protected`/`public` keyword on fields or methods**, except on **constructor parameter properties** where TypeScript requires it (e.g. `constructor(private readonly session: ToolSession)`).
-- **Promises**: use `Promise.withResolvers()` instead of `new Promise((resolve, reject) => ...)`.
-- **Prompts**: never build prompts in code (no inline strings, template literals, or concatenation). Prompts live in static `.md` files; use Handlebars for dynamic content. Import them via `import content from "./prompt.md" with { type: "text" }` — not `readFile`.
-- **Worker scripts**: workers re-enter the CLI entrypoint; never spawn separate worker entry modules. `cli.ts` declares itself as the worker host at startup (`declareWorkerHostEntry()` from `@oh-my-pi/pi-utils/env`) and dispatches hidden argv selectors (`__omp_worker_stats_sync`, `__omp_worker_tab`, `__omp_worker_js_eval`, `__omp_worker_tiny_inference`) before loading the command registry. Spawn sites use:
-  ```ts
-  import { workerHostEntry } from "@oh-my-pi/pi-utils";
-  const hostEntry = workerHostEntry();
-  const worker = hostEntry
-  	? new Worker(hostEntry, { type: "module", argv: ["__omp_worker_<name>"] })
-  	: new Worker(new URL("./<worker>.ts", import.meta.url).href, { type: "module" });
-  ```
-  When the process was started from the omp CLI — source `cli.ts`, npm-bundle `dist/cli.js`, or compiled binary — `workerHostEntry()` is `Bun.main` and the worker re-enters the single entry module, so no per-worker `--compile` entrypoints or bundle entries exist. Outside a CLI host (`bun test`, SDK embedding, standalone `omp-stats`) it returns `null` and the direct-module fallback loads the worker source. New worker kinds MUST add their selector to the dispatch table in `cli.ts` and keep the fallback branch.
-  History: `with { type: "file" }` only copied the entry as a raw asset (workers crashed silently in compiled binaries — issues #1011, #1027), and the later literal-path + extra-entrypoint pattern required keeping spawn literals and two build scripts in sync (issue #1150). The smoke probe below is the live validation of this contract.
-  Validate any new worker with the dedicated smoke probe: `omp --smoke-test` spawns the stats sync worker and the tiny-model subprocess, pings them, and exits — it's wired into `ci:test:smoke` and `scripts/install-tests/run-ci.sh` so binary, source-link, and tarball installs all exercise it. Add a sibling smoke if the new worker is on a different module graph.
-
-## Central Utilities
-
-Before writing a helper, check whether one already exists — `packages/coding-agent/src/utils/`, `@oh-my-pi/pi-utils`, `@oh-my-pi/pi-tui`, and the domain modules next to your callsite. This applies to **everything**: VCS wrappers, formatting/truncation/path-display helpers, image handling, clipboard, streams, temp files, caching. The central versions carry hardening a fresh copy always loses (timeouts, output caps, non-interactive env, lock avoidance, caching, TUI sanitization).
-
-- Search first: `grep` for the operation before implementing it. Two implementations of the same thing is a bug even when both work.
-- Examples of the pattern: `src/utils/git.ts` and `src/utils/jj.ts` are the only sanctioned way to run git/jj (`import * as git from "../utils/git"` — never hand-spawn via `$`/`Bun.spawn`); rendering goes through the helpers in TUI Sanitization below (`replaceTabs`, `truncateToWidth`, `shortenPath`, `PREVIEW_LIMITS`) rather than ad-hoc string math.
-- Missing capability? Extend the central helper (new option, new sub-function on the namespace) and call it — don't fork its logic locally.
-
-## Bun Over Node
-
-Use Bun APIs where they provide a cleaner alternative; fall back to `node:*` only for what Bun doesn't cover. **Never spawn shell commands for operations with proper APIs** (e.g., don't `Bun.spawnSync(["mkdir", "-p", dir])` — use `mkdirSync`).
-
-### Quick reference
-
-| Operation       | Use                                       | Not                                |
-| --------------- | ----------------------------------------- | ---------------------------------- |
-| File read/write | `Bun.file()`, `Bun.write()`               | `readFileSync`, `writeFileSync`    |
-| Spawn process   | `` $`cmd` ``, `Bun.spawn()`               | `child_process`                    |
-| Sleep           | `Bun.sleep(ms)`                           | `setTimeout` promise               |
-| Binary lookup   | `$which("git")` from `@oh-my-pi/pi-utils` | `spawnSync(["which", "git"])`      |
-| HTTP server     | `Bun.serve()`                             | `http.createServer()`              |
-| SQLite          | `bun:sqlite`                              | `better-sqlite3`                   |
-| Hashing         | `Bun.hash()`, `Bun.password.*`, WebCrypto | `node:crypto`                      |
-| Path resolution | `import.meta.dir`, `import.meta.path`     | `fileURLToPath` dance              |
-| JSON5           | `Bun.JSON5.parse()` / `.stringify()`      | `json5` package                    |
-| JSONL           | `Bun.JSONL.parse()` / `.parseChunk()`     | `text.split("\n").map(JSON.parse)` |
-| String width    | `Bun.stringWidth()`                       | `get-east-asian-width`, custom     |
-| Text wrapping   | `Bun.wrapAnsi()`                          | custom ANSI-aware wrappers         |
-
-### Process execution
-
-Prefer Bun Shell (`` $`cmd` ``) for simple commands:
-
-```typescript
-import { $ } from "bun";
-
-const result = await $`git status`.cwd(dir).quiet().nothrow();
-if (result.exitCode === 0) {
-	const text = result.text();
-}
-
-$`do-stuff ${tmpFile}`.quiet().nothrow(); // fire and forget
-```
-
-Methods: `.quiet()`, `.nothrow()`, `.text()`, `.cwd(path)`.
-
-Use `Bun.spawn`/`Bun.spawnSync` only for: long-running processes (LSP, kernels), streaming stdin/stdout/stderr (SSE, JSON-RPC), or process control (signals, kill, complex lifecycle).
-
-When using `pipe` mode, cast the stream:
-
-```typescript
-const child = Bun.spawn(["cmd"], { stdout: "pipe", stderr: "pipe" });
-const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
-```
-
-### Node module imports
-
-Always use **namespace imports** for `node:fs`, `node:path`, `node:os`:
-
-```typescript
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
-import * as os from "node:os";
-```
-
-- Async-only file → `node:fs/promises`.
-- Needs both sync and async → `node:fs`, then `fs.promises.xxx` for async.
-
-### File I/O
-
-Prefer Bun:
-
-```typescript
-const text = await Bun.file(path).text();
-const data = await Bun.file(path).json();
-await Bun.write(path, data); // auto-creates parent dirs
-```
-
-Use `node:fs/promises` for directory ops (`fs.mkdir`, `fs.rm`, `fs.readdir`) — Bun has no native directory APIs. Avoid sync APIs in async flows; use sync only when forced by a synchronous interface.
-
-**Anti-patterns:**
-
-- `existsSync`/`readFileSync`/`writeFileSync` in async code → `Bun.file()` APIs.
-- `mkdir(dirname(path), …)` before `Bun.write(path, …)` → redundant; `Bun.write` handles it.
-- `if (await file.exists()) { await file.json() }` → two syscalls plus race. Use try-catch with `isEnoent`:
-  ```typescript
-  import { isEnoent } from "@oh-my-pi/pi-utils";
-  try {
-  	return await Bun.file(path).json();
-  } catch (err) {
-  	if (isEnoent(err)) return null;
-  	throw err;
-  }
-  ```
-- Multiple `Bun.file(path)` handles for the same path (including across `checkX`/`loadX` helpers).
-- `Buffer.from(await Bun.file(x).arrayBuffer())` → `await fs.readFile(path)`.
-- Existence check + try-catch around the same read → drop the existence check.
-
-### Streams
-
-Prefer centralized helpers:
-
-```typescript
-import { readStream, readLines } from "./utils/stream";
-const text = await readStream(child.stdout);
-for await (const line of readLines(stream)) {
-	/* ... */
-}
-```
-
-Manual reader loops only when the protocol requires it (SSE, streaming JSON-RPC).
-
-### Misc
-
-- **Sleep**: `await Bun.sleep(ms)`, never `new Promise(r => setTimeout(r, ms))`.
-- **Password hashing**: `Bun.password.hash(pw, "bcrypt")` / `Bun.password.verify(pw, hash)`.
-- **String width**: `Bun.stringWidth(text, { countAnsiEscapeCodes?: false })`.
-- **Wrapping**: `Bun.wrapAnsi(text, width, { wordWrap, hard, trim })`.
-
-## Model/Provider Policy Lives in KDL
-
-**NEVER hard-code model- or provider-conditional policy in TypeScript.** No `id.includes("claude")`, no model-name regexes, no per-model lookup tables (effort ladders, pricing, context windows, modalities, API routing, quirk flags). All of it belongs in the KDL rule tree at `packages/catalog/src/compat/rules/`, compiled by `bun run gen:compat` into the committed `rules.json` and resolved at build time via `resolveModelPolicy`/`buildModel`.
-
-Ownership strata (see `src/compat/rules/README.md`):
-
-- `taxonomy/*.kdl` — identity: class membership, families, revision extraction, reviewed overrides, suffix collapse.
-- `classes/*.kdl` — model-lineage truths (behavior inherent to a model line, on any host).
-- `providers/*.kdl` — deployment contracts (behavior a host imposes), plus documented exact-id residue.
-- `runtime/behavior.kdl` — heuristics that run before/outside exact model lookup (`api-routes`, `model-limits`, `exclude-models`, `pricing-peer`, hosted defaults).
-
-Rules for TS code:
-
-- Branching on model identity in TS is allowed **only** through structured facts from `classifyModel()` (`class`/`family`/`revision`/effort facts) — never through string matching on ids, and prefer a KDL axis when one can express the policy.
-- Discovery mappers map authoritative upstream fields as reported; seed neutral values only for fields the upstream omits or misreports **and** KDL explicitly owns via a correction axis (`input-modalities`, `cost-patch`, `limits-patch`, `context-window-floor`, thinking axes). Assert rule-owned corrections through `buildModel`; raw discovery specs remain the right assertion surface for parsing/normalization contracts.
-- An id that no selector can isolate gets an exact-id `models` residue rule with a comment — never a special case in TS.
-- Equal-rank rule overlaps throw `AmbiguousOverlapError` at resolve time; fix with an explicit `priority=` in KDL, not code.
-- After editing rules: `bun run gen:compat` and commit `rules.json` alongside the `.kdl` change.
-
-## Generated Files
-
-**NEVER edit `packages/catalog/src/models.json` directly.** It is generated from upstream sources (stencil.so, provider catalog discovery, OpenCode docs) by `packages/catalog/scripts/generate-models.ts` and the descriptors/resolvers in `packages/catalog/src/provider-models/`. Hand-edits get overwritten on the next regen. The same applies to `packages/catalog/src/compat/rules.json`, compiled from the KDL tree by `bun run gen:compat`.
-
-To change an entry, fix the source:
-
-- **Model/provider policy** (identity, thinking ladders, wire quirks, modality/limit/pricing corrections, API routing, roster exclusions) → the KDL tree in `packages/catalog/src/compat/rules/` (see the section above).
-- **Provider catalog entries** (default model, discovery factory/flags) → the `CATALOG_PROVIDERS` table in `packages/catalog/src/provider-models/descriptors.ts`.
-- **Discovery/request plumbing** (endpoint shapes, auth, response parsing) → the mappers in `packages/catalog/src/provider-models/openai-compat.ts`.
-- **Generator wiring** (upstream merges, premium multipliers, post-processing order) → `packages/catalog/scripts/generate-models.ts`.
-
-Regenerate with `bun run gen:compat` and/or `bun run gen:models` and commit the generated files alongside the source change. Add a regression test against the **rule/descriptor/mapper**, not the bundled JSON, so it survives upstream metadata shifts.
-
-## Logging and CLI Output
-
-Code that may run while the TUI, RPC, SDK, workers, or background runtimes are active MUST NOT use `console.log`/`error`/`warn`; it corrupts rendering or protocols. Use the centralized logger:
-
-```typescript
-import { logger } from "@oh-my-pi/pi-utils";
-
-logger.error("MCP request failed", { url, method });
-logger.warn("Theme file invalid, using fallback", { path });
-logger.debug("LSP fallback triggered", { reason });
-```
-
-Logs go to `~/.omp/logs/omp.YYYY-MM-DD.log` with automatic rotation. Standalone CLI commands that exit without entering the TUI MAY use `console.*` or process streams for intentional user-facing output. Keep structured stdout clean. This exception is semantic, not filename-based; shared code must use `logger` or an explicit output sink.
-
-## TUI Sanitization
-
-All text displayed in tool renderers must be sanitized. Raw content (file contents, error messages, tool output) breaks terminal rendering: tabs → visual holes, long lines → overflow, paths → leak home directory.
-
-**Rules:**
-
-- **Tabs → spaces** via `replaceTabs()` (from `@oh-my-pi/pi-tui` or `../tools/render-utils`).
-- **Truncate** lines with `truncateToWidth()` / `ui.truncate()`. Use `TRUNCATE_LENGTHS` constants.
-- **Shorten paths** with `shortenPath()` (replaces home with `~`).
-- **Preview limits** from `PREVIEW_LIMITS`. No ad-hoc numbers.
-
-**Apply to every render path**, not just the happy one:
-
-- Success output (file previews, command output, search results).
-- **Error messages** — these often embed file content (e.g., patch failure messages include unmatched lines). If a message contains file content, it needs `replaceTabs()`.
-- Diff content (added and removed).
-- Streaming previews.
-
-### Streaming tool previews
-
-Tool-call previews can have **multiple render paths**. If you add preview-only fields or depend on partially streamed args, update every path — not only the final renderer. Streamed argument buffers decode into display args via `decodeStreamedToolArgs` / `ToolArgsRevealController` (`modes/controllers/tool-args-reveal.ts`); both the live event path and transcript rebuilds must go through them — never spread provider-parsed `arguments` next to a raw `__partialJson` (parsed args lag the stream by a throttled parse window).
-
-For the bash tool specifically:
-
-- The pending preview may need raw `partialJson`, not just parsed `arguments`. Parsed args lag until a JSON object closes, which makes inline env assignments appear only at the end.
-- Preserve preview-only fields (e.g. `__partialJson`) through `event-controller.ts`, transcript rebuilds in `ui-helpers.ts`, and merged call/result rendering in `tool-execution.ts`. Missing one path causes inconsistent previews.
-- `ToolExecutionComponent.#buildRenderContext()` for bash must work even before a result exists — the renderer uses call args plus render context to show the command preview while streaming.
-- Verify both live streaming and rebuilt transcript paths after any bash preview change. A fix in one path does not fix the other.
+# Repository Guidelines
+
+`omp`: pre-release Rust impl of Oh My Pi's coding-agent + inference runtime —
+durable agent turns, model routing, project-scoped tools/authorities,
+terminal/native presentation, telemetry, embedded free-threaded Python. Rust
+rewrite of `pi`: port observable behavior, not TS shape.
+
+## Architecture
+
+- `crates/app`: process startup plus CLI, TUI, ACP, RPC, and print adapters.
+  It presents compositions built by `omp-driver`; hidden same-binary child
+  dispatch delegates to `omp-envd` entry points and does not make app the host.
+- `crates/driver`: headless coding-agent composition — discovery, con context
+  and cfg execution, registries, environment wiring, and subagent spawn.
+  `compose_kernel` is the production construction boundary. `crates/driver` +
+  `crates/app` = the production stack (driver composes, app presents); other
+  libraries NEVER build a second production stack.
+- `crates/journal`: authoritative `.oms` journal and blob CAS. `crates/dom`:
+  materialized session tree and patch stream. `crates/vocab`: shared closed
+  DOM/TUI vocabulary. `crates/session`: journal-first session API, fold,
+  components, rewind, and pure projections.
+- `crates/con`: typed convars, commands, bindings, aliases, and cfg persistence.
+  `crates/cache`: unrelated document, GitHub, MCP, secret-key, and statistics
+  caches; it does not own session history.
+- `crates/ext`: extension configuration, dependency resolution, lockfiles,
+  index metadata, and trust domain (`omp-ext`).
+- `crates/serve`: gRPC transport projections serving inference, auth, and
+  blob services (`omp-serve`).
+- `crates/core|proto|rpc|observability`: allocation-aware primitives, wire
+  contracts, RPC, and observability.
+- `crates/agent`: the `Kernel`, dispatcher, job board, cancellation tree,
+  Directors, hooks, extensions, and approvals. A live turn flows app →
+  driver `compose_kernel` → `omp-agent` `Kernel` → `omp-session`, which appends
+  to `omp-journal` and folds into `omp-dom`; `omp-chat` is an actor over
+  `Session::subscribe()` and never owns controller state.
+  `crates/catalog`: model/provider data (`data/`) + transports.
+  `crates/ai`: typed requests → concrete Tower services, routing,
+  recovery middleware → `ChatEvent` streams (`omp-ai`).
+- `crates/tool`: revisioned tool contracts; `crates/tools`: implementations.
+  `crates/env` (`omp-env`) is the typed environment-protocol client and owns no
+  host resources. `crates/envd` (`omp-envd`) is the live project-environment
+  host: daemon transport, filesystem/process/document/tool authorities, and
+  Python extension-host/worker supervision. Host changes go to `omp-envd`;
+  client protocol APIs go to `omp-env`.
+  `crates/edit|ast|walker`: multi-paradigm edit engine, syntax, fs discovery.
+  `crates/shell|shell-builtins`: in-process Bash parser/runtime, built-ins.
+- `crates/tui`: retained declarative UI (`crates/macros` is the workspace-wide
+  proc-macro crate, `omp-macros`); `crates/chat`: terminal and native chat
+  actor/projections; `crates/gui`: native window host.
+  None owns agent/provider policy.
+- `crates/e2e/tests`: authoritative joined-system proofs P1-P10.
+- `docs/adr`: tracked architecture decisions and implementation status.
+- `fixtures`: tracked conformance data. `PLAN.md` and `.plan/` are private,
+  gitignored planning artifacts, unavailable in a clean clone; they NEVER
+  replace tracked decisions or production code/tests.
+- `.omp/tools`, `scripts`, `crates/*/scripts`: agent tooling, release gen,
+  subsystem setup.
+
+Turn flow: `app/src/main.rs` (process bootstrap and hidden `omp-envd` child
+entry dispatch) → `omp_app::run` / `app/src/cli.rs` (command and presentation
+adapter) → `omp-driver` chat/headless composition (environment, registries,
+journal, agent session, and higher-layer host bridges) → `omp-envd`
+project-environment host, reached through `omp-env` clients for effects →
+`agent/src/loop.rs` (mailbox input/interrupts, `TurnClient`, typed tool batches,
+durable `AgentEvent`s) → `omp-ai` (facade + Tower spine; streamed events
+→ storage → app adapter) → TUI retained tree → terminal output materialized
+once at final renderer.
 
 ## Commands
 
-- NEVER commit unless asked.
-- Never use `tsc`/`npx tsc` — always `bun check`.
-- Never run `cargo test` directly for Rust tests — use `bun run test:rs`. It runs `cargo nextest run` (config: `.config/nextest.toml`) followed by a `cargo test --doc` pass, because nextest does not execute doctests. The doctest pass currently executes nothing (pi-natives is a `cdylib`, which rustdoc skips; pi-builtins' examples are `ignore`d vendored uutils docs) and exists so the first runnable doctest added to a lib crate is actually run.
-- Merge commits (maintainer merges of PRs) follow: `Merge PR #<number>: <conventional PR subject> (@<author>)` — e.g. `Merge PR #6386: feat(catalog): add native Meta Model API provider (@eggpeat)`.
-## Rust Build Profiles
+`justfile` = source of truth; use `just`, not raw cargo. `just --list` shows
+all recipes.
+- One-time before anything linking `omp-py`: `just setup-python`.
+- Iterate targeted (`just check-pkg <pkg>`, `just test-pkg <pkg>`); broaden
+  (`check`, `test`, `lint`) after the changed contract passes.
+- E2E separate + expensive: `just e2e` (or `e2e-build|e2e-core|e2e-p7|e2e-p8|e2e-p9|e2e-p10|e2e-baseline`).
+- `just ci` ≈ CI format+rust jobs locally.
 
-Profiles live in the root `Cargo.toml`; `.cargo/config.toml` carries the settings Cargo.toml cannot express. Both are committed, so no local `~/.cargo/config.toml` is required.
+CI (`.github/workflows/ci.yml`): authoritative Cargo-only gate. Format on
+Linux; lint/tests/P1-P10/baseline on `macos-15` arm64 (CPython bundle
+`aarch64-apple-darwin`-only).
 
-| Profile | Use |
-| --- | --- |
-| `dev` | Default. Line tables for our crates, no debuginfo for deps, deps at `opt-level = 2`. |
-| `release` | Shipping build: fat LTO, 1 codegen unit, stripped. |
-| `local` | Fast local release iteration: thin LTO, 16 codegen units, incremental. |
-| `profiling` | `release` codegen with symbols kept, for `perf`/`samply`/Instruments. |
-| `ci` | Thin LTO, no debuginfo, stripped. |
+## Conventions
 
-**Never set `split-debuginfo = "off"` on a profile that has debuginfo.** On Mach-O the linker never merges DWARF into the executable — it writes a debug map (`N_OSO`) pointing at the `.o` files, and `"unpacked"` is what keeps those files. With `"off"` every backtrace frame in our own crates silently loses `file:line`; the `panicked at foo.rs:3` header still prints (that is `#[track_caller]`, not debuginfo), which makes the loss easy to miss. `ci` may use `"off"` only because it sets `debug = false`.
+Deps: all in root `[workspace.dependencies]`; members `{ workspace = true }`,
+NEVER pin versions. Extra features fine:
+`serde = { workspace = true, features = ["rc"] }`. `serde_json` always
+`preserve_order` + `raw_value`; `omp_core::slopjson` (broken/partial/streaming
+JSON) mirrors that surface.
 
-`embed-metadata = false` (in `.cargo/config.toml`) keeps crate metadata in `.rmeta` instead of duplicating it into every rlib — measured 196 MB → 130 MB on a reqwest-sized graph at identical build times. Its accepted spelling is toolchain-coupled; keep it in sync with `rust-toolchain.toml`.
+Env vars `OMP_*`, never `PI_*`; ported code strips upstream (`pi`, `uu`, …)
+env vars, context objects, branding — never aliases. Pre-release: rename+move
+(don't copy); clean cutovers; compat shims, old names, deprecated aliases
+PROHIBITED; update every caller + remove obsolete exports/tests same change.
 
-Rejected, with measurements, so nobody re-litigates them: **sccache** (cannot cache incremental, bin, or proc-macro crates — measured slower than not using it), **mold** (ELF-only; no Mach-O support), and **`panic = "abort"` on `dev`** (Cargo ignores `panic` for the test profile, so the whole dep graph builds twice — 131 MB → 214 MB).
+Unicode/ANSI: `xutf` for ALL Unicode/UTF-8/16/32, grapheme, display-width,
+normalization, ANSI/VT ops. `unicode-normalization` banned. NEVER add utility
+crates for these (`unicode-*`, `utf8-*`, `unicode-segmentation`,
+`unicode-width`, `ansi_*`, `strip-ansi-escapes`); remove redundant deps, don't
+wrap.
 
-## Testing Guidance
+Hashing: two primitives, both in `omp-core` — benchmarked on Apple Silicon,
+don't relitigate. Content/crypto digests → `omp_core::Hash32` (SHA-256 via
+`sha2`, hardware `asm` on aarch64; beat blake3 3.3× at 32 B, single-stream at
+every size). Discretionary in-memory maps/cache keys/dirty-check fingerprints
+→ `omp_core::{FastHashMap, FastHashSet, FastState, fast_hash64}` (foldhash;
+beat fxhash/ahash/xxh3/SipHash on ints, short keys, and buffers). NEVER add
+hasher crates (`blake3`, `xxhash-*`, `rustc-hash`, `ahash`, `fnv`,
+`twox-*`, …) for discretionary hashing; migrate on touch. Exceptions =
+externally fixed algorithms only: format/RFC/vendor contracts (git SHA-1,
+archive CRCs, PKCE/SigV4/JWT SHA-256, gravatar+identicon MD5, HF manifests,
+SSH fingerprints), checksum builtins where the algorithm is the feature,
+pi/Bun behavioral compat (secrets wyhash, hashline xxh32 tags, MCP wyhash
+name shortening), and the extension registry/trust dual-hash schema
+(`b3:`+`sha256:`, Ed25519-signed — blake3 stays until a schema bump).
+Durable artifact addresses are `artifact://sha256/<64-hex>`;
+`ArtifactDigest` renders `sha256:<hex>`.
 
-Test the contract the system exposes — not the easiest internal detail to assert.
+Crates: members `crates/*` (virtual workspace, resolver 3); dirs unprefixed
+(`crates/demo`); package names `omp-` prefixed (`name = "omp-demo"`). Every
+member: real `description` + workspace
+`license`/`authors`/`homepage`/`repository`; README (what it is + structural
+philosophy); inherits
 
-- Every new test must defend one **concrete, externally observable contract**: behavior, output shape, state transition, error mapping, or a regression-prone parsing boundary. If you cannot name the contract, do not add the test.
+```toml
+[package]
+name = "<name>"
+version.workspace = true
+edition.workspace = true
 
-### Good vs. bad test filter
+[lints]
+workspace = true
+```
 
-- **Name the failure mode.** Every test MUST state what a consumer observes if it regresses. Cannot name one? NEVER add it.
-- **Good: transformation.** One fixture MAY prove parse/render/normalize/encode/resolve behavior when output is computed, not echoed.
-- **Good: branch or boundary.** Distinct inputs, empty values, malformed input, version/provider routing, and state transitions MUST prove distinct outcomes.
-- **Good: external contract.** Exact bytes/shape MAY be asserted when a provider, parser, protocol, or persisted consumer reads them.
-- **Good: precedence or negative contract.** Keep explicit `false`/override-wins assertions and required absence only when they prevent a documented leak, downgrade, 400, or incompatible wire field.
-- **Good: regression.** A repro MUST trigger the prior real failure path and assert the corrected observable result.
-- **Bad: static echo.** NEVER test a constructor/builder merely copied a fixture or baked constant into an in-memory config/metadata field.
-- **Bad: success passthrough.** NEVER assert `fn(x) === x` when `x` was already supplied/declared valid; assert a transform, rejection, or downstream effect instead.
-- **Bad: wording/defaults.** NEVER assert prompt/UI boilerplate, a default literal, object existence, non-empty output, or length growth without a consumer contract.
-- **Bad: duplicate rows.** Parameterized/loop rows MUST each cover a distinct branch, provider/model path, or consumer contract; delete same-path duplicates.
-- **Metadata exception.** Exact metadata, identity, ordering, or `undefined` MAY remain only when a downstream consumer depends on it and the test establishes branch, precedence, negative-contract, wire, or regression evidence.
-- **Termination exception.** For cyclic/large inputs, assert a bounded output, surfaced error, or state change; bare `not.toThrow()` is insufficient.
-- No placeholder tests, tautologies, or "the code ran" assertions (`expect(true).toBe(true)`, bare `not.toThrow()`, non-empty string checks, length-grew checks, "prompt exists" checks without semantic assertion).
-- Prefer contract-level tests over implementation details. Avoid asserting internal helper wiring, field assignment, singleton identity, incidental ordering, prompt boilerplate, or passthrough option forwarding unless another component depends on that exact detail.
-- Don't duplicate coverage across abstraction levels. If an integration test already proves the behavior, drop the narrower unit test that restates it through mocks.
-- Tests **must be full-suite safe**, not just file-local safe. No long-lived file-wide mutations of `Bun.*`, `process.platform`, `process.env`, or `Bun.env` when a narrower seam exists. Prefer per-test `vi.spyOn(...)` with `vi.restoreAllMocks()` in `afterEach`. A test that passes alone but poisons later files is broken.
-- **Never use `mock.module()`**. Bun's `mock.module()` mutates the global module registry and leaks across files ([oven-sh/bun#12823](https://github.com/oven-sh/bun/issues/12823)). Use `spyOn` on the imported module object instead. For pass deps, import the pass and spy on `.run`. For package deps, namespace-import and spy on the exported function.
-- For lifecycle/stateful code, prefer one test per invariant or transition over several tiny tests asserting one field each from the same transition.
-- For error handling, trigger the real failure path and assert the surfaced contract — don't instantiate error classes directly or inspect internal metadata.
-- Smoke tests are acceptable only when they catch a failure mode narrower tests would miss. "Package boots" or "command starts" alone is not enough.
-- Assert exact strings, ordering, and formatting only when downstream code parses or depends on the exact bytes. Otherwise assert semantic content.
-- Compile-time guarantees → type checks/type tests, not runtime placeholders.
-- **Never source-grep.** A test that reads an implementation file (`.ts`/`.rs`/build script) and asserts on its _text_ — `expect(src).toContain("someCall()")`, `.toMatch(/import .../)`, `.not.toContain("oldName")`, or "comment must say X" — is banned. It tests how code _looks_, not what it _does_: it breaks on harmless refactors (comment reflow, rename, import reorder) and passes while the behavior is broken. Assert the observable contract instead (run the code, check output/state/error), use the runtime smoke probe for wiring you cannot exercise in-process, and enforce structural invariants (no value-import of X, no self-import) with a type test or an oxlint rule — never a string scan of the source. (Reading a file your code _wrote_ — apply-patch result, generated bundle, temp fixture — and asserting on that output is fine; that is behavior, not a source grep.)
-- Don't add tests for tiny low-risk changes unless they protect a real contract or fix a regression-prone edge case.
-- Prefer focused package-local verification for the changed area.
+Taxonomy: domain prefix after `omp-` (`omp-llm-*`, `omp-shell*`).
+**transport** = provider wire protocol ≠ **dialect** = thread rendering to the
+LLM; NEVER conflate. Providers = catalog data entries; code only for genuinely
+distinct wire behavior; routing stays in ai. `omp-tool` defines
+contracts, `omp-tools` implements — never inverted. Public daemon commands and
+same-binary child roles are dispatched by app; daemon implementation belongs
+in its host crate (`omp-envd` for the project environment), never in app
+presentation internals.
 
-## Changelog
+Style: pinned nightly (`rust-toolchain.toml`), edition 2024. Lints in root
+`[workspace.lints.*]`; `#[allow]` requires `reason`. `cargo fmt` (hard tabs,
+3-col, width 100 — `rustfmt.toml`); NEVER hand-format.
 
-Location: `packages/*/CHANGELOG.md` (per package).
+Enum↔string: hand-written `match self { … => "…" }` tables (any name —
+`name()`, `as_str()`, `label()`, `Display`) PROHIBITED incl. private enums →
+derived strum: `IntoStaticStr`/`Display` emit; `EnumString` parse;
+`#[strum(serialize_all = "...")]` + per-variant `to_string`/`serialize` for
+aliases/irregular names (dotted protobuf paths, multi-word labels —
+irregularity ≠ excuse to hand-write); `ascii_case_insensitive` lax input;
+`const_into_str` keeps `as_str` `pub const fn`. Custom public parse error:
+derive + `map_err`. ONLY escape hatch when strum can't express the shape
+(per-arm logic, data variants w/ dynamic strings, one labeled error across
+many enums): local `macro_rules!` emitting both directions from one
+variant→string table (`vocab!`, `crates/observability/src/semconv.rs`). New bare
+match table = reviewer-reject; migrate on touch.
 
-**Format** — sections under `## [Unreleased]`:
+Composition/errors/state:
+- `crates/driver` is the reusable DI boundary for registries, concrete Tower
+  services, `TurnClient`s, environment sessions, and higher-layer host
+  bridges. `crates/app` adapts that composition to commands and presentation;
+  it NEVER owns environment-host, extension-host, or Python-worker internals.
+  Libraries NEVER build a second production stack.
+- Library errors: `thiserror`, every variant `#[error("…")]`. Hand-written
+  `impl Display`/`impl Error` on errors = reviewer-reject. Errors NEVER pass
+  through formatters: string-payload variants (`Variant(Str)`,
+  `Variant(String)`, `reason: Str` catch-alls) and stringified inner errors
+  (`sf!("…: {error}")`, `format!`, `{error:?}`, `.to_string()`) =
+  reviewer-reject — carry the typed inner error via `#[source]`/`#[from]` and
+  the identifying facts as named fields; render once, at the app/miette
+  boundary. Static-message errors are unit variants with the text in
+  `#[error("…")]`, never a `Str` payload. App orchestration:
+  `miette`; classify/redact untrusted provider diagnostics before stderr.
+- Durable state = append-only transcript journal + blob store; turn state =
+  `AgentSnapshot` + journal projection; NEVER a parallel mutable source of
+  truth.
+- Loops: one `flume` mailbox; priority lifecycle: `tokio::watch`.
+  Ownership/cancellation explicit.
+- Every public symbol documented (`missing_docs` workspace-warned).
 
-- `### Breaking Changes` (first if present)
-- `### Added`
-- `### Changed`
-- `### Fixed`
-- `### Removed`
+Performance sections below load-bearing + intentionally detailed. NEVER
+weaken, summarize away, or bypass in refactors.
 
-**Rules:**
+### Allocation Discipline (CRITICAL)
+Prefer `&T`/`&str`/`&[T]` whenever lifetime permits. Think twice before
+`String`/`Vec`. `omp-core` replacements MANDATORY in their target situation,
+NOT violations to skip outside it. Test: removes allocations/copies/locking on
+a real path? no → default type right; don't churn.
+- `Vec<T>` by growth:
+  - small (≲12), hot, or short-lived → `smallvec::SmallVec` (inline until
+    spill). Cold/long-lived/usually-large → plain Vec (spilled SmallVec =
+    worse Vec). Pinned 2.0-alpha (root `Cargo.toml`): two const params, NOT
+    1.x array-generic (training-data default; won't compile here):
+    ```rust
+    SmallVec::<[StateEntry; 8]>::new();  // WRONG — 1.x syntax
+    SmallVec::<StateEntry, 8>::new();    // correct — 2.0-alpha syntax
+    ```
+  - compile-time hard bound → `[T; N]` (`[Option<T>; N]` if slots may be empty).
+  - concurrent append-only log, read while written → `omp_core::AppendVec`
+    (lock-free appends, stable indices); single-threaded / built before read →
+    Vec fine.
+  - unbounded, built once, moved once (scratch, collect-and-return, channel
+    payloads) → Vec correct.
+  - cloned repeatedly (snapshots, per-turn/per-event state, values fanned to
+    tasks/channels) → `im::Vector` (Arc-backed structural sharing, O(1)
+    clone, cheap mutation of shared copies). Requires `T: Clone`; NOT
+    contiguous — consumers needing `&[T]`/`as_slice`/FFI stay on Vec. Only
+    pays when the O(1) clone survives to the consumer: small (≲12) vectors of
+    cheap-clone items stay SmallVec, and if every consumer flattens back into
+    a Vec/SmallVec anyway, the persistent tree is pure overhead — don't
+    convert.
+- Strings: default `omp_core::Str` (`crates/core/src/str.rs`; NOT smol_str).
+  Inline ≤23 bytes; heap `Bytes`-backed: O(1) clone, zero-copy
+  slice/split/trim. Build `StrMut`+`freeze()` or `fmts!`; convert `IntoStr`
+  (`.to_str()`). Pays for stored/cloned/sliced strings (ids, names, tokens,
+  messages). `String` fine as transient build buffer consumed immediately +
+  APIs requiring it (`fmt::Write`, FFI, serde sinks). Large/edited text →
+  rope (`ropey`).
+- Bytes: `omp_core::CowBytes` when shared/sliced/cloned — replaces
+  `Cow<'_, [u8]>` (borrowed | `Bytes`-owned; O(1) clone, zero-copy slicing).
+  Built once, single consumer → `Vec<u8>` fine.
+- Maps/sets keyed by enums/small dense ints → `omp_core::SparseMap`/`SparseSet`
+  (bitmap presence + packed values). Clone-heavy maps (state snapshots cloned
+  per event/turn, shared caches) → `im::HashMap`/`im::OrdMap` (O(1)
+  structural-sharing clone). Plain `HashMap` correct for sparse/unbounded
+  keys, strings, no small dense index, and no repeated clones.
+- Binary↔text: `omp_core::encoding` (`hex`/`base64`/`base32`), stack
+  `ArrayStr<N>` outputs. External encoding crates banned outright — no
+  exception.
 
-- New entries always go under `## [Unreleased]`.
-- Entries are one line, brief, and user-facing: lead with what the user will see or can now do. Root-cause narration and implementation detail belong in the commit/PR, not the changelog.
-- Never modify already-released sections (e.g., `## [0.12.2]`) — they are immutable.
-- Don't flag changelog section order or formatting in reviews or PRs — `bun run release` runs `fix-changelogs` which normalizes everything automatically.
+- `sf!`: literal/expr arms (`sf!("lit")`, `sf!(STATIC)`) = `Str::new_static`,
+  free — the formatting arm allocates. Three formatting-arm bans, each
+  reviewer-reject:
+  1. statically-known text: `sf!("{}", CONST)`, `sf!("{}{}", ESC_A, ESC_B)`,
+     enum→string match arms — use the literal/expr arm, `concat!`, a
+     precomputed const, or derived strum (`IntoStaticStr`); a `Str`-returning
+     fn whose every arm is static returns `&'static str` instead.
+  2. `sf!(…)` immediately copied into an existing sink
+     (`push_str(&sf!(…))`, `StrMut::new(sf!(…).as_str())`) — `write!` into
+     the `StrMut`/`String` directly; one buffer, zero intermediates.
+  3. per-frame/per-key/per-line/per-cell paths — format on state change and
+     cache, or format into a stack `ArrayStr<N>`; paint re-slices, never
+     re-formats. Errors NEVER go through formatters (see errors bullet).
+- Branded string ids (`omp_core::string_id!`): bare `Id` (= `Id<Str>`) is the
+  owned form for storage — fields, map keys, moves. Explicit `Id<str>` is the
+  borrowed query form (`Id::from_ref`, a zero-cost `#[repr(transparent)]`
+  cast). Lookup/query fns take `&Id<str>`, NEVER `impl AsRef<Id<str>>`; raw
+  string callers pass `Id::from_ref(text)`. An owned `&Id` dereferences to
+  `&Id<str>`, so callers holding stored ids pass `&id`. Minting an owned id at
+  a query site just to borrow it = reviewer-reject. Same rule for ANY
+  newtype-over-string lookup API: a query path allocates nothing. New id
+  newtypes MUST use the shared macro, never a local copy.
 
-**Attribution:**
+### Type Size Discipline (CRITICAL)
+`clippy::result_large_err|large_enum_variant|large_stack_arrays|large_futures`
+= measurement (our type is fat), not a request to add a pointer.
+- Boxing to silence a size lint PROHIBITED, reviewer-reject:
+  `Err(Box<MyError>)`, `Variant(Box<MyPayload>)`, `Box<SmallVec<..>>`,
+  `field: Box<MyStruct>`, box-only wrapper structs,
+  `#[allow(clippy::result_large_err, reason = "…")]` — same defect: fat type
+  survives, every construction pays an allocation, error path = only heap
+  path. Ditto `Box::new([0u8; N])` where a right-sized `Vec`/`BytesMut`
+  belongs.
+- Fix the type: measure (`size_of`) → find fat field → shrink. Recurring:
+  - `SmallVec<T, N>` inline capacity in cold/cloned type (4×`Str` = 136 B):
+    cold+cloned → `Arc<[T]>` (16 B, O(1) clone); cold+uniquely owned →
+    `Box<[T]>`. Inline capacity = hot/short-lived/usually-small only; never
+    declarations, identities, diagnostics.
+  - always-contiguous run (physical indexes, sequence ranges) → two-field
+    run/range struct, not a collection.
+  - identity struct of several `Str`s cloned into maps/messages/errors → one
+    `Arc`-backed handle w/ accessors (8 B, O(1) clone, forwarded
+    `Eq`/`Ord`/`Hash`).
+  - fields derivable from a sibling | duplicated error↔source → delete.
+  - error variant carrying a whole aggregate for a `{:?}` → carry only the
+    identifying facts it names.
+- One exception: foreign fat types (prost message, provider payload,
+  unshrinkable foreign struct) MAY box — that ONE field, never our own
+  error/enum around it; comment why on the field.
+- Pin the win — shrunk type gets a compile-time guard; regression = build
+  failure, not a later lint:
+  ```rust
+  const _: () = assert!(size_of::<Effects>() <= 96, "Effects must stay compact");
+  ```
 
-- Internal (from issues): `Fixed foo bar ([#123](https://github.com/can1357/oh-my-pi/issues/123))`.
-- External contributions: `Added feature X ([#456](https://github.com/can1357/oh-my-pi/pull/456) by [@username](https://github.com/username))`.
+### Async, Iterator & Codegen Discipline (CRITICAL)
+House rules, proven in sibling codebase (tetra). Not suggestions.
+- Nightly features = the point of the pinned toolchain. Crate MUST gate
+  exactly what it uses atop `lib.rs` — and again in every integration
+  test/example (separate crates). Canonical trait-plumbing set:
+  `impl_trait_in_assoc_type` + `type_alias_impl_trait` (impls infer
+  future/iterator types in assoc-type position); `min_specialization`
+  (`default fn` fallbacks); `const_eval_select`/`core_intrinsics` codegen
+  hints (`core_intrinsics` also needs
+  `#![allow(internal_features, reason = "…")]`). NEVER redesign an API around
+  a missing stable feature when a nightly gate gives the zero-cost shape.
+- Async traits unboxed; MUST NOT allocate per call. Two sanctioned shapes:
+  1. callers never name the future → RPITIT:
+     `fn run(&mut self) -> impl Future<Output = T> + Send + '_;`
+  2. nameable (stored, composed, downstream trait like `tower::Service`) →
+     (generic) associated type, impl-inferred:
+     ```rust
+     pub trait Deliverable<A: ?Sized>: Send + 'static {
+        type Result: Send + 'static;
+        type Future<'c>: Future<Output = Self::Result> + Send + 'c;
+        fn deliver<'c>(self, target: &'c mut A) -> Self::Future<'c>;
+     }
+     // impl side — concrete type inferred from the async block:
+     type Future<'c> = impl Future<Output = Self::Result> + Send + 'c;
+     fn deliver<'c>(self, target: &'c mut A) -> Self::Future<'c> {
+        async move { /* … */ }
+     }
+     ```
+  `tower::Service`/hyper same rule: `type Future = impl Future<Output = …>;` —
+  never `BoxFuture`. Sync answer → `future::Ready<T>`/`future::ready(v)`, not
+  an async block, not a box.
+- `#[async_trait]`, `BoxFuture`, per-call `Box::pin`: quarantined — ONLY cold
+  `dyn` boundaries dominated by real I/O (DNS, remote storage, connection
+  establishment); one allocation per network round trip is noise. Per
+  message/frame/token/byte → PROHIBITED. Hot-ish `dyn` → box ONCE at
+  construction behind an alias
+  (`type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;`),
+  never per poll/request.
+- Enums before `dyn`: one slot, several concrete types → variant per common
+  type + single `Boxed(Pin<Box<dyn Trait>>)` fallback; constructor fast-paths,
+  boxes only in the `else` arm; common cases dispatch by `match`,
+  allocation-free.
+- `#[inline]` on small cross-crate hot-path fns; `#[inline(always)]`
+  lint-sanctioned when measured.
+- Specialize > runtime dispatch: blanket impl (e.g. `Display`-based
+  conversion) as `default fn`; concrete fast paths (`&str`, integers)
+  override via `min_specialization`. Generic path correct, common path
+  allocation- and format-machinery-free, zero branching.
+- Iterators lazy, borrowed, unboxed. Return `-> impl Iterator<Item = …> + '_`
+  declaring every capability the chain has (`+ Clone`,
+  `+ DoubleEndedIterator`, `+ FusedIterator`, `+ ExactSizeIterator`). Yield
+  `&T` | O(1)-clone items (`Str`, `Bytes` slices), never fresh allocations.
+  NEVER `.collect()` an intermediate `Vec` just to re-iterate — chain adaptors
+  end to end, collect only at the final owner, if at all. Nameable iterator
+  type (`IntoIterator::IntoIter`, stored field) → TAIT alias, not a written
+  adaptor tower, not a box:
+  ```rust
+  pub type Iter<'s, T: 's> = impl DoubleEndedIterator<Item = &'s T> + FusedIterator + 's;
+  impl<'a, T> IntoIterator for &'a Container<T> {
+     type Item = &'a T;
+     type IntoIter = Iter<'a, T>;
+     fn into_iter(self) -> Self::IntoIter { /* plain adaptor chain */ }
+  }
+  ```
+  Containers impl `IntoIterator` for `&T`/`&mut T`/`T` w/ concrete or TAIT
+  types. `Box<dyn Iterator>`: same quarantine as `BoxFuture`.
+- Tower-style stacks allocate at construction, not per call. Layers compose
+  ONCE at build; a request path never assembles middleware.
+  `poll_ready` → `call` MUST run on the SAME instance — readiness on one clone
+  says nothing about the clone you call; skipping hides backpressure.
+  Borrowed-service contract = hand-rolled pin-projected state-machine future,
+  not a box: `NotReady { svc: &'c mut S, msg } → Pending(#[pin] S::Future) →
+  Done`; `poll` = `ready!(svc.poll_ready(cx))?` then `svc.call(msg)` on that
+  same `&mut S`. Pure delegation forwards the inner future verbatim
+  (`type Future = <S as Service<Req>>::Future;`) — no wrapper.
+  Exception 1 (narrow, documented): type-erasure handle whose readiness gate
+  lives INSIDE the erased call MAY `self.clone().oneshot(req)` in an inferred
+  future + always-`Ready` `poll_ready` — requires cheap-clone (`Arc`-backed)
+  handle + doc comment on `poll_ready` naming where readiness is enforced.
+  Never generalize.
+  Exception 2 (measured; `async_stream` middleware only): stream-transforming
+  layers (retry/rotate/repair) returning a wrapped response stream MAY
+  heap-pin one generator per call behind a TAIT alias
+  (`Box::pin(async_stream::stream! { … })` inside
+  `impl Stream + Send + Unpin`). Fully-inline composition embeds every inner
+  layer's state + poll frames in the parent's; a 7-layer stack MEASURED to
+  overflow the thread stack at construction (debug builds). Property of the
+  current generator impl, not a law — a hand-written pin-projected machine
+  avoids the box; preferred for hot layers. Never cite outside
+  stream-returning middleware; dyn erasure ≤ once, at the stack's outer
+  boundary. Thin wrappers (permit holders, taps) + short-circuits (`Either`,
+  one-shot `stream::once`) stay unboxed via pin-projection.
+- Scratch buffers: owned once, recycled — two modes, never conflated. Hot
+  encode/frame path owns one pre-sized `BytesMut` (`with_capacity` at a
+  measured watermark):
+  1. true scratch reuse — contents consumed in place before next round:
+     `clear()` between rounds; capacity survives; steady state
+     allocation-free.
+  2. zero-copy transfer — result escapes: `split().freeze()` hands the filled
+     prefix (+ its share of the backing allocation) as `Bytes`; unfilled tail
+     remains; later rounds `reserve` (amortized realloc). Price of not
+     copying — accept knowingly; don't claim capacity survived.
+  Derived views (headers, sub-ranges): `slice(..)` on the frozen `Bytes`,
+  never a copy. Storage `CowBytes`/`Str`; assembly `BytesMut`.
+- Locks: `parking_lot::{Mutex, RwLock}`, never `std::sync`.
+  `tokio::sync::Mutex` ONLY when the guard is genuinely held across `.await`.
+- Channels: `flume`, never `tokio::sync::mpsc`/`std::sync::mpsc`. Actor loops:
+  single flume mailbox; priority signals (resize, shutdown) ride
+  `tokio::watch` + `select!`, not a second queue.
 
-## Releasing
+### TUI Rendering Doctrine (crates/tui, CRITICAL)
+Port exists because pi's `string[]`+ANSI+`render()` contract was per-frame
+heap-grooming. Non-negotiable:
+- Text parsed ONCE at the boundary: ANSI/VT decomposed (via `xutf`) where
+  external text enters (process output, pastes, files); downstream components
+  assume ZERO escapes, store none. Sinks get `render(style, text)`; ANSI
+  re-emitted exactly once, at final materialization into the stdout buffer.
+- Caches own memory: one pooled text buffer + `(Style, Range)` spans;
+  re-present = re-slice, not re-parse. Per-frame line buffers (`Vec<Line>`
+  fresh each paint) = bug, not style.
+- TML degrades like HTML: unknown tag → `CustomElement` (registered renderer
+  if any, else children render, layers like `div`). Bad tag MUST NOT fail the
+  document into raw-text fallback.
+- Props inherit like CSS: `<col fg=blue>hi</col>` colors w/o explicit
+  `<text>`; any prop applies where meaningful; well-known props typed +
+  non-allocating, arbitrary KV beside. Color fields accept
+  `#xxx`|`#xxxxxx`|`rgb(a)`|`hsl(a)`|`lab`/`oklch`|full HTML names|gradients
+  as plain `bg`/`fg` values (with angle) — gradients are values, not special
+  elements.
+- `UiContext` (charset: ascii | unicode | nerdfont; theme) reaches every
+  component; hardcoded colors + hand-emitted glyphs banned. Icons from
+  `icons.tsv` (generic name + optional specific alias, per-charset, degrading
+  inline). Border defaults themed + dim, not `#fff`.
+- `dom!` = canonical implemented construction (`layout!` remains planned;
+  see ADR 0031) (typed props, loops, `if`/`match`,
+  `IntoComponent` for `&str`/`String`/`Str`/`()`/Vec).
+  `write!`/`format!`→`String`→reparse = discouraged path.
+- Effects are props, not one-offs: shimmer, hover gradient + eased lift,
+  streaming reveal (`<text reveal>`), truncate-from-start, tree/checklist,
+  clickable scrollbars, non-committed sidebars — example needs it → reusable
+  prop/component in core FIRST. Never example-local visual features.
+- Examples near-zero boilerplate (`App` host, a `start`, done). Example
+  touching kitty image ids, raw escape dispatch, terminal probing, focus
+  routing, clipboard internals ⇒ engine missing the primitive — fix engine,
+  not example. The editor itself is built from components for recomposition.
+- Alt buffer only where required (overlays, welcome scene). Chat/transcripts
+  inline + mouse-selectable; quit restores the terminal cleanly (no stray
+  mouse-tracking spam).
+- Input = one mailbox: decoded `TerminalEvent`s (real input, debug injections,
+  resize) through a single async flume mailbox; resize wins via watch +
+  `select!`. No polling `read()` loops, no per-example key tables. Keyboard
+  input instantly clears mouse-hover; only ever one visible cursor/focus.
 
-1. Ensure all changes since last release are in each affected package's `[Unreleased]` section.
-2. Run `bun run release`.
+### Porting (from pi)
+1. Read pi's impl in extreme detail first — incl. `crates/natives`, compat
+   shims, support detection, tests. Missed behaviors (editor keys,
+   paste/drag-drop, resize-settling, truncation) = user-reported bugs within
+   hours.
+2. Copy pi's tests; drop TS-shaped compensations (throttles, GC workarounds,
+   UTF-16 defenses — "ts is slow, rust isn't"). Port behavior, not shape:
+   reimplement where the shape is wrong (mermaid, slopjson, brush parser);
+   never wrap what should be native.
+3. Generalize while porting: themed, charset-aware, prop-driven engine
+   primitives, not one-example checkmarks.
+4. Match pi where good (editor UX, telemetry, statusline semantics, alt-buffer
+   resize handling); exceed where weak (renderer contract, error taxonomy,
+   providers-as-data).
+5. Close pi's gaps (missing builtins, slash-arg completion, …) while in the
+   area.
 
-The script handles version bump, CHANGELOG finalization, commit, tag, publish, and adding new `[Unreleased]` sections.
+### Locked Deviations from pi (owner decisions — NEVER port back)
+"pi does X" is NEVER an argument for any item below. Each was decided
+explicitly; regressing to pi shape = defect, not parity. The decisions below are tracked here; the historical private audit ledger
+(`.plan/parity-regression-audit.md`) is not shipped in clones.
+- Extensions/eval: embedded free-threaded CPython only — no JS/TS plugin
+  runtime, no multi-language eval; stdlib frozen in-binary.
+- Shell: in-process bash parser/interpreter + builtin coreutils; NEVER shell
+  out to `/bin/bash` or resolve via `$PATH`. Session shell owns pgids,
+  signal escalation (TERM → grace → KILL), persistent cwd/exports,
+  process-tree cleanup.
+- File edits go through the envd document authority (versioned CAS + fuzzy
+  3-way rebase, typed conflict ranges) — never pi's direct disk read/write.
+- Tools: minimal fixed wire roster; optional capabilities/MCP ride `dyn`
+  builtin devices — NEVER pi's discoverable `loadMode`/dynamic schema
+  mutation (prompt-cache invalidation). Versioned identities (`name@rev`);
+  single-stream lifecycle (ArgFeed → speculative preview → commit → typed
+  verdict), never pi's renderCall/execute/renderResult callbacks; renderers
+  consume `IncomingParams` live during streaming, not after settle.
+  Charitable arg decoding + faithful raw journaling. Central spill gate +
+  `artifact://` addressing — no tool-local string truncation. Every tool
+  schema carries the `i` intent param.
+- Inference: providers-as-data (catalog/KDL); model-name conditionals
+  (`model_id.contains(…)`) and hardcoded model counts/metadata in `.rs` =
+  reviewer-reject (lintx-enforced). Typed serde/prost wire structs — no
+  `json!`/untyped `Value` traversal. Forced tool calls are caller intents
+  with an escalation ladder (soft prompt first; native flags only when
+  cache-free). Provider stream frames decode to canonical semantic events,
+  never forwarded literally. No vendor server-side tools (lock-in).
+- Prompts: scribe compiled templates with banded named slots
+  (Frozen/Stable/Dynamic/Volatile); volatile facts (date, cwd, mounts) NEVER
+  in a stable prefix; one structured notices channel, not pi's seven ad-hoc
+  XML tag formats.
+- Control plane: stacked regimes + campaign arbiter (`omp.Decision`,
+  `docs/py/15-regimes.md`); the agent loop is a generic hook surface —
+  hardcoded per-feature outcome tracking (TTSR-style) prohibited.
+- Runtime: tokio + rayon only (custom executor crates prohibited); local
+  audio/ML via candle, never C/C++ binding graphs (whisper-rs, llama-cpp).
+- Feature graphs earn their weight: a crate enabling a feature whose code it
+  never imports (e.g. app → `omp-ai/realtime` → WebRTC/DTLS/
+  Opus) is a defect; cold `cargo run --bin omp` build time is a gate. No
+  dual-committed catalog formats, no leftover port fixtures, no lockfiles
+  nothing reads.
+
+### Working Style
+- Orchestrate in parallel: one agent per crate/util/provider/category; `sonic`
+  for mechanical moves/renames (`sd`/bash bulk renames, never hand edits);
+  scouts only for genuinely unknown files. Sequential one-agent-at-a-time =
+  failure mode.
+- Finish the whole ask: no scaffolds, no "rest is trivial", no half-ports.
+  Done = compiles, wired, exercised.
+- Verify by running: TUI changes get real-PTY proof (Testing & QA) before
+  claiming done — every input path, resize, quit-cleanup.
+- NEVER revert/`git checkout` user edits; user edits/renames in flight —
+  adapt to the tree as is.
+
+## Key Files
+`Cargo.toml`: members, shared deps, lints, release profile.
+`rust-toolchain.toml`/`rustfmt.toml`/`clippy.toml`/`rust-analyzer.toml`:
+compiler + enforced style/concurrency policy. `.cargo/config.toml`: vendored
+`PYO3_CONFIG_FILE`, required before Cargo resolves `pyo3`. `justfile`: all
+commands (sync w/ CI + crate READMEs). `crates/proto/proto` + `build.rs`:
+protobuf sources, pure-Rust codegen. `crates/tui/README.md` + `icons.tsv`: TUI
+architecture, debug protocol, charset-aware icons. `crates/e2e/README.md`:
+harness contract. `crates/py/README.md` + `build.rs`: embedded Python linkage,
+generated inputs.
+
+## Runtime/Tooling
+- Rust pinned `nightly-2026-08-08` (+ `rustfmt`, `clippy`, `rust-analyzer`);
+  NEVER redesign nightly-dependent APIs around stable.
+- Cargo for Rust; Bun for JS/TS (never Node/npm/pnpm/yarn); `uv` for Python
+  (never pip).
+- Tests run under `cargo nextest run` (config: `.config/nextest.toml`), never
+  bare `cargo test`. nextest does NOT run doctests, so every recipe pairs it
+  with `cargo test --doc`; omp has doctests in 25+ modules (`crates/core`,
+  `crates/shell`, `omp_core::slopjson`). Adding a nextest call without the
+  doctest half silently drops that coverage. Prefer `just test` /
+  `just test-pkg <crate>`, which already run both.
+- Protobuf: `protox`; no system `protoc`.
+- Workspace env vars `OMP_*` only: `OMP_TUI_DEBUG`, `OMP_TTY`, `OMP_PY_SITE`.
+- User configuration lives in `~/.o2` (owner decision; `OMP_CONFIG_DIR` overrides): `config.cfg`,
+  agent assets, cfg scripts. Single source: `omp_core::dirs::config_dir` (`CONFIG_DIR_NAME = ".o2"`,
+  pinned by test). NEVER put config under the data dir, `~/.omp`, or XDG config; cfg files load
+  leniently (`Ctx::exec_configs`) so a stale line from an older build never blocks startup.
+  `PYO3_CONFIG_FILE` = required upstream pyo3 exception.
+- Release profile deliberate (`opt-level = 2`, thin LTO, 1 codegen unit,
+  stripped, unwind panics); change only w/ measured evidence.
+
+### Embedded Python (omp-py)
+- `crates/py`: statically links CPython 3.14t (free-threaded), boots
+  in-process: `Engine::builder().init()` → `engine.attach(|py| ...)`. Native
+  modules: `pyo3::append_to_inittab!` before `init`. `omp-demo` bin ships from
+  the same crate. Requires `just setup-python`
+  (`crates/py/scripts/fetch-python.sh`) once → gitignored `vendor/python`
+  (python-build-standalone archive + derived build inputs).
+- Frozen pure-Python packages (e.g. cloudpickle): pinned
+  `crates/py/requirements.txt`; fetch script resolves via `uv` → gitignored
+  `vendor/python/bundled/` (skipped while stamp matches manifest) +
+  regenerates tracked `crates/py/THIRD-PARTY-NOTICES.txt`
+  (= `omp_py::THIRD_PARTY_LICENSES`) — rerun after manifest edits, commit the
+  notices. Build script only validates stamp + packs; native wheels rejected
+  at fetch — those go into site-packages.
+- pyo3 via `PYO3_CONFIG_FILE` in `.cargo/config.toml` (default
+  `vendor/python/pyo3-config.txt`, fast dev links). Release links
+  `vendor/python-release` (`just build-release`); its pgo+lto pbs variant =
+  LLVM-22 LTO bitcode, auto-routes through Homebrew LLD 22
+  (`brew install lld@22`, via `crates/py/scripts/ld64.lld`; `needs-lld` marker).
+  Enforced loudly by omp-py's build script:
+  1. `PYO3_CONFIG_FILE` MUST point at `vendor/python/pyo3-config.txt` before
+     cargo runs (repo `.cargo/config.toml` covers members; external crates set
+     their own `[env]`/environment) — else pyo3 silently links a host Python.
+  2. Consumer bin crates replicate final-link flags `--ld-path=<shim>` +
+     `-Wl,-export_dynamic` in their own build script; working examples:
+     `crates/app/build.rs`, `crates/e2e/build.rs`.
+- Stdlib embedded as marshalled bytecode, served from memory; only real search
+  path `$OMP_PY_SITE` (default `~/.local/share/omp-py/site-packages`). End
+  users install wheels w/ any free-threaded 3.14 interpreter, no checkout:
+  ```sh
+  uv python install 3.14t
+  uv pip install --python "$(uv python find 3.14t)" \
+      --target "${OMP_PY_SITE:-$HOME/.local/share/omp-py/site-packages}" numpy
+  ```
+
+### TUI Debugging (`tui` tool, `OMP_TUI_DEBUG`, `OMP_TTY`)
+Prefer `.omp/tools/tui.ts`: runs an example/bin on a Bun-native PTY (real
+controlling terminal — SIGWINCH resizes + immediate-mode hosts behave as
+production); screenshots (`text`, emulator `screen` for any app, pixel `shot`
+PNGs from an in-process rasterizer), component trees (`tree`), widget values,
+key/mouse/paste injection (each echoing the resulting screen), resizes, raw
+byte-stream stats as one session-based tool. Structured ops ride hook 1; hook 2 for external harnesses w/o their own
+PTY:
+- `OMP_TUI_DEBUG=<unix-socket-path>`: `Terminal::enter` starts a server thread
+  on the socket, line-delimited JSON ops (`text`, `tree`, `values`, `keys`,
+  `event`, `mouse`, `resize`, `quit`, ...) — see "Debug a running app",
+  `crates/tui/README.md`. Wire speaks `TerminalEvent`: injected input rides
+  the same mailbox as decoded terminal bytes; `text`/`info` answer from the
+  last paint on every host; `frame`/`tree`/`values` = mailbox queries only
+  `App` hosts answer (server times out elsewhere); `quit` injects `C-c`.
+- `OMP_TTY=<pty-slave-path>`: reroutes ALL terminal I/O (input, rendered
+  frames, capability probes, terminal identity) to that device; hold the
+  master side to script the UI + capture the exact byte stream a terminal
+  would see. stdout untouched.
+
+```python
+import fcntl, os, pty, struct, subprocess, termios
+master, slave = pty.openpty()
+fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+proc = subprocess.Popen(
+    ["target/debug/examples/gallery"],
+    env=dict(os.environ, OMP_TTY=os.ttyname(slave), TERM="xterm-256color"),
+)
+os.read(master, 65536)          # frames + control sequences
+os.write(master, b"\x1b[C")     # keys (write escape sequences)
+os.write(master, b"\x03")       # Ctrl-C quits the examples
+```
+
+Caveats: set winsize via `TIOCSWINSZ` before spawn (`SIGWINCH` only reaches
+the controlling terminal; live resizes don't propagate). Capability probe
+waits for replies — answer DA1 (`\x1b[?62c`) or let it time out. Feed the
+master stream to a VT emulator (e.g. `pyte`) for screen assertions.
+
+## Testing & QA
+- Unit tests colocated in `src` where private behavior matters; public
+  contracts + cross-module → `crates/*/tests`.
+- `insta` snapshots: shell parser/tokenizer. `proptest`: encoding, zero-copy
+  slicing, transcript replay, round-trip invariants. Review snapshots; NEVER
+  accept blindly.
+- Test at the owning seam: `crates/envd` for environment-host, extension-host,
+  and Python-worker behavior; `crates/env` for client/protocol behavior;
+  `crates/driver` for headless/session composition; `crates/app` for CLI,
+  presentation, and protocol adapters. Prefer these seams over mocks of
+  production authority.
+- `crates/e2e/tests/p1_doc_race.rs`…`p10_lift_idempotence.rs`, including
+  `p9_extension_control.rs`, `p9_isolation.rs`, and `tool_sources.rs`: authoritative for
+  concurrency, cancellation, detached jobs, schema isolation, prefix
+  stability, crash/replay, real-PTY lifecycle, recorded perf. Bounded waits +
+  RAII-owned processes; preserve both.
+- P8 = non-gating recorder (metric math/schema, p95 frame time, token-loop
+  throughput). NEVER turn noisy host measurements into an unreviewed hard
+  gate.
+- TUI changes MUST be exercised on a real PTY via `.omp/tools/tui.ts` (or the
+  hooks above): input, resize, clean quit restoration.
+- No numeric coverage target. Coverage = changed observable behavior defended:
+  branch edges, precedence, state transitions, malformed input, cancellation,
+  recovery. Narrow test → affected crate → relevant E2E proof.

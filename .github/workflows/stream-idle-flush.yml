@@ -1,0 +1,190 @@
+name: Stream idle durability and P6
+
+on:
+  push:
+    branches: [fix/stream-idle-flush-p6]
+  pull_request:
+    branches: [main, omp2]
+    paths:
+      - crates/agent/**
+      - crates/driver/**
+      - crates/app/**
+      - crates/e2e/**
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/stream-idle-flush.yml
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source to build; dispatch b59b952172 separately for the red baseline
+        type: string
+        required: false
+permissions:
+  contents: read
+
+jobs:
+  durability:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Record selected source and install the same regression checker
+        working-directory: source
+        run: |
+          mkdir -p target/stream-idle-flush/latency
+          git status --porcelain=v1 > target/stream-idle-flush/source-before.txt
+          cp ../proof-tools/crates/agent/tests/stream_coalescing.rs crates/agent/tests/stream_coalescing.rs
+          python3 - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          def rev(cwd):
+              return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=cwd, text=True).strip()
+          def digest(path):
+              return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          report = {'source_revision': rev('.'), 'checker_revision': rev('../proof-tools'),
+                    'source_status_before': Path('target/stream-idle-flush/source-before.txt').read_text(),
+                    'source_status_after': subprocess.check_output(['git', 'status', '--porcelain=v1'], text=True),
+                    'checker_sha256': digest('crates/agent/tests/stream_coalescing.rs'),
+                    'p6_sha256': digest('crates/e2e/tests/p6_crash_resume.rs'),
+                    'latency_helper_sha256': digest('scripts/p6-latency.py'),
+                    'workflow_sha256': digest('../proof-tools/.github/workflows/stream-idle-flush.yml'),
+                    'cargo_config_sha256': digest('.cargo/config.toml')}
+          Path('target/stream-idle-flush/provenance.json').write_text(json.dumps(report, indent=2) + '\n')
+          PY
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare documented build prerequisites
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install just cmake ninja lld@22 uv 2>&1 | tee target/stream-idle-flush/install.log
+          rustup show active-toolchain 2>&1 | tee target/stream-idle-flush/toolchain.log
+          just setup-python 2>&1 | tee target/stream-idle-flush/python.log
+          just doctor 2>&1 | tee target/stream-idle-flush/doctor.log
+      - name: Build the selected production application host
+        id: host
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          just --command cargo build --locked -p omp-e2e --bin omp_e2e_host 2>&1 | tee target/stream-idle-flush/host-build.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'host-build,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/stream-idle-flush/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ] || exit 1
+          shasum -a 256 target/debug/omp_e2e_host > target/stream-idle-flush/host.sha256
+      - name: Run unchanged P6 against that production host
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        working-directory: source
+        shell: bash
+        env:
+          CARGO_BIN_EXE_omp_e2e_host: ${{ github.workspace }}/source/target/debug/omp_e2e_host
+          OMP_P6_LATENCY_PATH: ${{ github.workspace }}/source/target/stream-idle-flush/latency/normal.json
+        run: |
+          set +e
+          set -uo pipefail
+          just --command cargo nextest run --locked --profile ci --no-fail-fast -p omp-e2e --test p6_crash_resume --no-tests fail 2>&1 | tee target/stream-idle-flush/p6.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'p6,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/stream-idle-flush/exits.csv || exit 1
+          just --command cargo test --locked --doc --no-fail-fast -p omp-e2e 2>&1 | tee target/stream-idle-flush/e2e-doctests.log
+          docs=("${PIPESTATUS[@]}")
+          printf 'e2e-doctests,%s,%s\n' "${docs[0]}" "${docs[1]}" >> target/stream-idle-flush/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ] && [ "${docs[0]}" -eq 0 ] && [ "${docs[1]}" -eq 0 ]
+      - name: Run unchanged P6 under actual disk pressure
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        working-directory: source
+        shell: bash
+        env:
+          CARGO_BIN_EXE_omp_e2e_host: ${{ github.workspace }}/source/target/debug/omp_e2e_host
+        run: |
+          set +e
+          set -uo pipefail
+          python3 scripts/p6-latency.py contended --output target/stream-idle-flush/latency -- just --command cargo nextest run --locked --profile ci --no-fail-fast -p omp-e2e --test p6_crash_resume --no-tests fail 2>&1 | tee target/stream-idle-flush/p6-contended.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'p6-contended,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/stream-idle-flush/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Report both timing runs with unchanged two-times margin requirement
+        if: always()
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p target/stream-idle-flush/latency
+          python3 scripts/p6-latency.py report --output target/stream-idle-flush/latency 2>&1 | tee target/stream-idle-flush/p6-timing-report.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'p6-timing,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/stream-idle-flush/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Run complete affected package tests and doctests
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          failed=0
+          for package in omp-agent omp-driver omp-app; do
+            just --command cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/stream-idle-flush/$package-tests.log"
+            tests=("${PIPESTATUS[@]}")
+            just --command cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/stream-idle-flush/$package-doctests.log"
+            docs=("${PIPESTATUS[@]}")
+            printf '%s-tests,%s,%s\n' "$package" "${tests[0]}" "${tests[1]}" >> target/stream-idle-flush/exits.csv || failed=1
+            printf '%s-doctests,%s,%s\n' "$package" "${docs[0]}" "${docs[1]}" >> target/stream-idle-flush/exits.csv || failed=1
+            for code in "${tests[@]}" "${docs[@]}"; do
+              if [ "$code" -ne 0 ]; then failed=1; fi
+            done
+          done
+          exit "$failed"
+      - name: Report actual status and missing evidence
+        if: always()
+        working-directory: source
+        run: |
+          python3 - <<'PY'
+          import csv, json, os
+          from pathlib import Path
+          out = Path('target/stream-idle-flush')
+          out.mkdir(parents=True, exist_ok=True)
+          provenance = out / 'provenance.json'
+          lines = ['## Stream idle durability and unchanged P6', '',
+                   'No build cache is restored. A separately dispatched baseline retains failing exits.',
+                   'P6 thresholds and assertions are unchanged; missing execution is not passing evidence.', '',
+                   '```json', provenance.read_text() if provenance.exists() else '{"error":"provenance missing"}', '```', '',
+                   '| Check | Command exit | Log write exit | Result |', '| --- | --- | --- | --- |']
+          exits = out / 'exits.csv'
+          observed = {row[0]: row[1:] for row in csv.reader(exits.open())} if exits.exists() else {}
+          failed = not provenance.exists()
+          for name in ('host-build', 'p6', 'p6-contended', 'p6-timing', 'e2e-doctests', 'omp-agent-tests', 'omp-agent-doctests', 'omp-driver-tests', 'omp-driver-doctests', 'omp-app-tests', 'omp-app-doctests'):
+              codes = observed.get(name)
+              passed = codes == ['0', '0']
+              failed |= not passed
+              lines.append(f"| {name} | {codes[0] if codes else 'missing'} | {codes[1] if codes else 'missing'} | {'PASS' if passed else 'FAIL / incomplete'} |")
+          timing_summary = out / 'latency/summary.md'
+          if timing_summary.exists():
+              lines += ['', timing_summary.read_text()]
+          else:
+              failed = True
+              lines += ['', '**Missing normal/contended timing report.**']
+          lines += ['', 'Test runner summaries:', '', '```text']
+          for log in sorted(out.glob('*.log')):
+              lines += [log.name] + [line for line in log.read_text(errors='replace').splitlines() if 'Summary' in line or 'test result:' in line]
+          lines += ['```']
+          report = '\n'.join(lines) + '\n'
+          (out / 'summary.md').write_text(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
+              stream.write(report)
+          raise SystemExit(1 if failed else 0)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: stream-idle-flush
+          path: source/target/stream-idle-flush/
+          if-no-files-found: error

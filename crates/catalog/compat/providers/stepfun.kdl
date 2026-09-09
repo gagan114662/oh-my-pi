@@ -1,0 +1,9 @@
+// Provider-wire compat for "stepfun"; regenerated from the frozen census using deployment contract selectors.
+
+provider "stepfun" {
+	class "stepfun" {
+		family "step" {
+			thinking-mode "effort"
+		}
+	}
+}

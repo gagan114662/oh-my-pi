@@ -1,0 +1,183 @@
+use std::{env, io, path::PathBuf, process, process::Stdio, sync::Once, time::Duration};
+
+#[cfg(unix)]
+use nix::{errno::Errno, sys::signal, unistd::Pid};
+use tokio::{
+	process::{Child, Command},
+	time,
+};
+
+use super::within;
+use crate::{Context as _, Result};
+
+static OMP_BINARY_ENV: Once = Once::new();
+
+/// Exposes the Cargo-built acceptance host to production same-binary child
+/// resolvers for the lifetime of this test process.
+pub fn install_omp_binary_env() -> io::Result<()> {
+	let path = omp_binary()?;
+	OMP_BINARY_ENV.call_once(|| {
+		// Every proof installs the same immutable Cargo path before opening an
+		// environment authority, and the value is never changed or removed.
+		unsafe {
+			env::set_var("CARGO_BIN_EXE_omp", path);
+		}
+	});
+	Ok(())
+}
+
+/// Resolves the worker-capable application binary Cargo builds with `omp-e2e`
+/// tests.
+pub fn omp_binary() -> io::Result<PathBuf> {
+	if let Some(path) = env::var_os("CARGO_BIN_EXE_omp_e2e_host") {
+		let path = PathBuf::from(path);
+		if path.is_file() {
+			return Ok(path);
+		}
+	}
+	let current = env::current_exe()?;
+	if current
+		.file_stem()
+		.is_some_and(|name| name == "omp_e2e_host")
+	{
+		return Ok(current);
+	}
+	let profile = current
+		.parent()
+		.and_then(|parent| {
+			(parent.file_name().is_some_and(|name| name == "deps")).then(|| parent.parent())
+		})
+		.flatten()
+		.ok_or_else(|| {
+			io::Error::new(
+				io::ErrorKind::NotFound,
+				"test executable is not under Cargo's deps directory",
+			)
+		})?;
+	let binary = profile.join(format!("omp_e2e_host{}", std::env::consts::EXE_SUFFIX));
+	if binary.is_file() {
+		Ok(binary)
+	} else {
+		Err(io::Error::new(
+			io::ErrorKind::NotFound,
+			format!("Cargo-built omp_e2e_host is missing at {}", binary.display()),
+		))
+	}
+}
+
+/// Child process placed in its own process group and killed as a tree on drop.
+#[derive(Debug)]
+#[must_use]
+pub struct OwnedProcess {
+	child:  Child,
+	group:  Option<i32>,
+	exited: bool,
+}
+
+impl OwnedProcess {
+	/// Spawns one directly addressed executable without a shell.
+	pub fn spawn(mut command: Command) -> io::Result<Self> {
+		command.stdin(Stdio::null()).kill_on_drop(true);
+		#[cfg(unix)]
+		{
+			use std::os::unix::process::CommandExt as _;
+			command.as_std_mut().process_group(0);
+		}
+		let child = command.spawn()?;
+		let group = child.id().and_then(|pid| i32::try_from(pid).ok());
+		Ok(Self { child, group, exited: false })
+	}
+
+	/// Returns the operating-system child identifier while it is known.
+	pub fn id(&self) -> Option<u32> {
+		self.child.id()
+	}
+
+	/// Returns the dedicated Unix process-group identifier.
+	pub const fn process_group(&self) -> Option<i32> {
+		self.group
+	}
+
+	/// Checks for child exit without waiting, preserving process ownership.
+	pub fn try_wait(&mut self) -> io::Result<Option<process::ExitStatus>> {
+		let status = self.child.try_wait()?;
+		if status.is_some() {
+			self.exited = true;
+		}
+		Ok(status)
+	}
+
+	/// Waits for normal process exit within `limit`.
+	pub async fn wait(&mut self, limit: Duration) -> Result<process::ExitStatus> {
+		let status = within("owned child exit", limit, self.child.wait()).await??;
+		self.exited = true;
+		Ok(status)
+	}
+
+	/// Requests TERM, then escalates to KILL after `grace`, always targeting the
+	/// tree.
+	pub async fn terminate(mut self, grace: Duration) -> Result<()> {
+		if self.exited {
+			return Ok(());
+		}
+		self.signal_group_terminate();
+		if time::timeout(grace, self.child.wait()).await.is_err() {
+			self.signal_group_kill();
+			self
+				.child
+				.wait()
+				.await
+				.context("waiting for killed child")?;
+		}
+		self.exited = true;
+		Ok(())
+	}
+
+	fn signal_group_terminate(&mut self) {
+		#[cfg(unix)]
+		if let Some(group) = self.group {
+			let _ = signal::killpg(Pid::from_raw(group), Some(signal::Signal::SIGTERM));
+			return;
+		}
+		let _ = self.child.start_kill();
+	}
+
+	fn signal_group_kill(&mut self) {
+		#[cfg(unix)]
+		if let Some(group) = self.group {
+			let _ = signal::killpg(Pid::from_raw(group), Some(signal::Signal::SIGKILL));
+			return;
+		}
+		let _ = self.child.start_kill();
+	}
+}
+
+impl Drop for OwnedProcess {
+	fn drop(&mut self) {
+		if !self.exited {
+			self.signal_group_kill();
+		}
+	}
+}
+
+/// Reports whether any process remains in a Unix process group.
+#[cfg(unix)]
+pub fn process_group_alive(group: i32) -> bool {
+	match signal::killpg(Pid::from_raw(group), None) {
+		Ok(()) | Err(Errno::EPERM) => true,
+		Err(Errno::ESRCH) => false,
+		Err(_) => true,
+	}
+}
+
+/// Waits until a Unix process group disappears, with deterministic polling and
+/// a hard bound.
+#[cfg(unix)]
+pub async fn wait_process_group_dead(group: i32, limit: Duration) -> Result<()> {
+	within("process-group death", limit, async move {
+		while process_group_alive(group) {
+			time::sleep(Duration::from_millis(10)).await;
+		}
+	})
+	.await
+}

@@ -1,0 +1,1742 @@
+{
+  "migrations": [
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__and_or_lists__parse_and_or_in_sequence.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__and_or_lists__parse_and_or_in_sequence.snap",
+      "sha256": "35bde6e8da79277568e38c30f18c3fc32242ff7ebe5ec2d0a7d4834fefac06fa",
+      "live_source": "crates/shell/src/parser/program/tests/and_or_lists.rs",
+      "test": "parse_and_or_in_sequence"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__and_or_lists__parse_and_or_with_pipes.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__and_or_lists__parse_and_or_with_pipes.snap",
+      "sha256": "5d1e3cfbbb2216ad2c20ac79f7a0e2c0483f17a437099e0ff57dafdd86fc5c29",
+      "live_source": "crates/shell/src/parser/program/tests/and_or_lists.rs",
+      "test": "parse_and_or_with_pipes"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__and_or_lists__parse_chained_and.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__and_or_lists__parse_chained_and.snap",
+      "sha256": "108364bb9ac9daf4e92d106a4dde4a0a0b4a31eb17550a2b771de2c56383cf7b",
+      "live_source": "crates/shell/src/parser/program/tests/and_or_lists.rs",
+      "test": "parse_chained_and"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__and_or_lists__parse_chained_or.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__and_or_lists__parse_chained_or.snap",
+      "sha256": "74b21b025e9596b12364c00debef9d7bfb884e45f20014688ee07e91c4c7bf82",
+      "live_source": "crates/shell/src/parser/program/tests/and_or_lists.rs",
+      "test": "parse_chained_or"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__and_or_lists__parse_mixed_and_or.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__and_or_lists__parse_mixed_and_or.snap",
+      "sha256": "46af5e56822ac0fe638b46a47d673c93d8cc4154923c3d592d2799273cf3eb71",
+      "live_source": "crates/shell/src/parser/program/tests/and_or_lists.rs",
+      "test": "parse_mixed_and_or"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__and_or_lists__parse_simple_and.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__and_or_lists__parse_simple_and.snap",
+      "sha256": "0cd9239d47ba7a949b8f52c867c50ac446bb3c4385d8adfa85c70eb90efa4cfe",
+      "live_source": "crates/shell/src/parser/program/tests/and_or_lists.rs",
+      "test": "parse_simple_and"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__and_or_lists__parse_simple_or.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__and_or_lists__parse_simple_or.snap",
+      "sha256": "40f20a92579b18644d3eadb91798b02cb60984dada1b8638a659e5d6bd7ce9df",
+      "live_source": "crates/shell/src/parser/program/tests/and_or_lists.rs",
+      "test": "parse_simple_or"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_append.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_append.snap",
+      "sha256": "7b9ac082404eadd002b030ce22b09883337fd2b014baadd9e101817abac92050",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_append"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_append_quoted.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_append_quoted.snap",
+      "sha256": "2f081871d33024e65a5ffc57904ca29eff8635a54d29c4c80822834472e79c01",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_append_quoted"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_array.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_array.snap",
+      "sha256": "d1e6a978db11792e72a6ad205987267f8105538359e4209e6cbc3ef68b71eb31",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_array"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_array_element.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_array_element.snap",
+      "sha256": "656fb0ca4c58bb874a10cb8456681d6416a15f15a9abb267682dbf1ee231fabd",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_array_element"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_array_element_expression.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_array_element_expression.snap",
+      "sha256": "ecdcfda7265b424f51fd6d29087477b58720de4177233b08bb9f307cd38cd69f",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_array_element_expression"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_array_empty.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_array_empty.snap",
+      "sha256": "5c66a018855b9f511dba80e3df37113d9f8c3fb1216db4653a854bd6a17cb443",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_array_empty"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_array_mixed.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_array_mixed.snap",
+      "sha256": "95bdc79ffd05de0abd6a1ac9c68a2c7e782c90398dde27bdde8f93a054f214ef",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_array_mixed"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_array_quoted_elements.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_array_quoted_elements.snap",
+      "sha256": "734f66d7d853e3287704dad6d429465fcc6b044256bdabaa3f54a9f8dd150848",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_array_quoted_elements"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_array_with_indices.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_array_with_indices.snap",
+      "sha256": "6fe61899dfec3370fb2b87b25c1d7820307b94e50e70a3d425972b3eb4f6de9f",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_array_with_indices"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_empty.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_empty.snap",
+      "sha256": "8156eae7f05a3e55223004c3d979db760e58cce03cbf95d31123d74ac17a35b8",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_empty"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_quoted.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_quoted.snap",
+      "sha256": "05f1491a26583015bec6019bbf116e5c14fd57534d3f58235652ecee841e056c",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_quoted"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_simple.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_simple.snap",
+      "sha256": "55d48d30c98222d05408e0eac435fcfecb8d5d8d15a8cc8b7f5a1b2b06b2e53a",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_simple"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_single_quoted.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_single_quoted.snap",
+      "sha256": "d5ee8601f6ed6049a08164f7f347a25d3dfc40897d270d3c181777f9eab74cc3",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_single_quoted"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_with_command.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_with_command.snap",
+      "sha256": "9438982811eef2bc9b6007edba17bd28408c523e2effeccd9c1a7d2d6a465082",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_with_command"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_with_command_substitution.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_with_command_substitution.snap",
+      "sha256": "9019872bc76a80f1f50a7e3130335d47937bb109f5f04b90c78043c682b8dcd2",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_with_command_substitution"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_assignment_with_expansion.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_assignment_with_expansion.snap",
+      "sha256": "9c474be80c3a3eb1438fd5d043dfbac2d4f21ce70c721dc9a2d6ead0caea1943",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_assignment_with_expansion"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_declare_assignment.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_declare_assignment.snap",
+      "sha256": "256a9f2d1d7287f736c82f9e5957a6b3935c73910844dd1418157e3c16811c45",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_declare_assignment"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_export_assignment.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_export_assignment.snap",
+      "sha256": "dfed2b5a268178be1ab7e1983365670ec3fae6b1e490e3af0c190ea5951b6464",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_export_assignment"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_local_assignment.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_local_assignment.snap",
+      "sha256": "522b7e63fa371769133647065f07ae681734034cd0dc2a75d1e6ab5b060dbb08",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_local_assignment"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_multiple_assignments.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_multiple_assignments.snap",
+      "sha256": "d9cad03e47e192e3de04bcd2be93f436341dbe77f0d93f5c00d52e6795e3d751",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_multiple_assignments"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__assignments__parse_multiple_assignments_with_command.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__assignments__parse_multiple_assignments_with_command.snap",
+      "sha256": "98e02adee101e47898d2b12acce030f8d03fdeaf3fdc1d2b11bf1aebbe429e2b",
+      "live_source": "crates/shell/src/parser/program/tests/assignments.rs",
+      "test": "parse_multiple_assignments_with_command"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_arithmetic_in_condition.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_arithmetic_in_condition.snap",
+      "sha256": "7da260b0bdfd4a2c426b09ad0381fdc2555b3f945db650efeae638f546c54e06",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_arithmetic_in_condition"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_backgrounded_commands.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_backgrounded_commands.snap",
+      "sha256": "b481e2d38b56dd2350cb68459ad605fe2b8578dfa5912909f1ce3fc3dda5a582",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_backgrounded_commands"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_brace_expansion_context.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_brace_expansion_context.snap",
+      "sha256": "4b690e853abcac6e721574fd0136b1bac3bc395d79236a9f7974b70541fe7b9b",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_brace_expansion_context"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_case_no_semicolon.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_case_no_semicolon.snap",
+      "sha256": "a46a5c2161f20fd661878aa611723a46b4377990aefbc58e92498c817521be28",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_case_no_semicolon"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_case_with_newlines.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_case_with_newlines.snap",
+      "sha256": "213c093e9f3ccb3de8a90249add808dfcb5e01bf91d7da80d2621b35667d1f0a",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_case_with_newlines"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_command_substitution_nested.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_command_substitution_nested.snap",
+      "sha256": "a66158859286057233bfa2056ab58636029f2fdce439293fd78a059368f109ad",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_command_substitution_nested"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_complex_array_operations.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_complex_array_operations.snap",
+      "sha256": "75f5268e739bb8c5cf07e7227c115255e8967e1a12358bae5d9433b234e6ff2d",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_complex_array_operations"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_coprocess.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_coprocess.snap",
+      "sha256": "dbebed949238922c31685f91ae81ff6485f3b99c9b60d902a08ab19e2aa59bdd",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_coprocess"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_extglob_patterns.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_extglob_patterns.snap",
+      "sha256": "ece57bc6405e190b6ff7f81266fc39bc39cea32ea974e9436e3616b7b21cae2c",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_extglob_patterns"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_for_with_command_substitution.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_for_with_command_substitution.snap",
+      "sha256": "73c132eecb5a1aa78fc35ae511bbc658100f4f7026c03dea54e8ef64a8a6aade",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_for_with_command_substitution"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_function_with_if.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_function_with_if.snap",
+      "sha256": "e555f7a6eadac60f250745af6ef2d5a1b5ad7292099cefdcd15c45556a5fe5bc",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_function_with_if"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_glob_patterns.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_glob_patterns.snap",
+      "sha256": "a4a4269b403aa7fabbc58712d51ba5f30743a0db8a5f43c17afd947970382d04",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_glob_patterns"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_mixed_sequences.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_mixed_sequences.snap",
+      "sha256": "2e42e0fd80ea06f852dc83fa1d3a390e7547973c0e509922600bfcc7169a70d9",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_mixed_sequences"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_multiple_here_docs.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_multiple_here_docs.snap",
+      "sha256": "cd99d7393a89030ce648280fadfa0ce45e66e4223adcdff2322d7bdc5acc7395",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_multiple_here_docs"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_nested_if_while.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_nested_if_while.snap",
+      "sha256": "b1b17af260ea57cfacbf408b868663ff5d38d1f63618a1980745e32318db8448",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_nested_if_while"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_parameter_expansion_complex.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_parameter_expansion_complex.snap",
+      "sha256": "c583a4ef4fe45bf4bf483a4eda28aa6ebdd5c48eb27da1b73b37e52401b48107",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_parameter_expansion_complex"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_pipeline_with_redirections.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_pipeline_with_redirections.snap",
+      "sha256": "f1eb50fa4565fc4d3c73c424666bce8bc91d59b3704ba9706fedb3cbcae30b58",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_pipeline_with_redirections"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_shebang_and_program.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_shebang_and_program.snap",
+      "sha256": "ecf5ea3c718649187d15ce95ed4021f0e028d3373169d9aa656650e46c1dbe08",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_shebang_and_program"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_subshell_with_assignments.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_subshell_with_assignments.snap",
+      "sha256": "12c93ba56f5f92e5b88d248c537772c69ec1a74f13df95e582049c1a554793a6",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_subshell_with_assignments"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__complex__parse_tilde_expansion.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__complex__parse_tilde_expansion.snap",
+      "sha256": "958896a62f43a10dfc74979fe0e9067ce6404b94a82495a0f22238a02030abb3",
+      "live_source": "crates/shell/src/parser/program/tests/complex.rs",
+      "test": "parse_tilde_expansion"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_arith_and_non_arith_parens.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_arith_and_non_arith_parens.snap",
+      "sha256": "e8c903b5167876fab99261eeaab41b7a65065c5ac01110c62f3a7c3caac05a2a",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_arith_and_non_arith_parens"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_arithmetic_complex.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_arithmetic_complex.snap",
+      "sha256": "1efa292cc81dcdcc8391bb8199902fb0ebcfdca44220364118c20d089bcaf202",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_arithmetic_complex"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_arithmetic_for.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_arithmetic_for.snap",
+      "sha256": "6393299612ce6045bc4a0db1d31b989b3ac940a8ff76efb73466674fa33440f7",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_arithmetic_for"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_arithmetic_for_empty_parts.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_arithmetic_for_empty_parts.snap",
+      "sha256": "3be33284f382edaa9ce77bed08a9df317856b7e13fbedcfe256ae9fe243a5025",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_arithmetic_for_empty_parts"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_arithmetic_increment.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_arithmetic_increment.snap",
+      "sha256": "83b0304a1d5af39c0a575deaa21dc20cc1722b2048977a5ff2165265da7c10ae",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_arithmetic_increment"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_arithmetic_simple.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_arithmetic_simple.snap",
+      "sha256": "68ddd0fb510e3aa1db601135256df2aa3788a2fd0950e44a0b41a8fc50fe1e10",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_arithmetic_simple"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_brace_group.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_brace_group.snap",
+      "sha256": "38d89a57df872e8d29083fe50c594a4c12d4f4b55f484d73007e01aa1462209a",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_brace_group"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_brace_group_multiline.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_brace_group_multiline.snap",
+      "sha256": "2be42d7ef538c2e11137e5c6eafceea186fdd204ae51f6c01a48316173b60080",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_brace_group_multiline"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_case_continue.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_case_continue.snap",
+      "sha256": "c6b407bac15d45a59f59604cc301b175681c772ff38f5f94fb5f1c24a3b8b5bf",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_case_continue"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_case_fallthrough.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_case_fallthrough.snap",
+      "sha256": "1cc1e326f7c5aa3454cbefaa146126627ab3ab54a88f47a1c28806fcc0bd40e5",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_case_fallthrough"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_case_multiple_patterns.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_case_multiple_patterns.snap",
+      "sha256": "a1fb8cf1f5462e721cd469cc222e37de851e8c2c798cdd90d098120600e27d8e",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_case_multiple_patterns"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_case_simple.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_case_simple.snap",
+      "sha256": "3ac49b0633709d9c2903c02ccc3cc4f8c27b78cd1ac36ddf3f579d8b0ad5415b",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_case_simple"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_for_in.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_for_in.snap",
+      "sha256": "18c5927794440e424bf3aec3376ef64531282b0bd5bdd377443943616b61d4c3",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_for_in"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_for_in_multiline.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_for_in_multiline.snap",
+      "sha256": "dd87865a0fd20028b20e85d4c4591316bd375a62b6a2f0eeb8f6233dd335387a",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_for_in_multiline"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_for_no_in.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_for_no_in.snap",
+      "sha256": "d4a63df663e0c617f0c114fa7486910aed0c61f80fe06a712c84fb4ac6df475b",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_for_no_in"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_if_elif.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_if_elif.snap",
+      "sha256": "2e28c65565e25c55ad0fd8bb60aee7c9cd795f554ce86d0cb6b7be9460f3d17d",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_if_elif"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_if_else.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_if_else.snap",
+      "sha256": "ab4c1e9d0c205a40ec406fa2d429544e10a9f18ef0ab23151c06d956243c250e",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_if_else"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_if_multiline.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_if_multiline.snap",
+      "sha256": "d6e0f3eeb14a5430c13636f0e3cdaf0890bbfffdf9b20c89b3d20387725457be",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_if_multiline"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_if_simple.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_if_simple.snap",
+      "sha256": "3e7e0d8d3f9276ce6c4256a3ded28cbf3e3cc102d92d1c03f90f839d97f806ca",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_if_simple"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_nested_subshell.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_nested_subshell.snap",
+      "sha256": "db7fc77d18712fff340ce38a3f7b72290b4fa5d38a8b0bfea10a8941a40b3991",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_nested_subshell"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_subshell.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_subshell.snap",
+      "sha256": "28824856ac0037a7b76c7c9cee8f5bb6f517af1d5493a1a2d36f66e8474e90be",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_subshell"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_subshell_multiple_commands.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_subshell_multiple_commands.snap",
+      "sha256": "3b59060f09446349cf92c4ea997dd51f6ee7531196f01c5041fafdef8f6ec32a",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_subshell_multiple_commands"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_until.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_until.snap",
+      "sha256": "b669507653235e47fae360dc45ff505ec5e104bcdc83afad08abc42a3e145fe0",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_until"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_while.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_while.snap",
+      "sha256": "227de0fda8c3c8a4f0370c8a4cd4f762c072937c2c361137417db68932a4a977",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_while"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__compound_commands__parse_while_multiline.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__compound_commands__parse_while_multiline.snap",
+      "sha256": "bfd61fa004674107dc5774fe89e921c9ae2e161b253537ecf4b4db7120d94308",
+      "live_source": "crates/shell/src/parser/program/tests/compound_commands.rs",
+      "test": "parse_while_multiline"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_and.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_and.snap",
+      "sha256": "215b4a316c179dc2fee9078088b681b888ae6ebea1f50996bdaed93b86482ea6",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_and"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_arith_equal.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_arith_equal.snap",
+      "sha256": "6f53da6625dd7e0105d4a4a51f63f11af0975a77b4904d625eb78286b70ec537",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_arith_equal"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_arith_greater_than.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_arith_greater_than.snap",
+      "sha256": "878a024e983c4ec40e41643403e6495c0608515640fdf505b161697d08cc542d",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_arith_greater_than"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_arith_less_than.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_arith_less_than.snap",
+      "sha256": "4cb360ddaf4777a0f2325a42b15374e15d8ce840777d68081ef3660441239121",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_arith_less_than"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_arith_not_equal.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_arith_not_equal.snap",
+      "sha256": "0f640d124a88227ac75a4eda3b972a19691ca0d39b1249b455b763cd482cd04d",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_arith_not_equal"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_complex.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_complex.snap",
+      "sha256": "63e81e4cfc617ab76aed19426c5888098187e275bdb59d6f48c8d26bbad74ff7",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_complex"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_directory.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_directory.snap",
+      "sha256": "0b5191b0a45c29f7fef01be88613d4c33f02d7e98c9bc0e02a121c8a89bc0050",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_directory"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_executable.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_executable.snap",
+      "sha256": "5d97545ea0615fd7b097838c80bcb2b7a9c315ec1e3553e2be6c7ab3e39a815d",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_executable"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_file_exists.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_file_exists.snap",
+      "sha256": "8c1b799859d949b6d467957b4c6d1d16cbcc27c0a251b01383bc8f497ee0b720",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_file_exists"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_greater_than.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_greater_than.snap",
+      "sha256": "f987932543527df76cbbb5f1e73fad08e4623f05a18565c071be91a2a91f4928",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_greater_than"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_less_than.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_less_than.snap",
+      "sha256": "157e213981873419caaed0559d923cc6abb43152ccffb7b8546555b0ea98c221",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_less_than"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_not.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_not.snap",
+      "sha256": "08092e23035058a1ec07cf0d836f9007da37cd38164f742f61609f60e246fb08",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_not"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_or.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_or.snap",
+      "sha256": "585d28a03fe77024a06d1ced3c4a3a4dc765975229ad72e2c9d21a39a731accc",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_or"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_parenthesized.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_parenthesized.snap",
+      "sha256": "bfdeb8f5da90ac44fcfcf96664b81413c350f65d3d7812be824734a734c4c32a",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_parenthesized"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_readable.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_readable.snap",
+      "sha256": "615037b36e59a63b778c8d7dd3c3c41d778ff99861d78f5a1b3a52a68910b786",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_readable"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_regex.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_regex.snap",
+      "sha256": "cda74f81d152b17e265c370690f57934a469fe5b0da9db30a5ae8e726e0bf21e",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_regex"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_regex_with_spaces.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_regex_with_spaces.snap",
+      "sha256": "8bfd57f7ab9398ae564fb17a9873c9fb6069706d6caf149d9cd92881be2a97c1",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_regex_with_spaces"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_string_equal.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_string_equal.snap",
+      "sha256": "a3417f1adf868ec312ccf96c4629933a9d1150b6e68e7eca40cffe49513da3a1",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_string_equal"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_string_non_zero.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_string_non_zero.snap",
+      "sha256": "aa1c8441c62d66093c0964e92d20b364db7484843849f6421604fc92a8c6d912",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_string_non_zero"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_string_not_equal.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_string_not_equal.snap",
+      "sha256": "c524e4b6cffb8af98ab1fbb7928ec283293dd089c4cd2ada5ec042a810ed69fe",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_string_not_equal"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_string_pattern.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_string_pattern.snap",
+      "sha256": "9589604cd751ca74c31f9f2bf4c467e8e26d50ad0dbbc42a5c97db22b976a278",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_string_pattern"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_string_zero_length.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_string_zero_length.snap",
+      "sha256": "2555388cfcd97e41a8c9d1b98abd6f08e4fda7c92d6474ddf6e92cbf69eedbc0",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_string_zero_length"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__extended_test__parse_extended_test_writable.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__extended_test__parse_extended_test_writable.snap",
+      "sha256": "bb17c10e5b022207e11e99d9aa1cef95707ab7b6d936a62849cdbd67a14666a9",
+      "live_source": "crates/shell/src/parser/program/tests/extended_test.rs",
+      "test": "parse_extended_test_writable"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__functions__parse_function_basic.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__functions__parse_function_basic.snap",
+      "sha256": "2551259095b6432e5e00127f47121cc355b24b008e996b936956ed1cb6407561",
+      "live_source": "crates/shell/src/parser/program/tests/functions.rs",
+      "test": "parse_function_basic"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__functions__parse_function_keyword.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__functions__parse_function_keyword.snap",
+      "sha256": "ed63419d8987468290b4abc64a10a8606297332f4d676363f7c70fdd4b31139d",
+      "live_source": "crates/shell/src/parser/program/tests/functions.rs",
+      "test": "parse_function_keyword"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__functions__parse_function_keyword_with_parens.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__functions__parse_function_keyword_with_parens.snap",
+      "sha256": "3c892694cea9195afc826d79b4a3da0f3b2a19e438f5d9480e51db85573a625b",
+      "live_source": "crates/shell/src/parser/program/tests/functions.rs",
+      "test": "parse_function_keyword_with_parens"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__functions__parse_function_multiline.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__functions__parse_function_multiline.snap",
+      "sha256": "e5f37a05a6eaa38d2ab876a1bc1bba2745d6bf173736766c53e85ec6f3c7a51f",
+      "live_source": "crates/shell/src/parser/program/tests/functions.rs",
+      "test": "parse_function_multiline"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__functions__parse_function_with_local_vars.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__functions__parse_function_with_local_vars.snap",
+      "sha256": "8fee83564e115d245e958b3e322024da0af35cc6c8419f5143fe8d99b02bf86a",
+      "live_source": "crates/shell/src/parser/program/tests/functions.rs",
+      "test": "parse_function_with_local_vars"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__functions__parse_function_with_redirect.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__functions__parse_function_with_redirect.snap",
+      "sha256": "8ef14646d4ffb8687f7cef15da3993b4ca2a3248f99282799c2f8b8fd6afd1bf",
+      "live_source": "crates/shell/src/parser/program/tests/functions.rs",
+      "test": "parse_function_with_redirect"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__functions__parse_function_with_stderr_redirect.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__functions__parse_function_with_stderr_redirect.snap",
+      "sha256": "5720d3759e5993fb7509c44a72bb959b38d5fccf0564fbb47513a69f707284c8",
+      "live_source": "crates/shell/src/parser/program/tests/functions.rs",
+      "test": "parse_function_with_stderr_redirect"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__functions__parse_function_with_subshell_body.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__functions__parse_function_with_subshell_body.snap",
+      "sha256": "8f2bb069447fa33a0e41f8439c51d6ff54598f6dcadb4169ca8a7a51bd16ae25",
+      "live_source": "crates/shell/src/parser/program/tests/functions.rs",
+      "test": "parse_function_with_subshell_body"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__here_docs__parse_here_doc_basic.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__here_docs__parse_here_doc_basic.snap",
+      "sha256": "e0606162eaaf6404fe3d840db7e7f739f7bb7a378c88787b87e2e91ed32b0e48",
+      "live_source": "crates/shell/src/parser/program/tests/here_docs.rs",
+      "test": "parse_here_doc_basic"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__here_docs__parse_here_doc_double_quoted_delimiter.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__here_docs__parse_here_doc_double_quoted_delimiter.snap",
+      "sha256": "958fb2c11504937d2ad9c1ff5542204b2790229927de38bd45045b964bbedd54",
+      "live_source": "crates/shell/src/parser/program/tests/here_docs.rs",
+      "test": "parse_here_doc_double_quoted_delimiter"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__here_docs__parse_here_doc_empty.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__here_docs__parse_here_doc_empty.snap",
+      "sha256": "5e9efe0bdfcac2ec7e7b6177bfa5d259fd4c7562bf0dbb3ed34a2ac67cf83dc7",
+      "live_source": "crates/shell/src/parser/program/tests/here_docs.rs",
+      "test": "parse_here_doc_empty"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__here_docs__parse_here_doc_no_trailing_newline.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__here_docs__parse_here_doc_no_trailing_newline.snap",
+      "sha256": "f5367eb8a5511c13a014826d27138558ea2330199ae459f015e50531cc478375",
+      "live_source": "crates/shell/src/parser/program/tests/here_docs.rs",
+      "test": "parse_here_doc_no_trailing_newline"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__here_docs__parse_here_doc_quoted_delimiter.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__here_docs__parse_here_doc_quoted_delimiter.snap",
+      "sha256": "437ada035541b11348f036f0a03c4763e088fefe5b9be88d0564f2bdbf401d37",
+      "live_source": "crates/shell/src/parser/program/tests/here_docs.rs",
+      "test": "parse_here_doc_quoted_delimiter"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__here_docs__parse_here_doc_tab_removal.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__here_docs__parse_here_doc_tab_removal.snap",
+      "sha256": "b958abc7ae054006cb40fcbb60747f416cc71d53c43cf185baa1343af6931f17",
+      "live_source": "crates/shell/src/parser/program/tests/here_docs.rs",
+      "test": "parse_here_doc_tab_removal"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__here_docs__parse_here_doc_with_command_after.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__here_docs__parse_here_doc_with_command_after.snap",
+      "sha256": "1cc19b0015b160192cef594e9766bca2ce522f180590bb5808c46ad4b2b5e8c5",
+      "live_source": "crates/shell/src/parser/program/tests/here_docs.rs",
+      "test": "parse_here_doc_with_command_after"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__here_docs__parse_here_doc_with_expansion.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__here_docs__parse_here_doc_with_expansion.snap",
+      "sha256": "8f6b221bf89259ccf36f450aad32d56dfb05c33c2472dbe74da6ca4aa79ed3ec",
+      "live_source": "crates/shell/src/parser/program/tests/here_docs.rs",
+      "test": "parse_here_doc_with_expansion"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__here_docs__parse_here_doc_with_fd.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__here_docs__parse_here_doc_with_fd.snap",
+      "sha256": "cb8c6bdfff1f4d42ae0d0cd6d848f539bdba2f55ec85ecfed3866cf79b9e8e17",
+      "live_source": "crates/shell/src/parser/program/tests/here_docs.rs",
+      "test": "parse_here_doc_with_fd"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__pipelines__parse_multi_stage_pipe.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__pipelines__parse_multi_stage_pipe.snap",
+      "sha256": "bafb4246a02ef1d10e0203eca5bc97a1b4d340cae4a256497f38bf70c63b0fc4",
+      "live_source": "crates/shell/src/parser/program/tests/pipelines.rs",
+      "test": "parse_multi_stage_pipe"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__pipelines__parse_negated_pipeline.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__pipelines__parse_negated_pipeline.snap",
+      "sha256": "e9febc62dd6ecab3f952ba21fb8680f2324aa727df5620cec268d69e40e9b98b",
+      "live_source": "crates/shell/src/parser/program/tests/pipelines.rs",
+      "test": "parse_negated_pipeline"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__pipelines__parse_negated_timed_pipeline.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__pipelines__parse_negated_timed_pipeline.snap",
+      "sha256": "46cbf5eb2f311691f50f8acf78beca34d59797f7243075458bb0aa45a47b1f6e",
+      "live_source": "crates/shell/src/parser/program/tests/pipelines.rs",
+      "test": "parse_negated_timed_pipeline"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__pipelines__parse_pipe_with_multiple_commands.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__pipelines__parse_pipe_with_multiple_commands.snap",
+      "sha256": "bcaa32972e1557c66176fca9f645174384acbacd7b205c6b1ed4c21e5bb2ad99",
+      "live_source": "crates/shell/src/parser/program/tests/pipelines.rs",
+      "test": "parse_pipe_with_multiple_commands"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__pipelines__parse_pipe_with_stderr.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__pipelines__parse_pipe_with_stderr.snap",
+      "sha256": "d5e7831ba5426d80e55ae53a36e5e3600ffbdf1bd8a792c16a96fe404442eb83",
+      "live_source": "crates/shell/src/parser/program/tests/pipelines.rs",
+      "test": "parse_pipe_with_stderr"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__pipelines__parse_simple_pipe.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__pipelines__parse_simple_pipe.snap",
+      "sha256": "2d2a2820399a8e762ac7a1097e4f455a596f54269fc9ad543115ac305401027f",
+      "live_source": "crates/shell/src/parser/program/tests/pipelines.rs",
+      "test": "parse_simple_pipe"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__pipelines__parse_timed_pipeline.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__pipelines__parse_timed_pipeline.snap",
+      "sha256": "3ca43d0242eddacbd616a40797d8e700d08c9567cb944961ce40c4ab523485ca",
+      "live_source": "crates/shell/src/parser/program/tests/pipelines.rs",
+      "test": "parse_timed_pipeline"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__pipelines__parse_timed_pipeline_posix.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__pipelines__parse_timed_pipeline_posix.snap",
+      "sha256": "c5e923af09b910a033d196a3bd3cff28f39b97c76e7da00da193a46535c0bb0b",
+      "live_source": "crates/shell/src/parser/program/tests/pipelines.rs",
+      "test": "parse_timed_pipeline_posix"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_here_string.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_here_string.snap",
+      "sha256": "9257b61eb11b2403c8294445dc4eee4eca70657bb69aedc58a5366f74a6b9ac0",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_here_string"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_here_string_with_variable.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_here_string_with_variable.snap",
+      "sha256": "92f23f82a860611ce5ceb8e9e74d891f936bd091e2162577212bbfbc6ab26b8c",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_here_string_with_variable"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_process_substitution_read.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_process_substitution_read.snap",
+      "sha256": "d8f572deae89461a9cee289bcfaab898230c8138160fa90e288737b3bbafe9e9",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_process_substitution_read"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_process_substitution_write.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_process_substitution_write.snap",
+      "sha256": "30f50b03ba9a82a94720fa5522e59526c7c5d8fcce4a41c64e49b3f408203e7b",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_process_substitution_write"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_append.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_append.snap",
+      "sha256": "24cdcaf97ed3741aeb1deb950ecee8d537c88bd6a2c464c7c076a5cc2dcaf591",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_append"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_clobber.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_clobber.snap",
+      "sha256": "b9e4394d23fd533aee1fbd94671f0ae6662e28f29a657e5d4013102d4e994f25",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_clobber"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_fd_close.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_fd_close.snap",
+      "sha256": "d76cacaa1c25792f411fb6cca3d00c032be64fb77172f93c05dd5db6101d0091",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_fd_close"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_input.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_input.snap",
+      "sha256": "f553bba8c3f8f3897ddb05119d7d2451f66c2f98b0546d540b92e6b703e76789",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_input"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_multiple.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_multiple.snap",
+      "sha256": "f3484da4271733ea325776b3def0637a5d9e3df4beb0988ffb4af3d0eed8e601",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_multiple"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_output.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_output.snap",
+      "sha256": "2a4c81251f6329bc97bfe685430c3bbb01b492ce8fb56524c0d1cb9d919a1b22",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_output"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_output_and_error.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_output_and_error.snap",
+      "sha256": "9b678a056a8d577310c33e7963f3c54ee52693a58c8439965c0e521263a74a39",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_output_and_error"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_output_and_error_append.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_output_and_error_append.snap",
+      "sha256": "e54a6f37322121c0a189117b0bfa2ff0bb69c4dffea55affea41a91bf9810c03",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_output_and_error_append"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_read_write.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_read_write.snap",
+      "sha256": "af1765cf539006b868ddcf8e38c0cc951cf96f1a33d2a3c0a912322d84ee8aa4",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_read_write"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_stderr_to_stdout.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_stderr_to_stdout.snap",
+      "sha256": "fc682a549234bf79337c99e056f90ef3df6e323f169e7ac46a65939836f80381",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_stderr_to_stdout"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_stdin_dup.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_stdin_dup.snap",
+      "sha256": "a098f3279b677d87f741b33c8611a4ee024b76d19d63b575818423dbf69b58ff",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_stdin_dup"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__redirections__parse_redirect_stdout_to_stderr.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__redirections__parse_redirect_stdout_to_stderr.snap",
+      "sha256": "31dd34a0f34e4653fcb5249b0589ced7f995ea3a4de6a0b4a299ff78c2ebf383",
+      "live_source": "crates/shell/src/parser/program/tests/redirections.rs",
+      "test": "parse_redirect_stdout_to_stderr"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_colon.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_colon.snap",
+      "sha256": "24f385e5f503b65a0f0370ffcfc52f6d9717c1e0aace6124371c6fdd2db0dd3c",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_colon"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_command_with_backslash_escape.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_command_with_backslash_escape.snap",
+      "sha256": "787f899fd976afc2c45e4e05fcb16d09eeca7844183eaee3c4edd875e89bd7c6",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_command_with_backslash_escape"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_command_with_backtick_substitution.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_command_with_backtick_substitution.snap",
+      "sha256": "476079ef4d2efb2e8e6601c95446eb79c134b88d11e10a458873a47df1940bf6",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_command_with_backtick_substitution"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_command_with_command_substitution.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_command_with_command_substitution.snap",
+      "sha256": "44168265054a77eeaf01a1ae829d4a70d4e4c3b06e86376a8b40004a6ee34fb6",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_command_with_command_substitution"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_command_with_quoted_args.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_command_with_quoted_args.snap",
+      "sha256": "661402909b3b32a0253aa5e6b4619ad7b252ab41f24d91c68976b720c46a2865",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_command_with_quoted_args"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_command_with_single_quotes.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_command_with_single_quotes.snap",
+      "sha256": "355c3672e16a41b5525251291ce8964c46572a31ba4d4b3c4cd190dcab06364a",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_command_with_single_quotes"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_command_with_variable.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_command_with_variable.snap",
+      "sha256": "d234ee9d8e99475b7d4f83ef99e6764af4ffd9562f00e333de0a71012532b546",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_command_with_variable"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_echo_hello.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_echo_hello.snap",
+      "sha256": "00194503be53487c7ac4368e339a5460a0600ea9d8f4ba0cded3349396bba9ba",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_echo_hello"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_echo_hello_world.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_echo_hello_world.snap",
+      "sha256": "acc0404d129df545b6cce4ae467de9249ceb0cfbbddad7fbd3726a4871401025",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_echo_hello_world"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_ls.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_ls.snap",
+      "sha256": "e40b6f5ccd9c172426a7592fafbe40d3347cff87c5690abc2320ad427d690d24",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_ls"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_ls_la_home.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_ls_la_home.snap",
+      "sha256": "ff1558708df1455d5a52c63929a60241af2ab43f43a6bdae2e0d00072f66824e",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_ls_la_home"
+    },
+    {
+      "old": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__simple_commands__parse_true.snap",
+      "new": "crates/shell/src/parser/program/tests/snapshots/omp_shell__parser__program__tests__simple_commands__parse_true.snap",
+      "sha256": "c2b1739496cdfac6ce9901e7753ac6dabf60535e40e6be9382155cb4ecd47ca6",
+      "live_source": "crates/shell/src/parser/program/tests/simple_commands.rs",
+      "test": "parse_true"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__flat_operator_segments_snapshot.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__flat_operator_segments_snapshot.snap",
+      "sha256": "d6ca9baa2f68634ee2beb878e19809786e8f7800227188d6519f36a8356a6764",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "flat_operator_segments_snapshot"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_arithmetic_expression.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_arithmetic_expression.snap",
+      "sha256": "ef8eefb8cbb5d84f07e3e5392e4dca632fe662b8929af20c2778b78a7b09ef16",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_arithmetic_expression"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_arithmetic_expression_with_parens.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_arithmetic_expression_with_parens.snap",
+      "sha256": "f9ea1bc2194e968a76767ddfae327eb16336fff1290cba266416e850cca877c3",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_arithmetic_expression_with_parens"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_arithmetic_expression_with_space.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_arithmetic_expression_with_space.snap",
+      "sha256": "f7dc23f7ca293fe49261d4dd8dd32363d01c935c0d6d77446754ca2b5b74e7f1",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_arithmetic_expression_with_space"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_backquote_with_escape.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_backquote_with_escape.snap",
+      "sha256": "cc9b623195b42b906e59a2da488fe8d1e95cbb46dd386ef1999948b6d62bd5dd",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_backquote_with_escape"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_braced_parameter_expansion-2.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_braced_parameter_expansion-2.snap",
+      "sha256": "47b8020d96818f119fc0e4f1ef2f9fb644bd59a17d48d58e3ee3c1f335fc5192",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_braced_parameter_expansion"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_braced_parameter_expansion.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_braced_parameter_expansion.snap",
+      "sha256": "ebaf3a96341bfd451207eed18fc055858c53122ae861e2831bb857bdd763b46e",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_braced_parameter_expansion"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_braced_parameter_expansion_with_escaping.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_braced_parameter_expansion_with_escaping.snap",
+      "sha256": "2a19c6b327d838e2f6f67f105bdf62ced01afca1b63482be28eb40620071b8e1",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_braced_parameter_expansion_with_escaping"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_command_substitution.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_command_substitution.snap",
+      "sha256": "5a66204028809896e11c10f7b7a3ecaeec54353e53a95cbda10e2d943def29fc",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_command_substitution"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_command_substitution_containing_extglob.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_command_substitution_containing_extglob.snap",
+      "sha256": "cb38f05f3ccb6838bedd8fac334512929daaac8aefb3eab08813b2bca4c4aa24",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_command_substitution_containing_extglob"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_command_substitution_with_subshell.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_command_substitution_with_subshell.snap",
+      "sha256": "cff766c1b67ded75049185f11f5eb9fd40d654a7e2e1452a996a7f4db5dd511b",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_command_substitution_with_subshell"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_comment.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_comment.snap",
+      "sha256": "f0e40e23732abaf999e4199a9ca037e22f3b3afe65567fcd94bf2c7f842904c4",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_comment"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_comment_at_eof.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_comment_at_eof.snap",
+      "sha256": "851d92a2b00e66131a3846c343239d25ab0f62f3370e7c78aee2b8a28f282446",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_comment_at_eof"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_complex_here_docs_in_command_substitution.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_complex_here_docs_in_command_substitution.snap",
+      "sha256": "1612fe3bfccca293f35a8cf0e9e12d43a04a5b31bb6f2d2434eef63e459c1ad9",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_complex_here_docs_in_command_substitution"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_double_quote.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_double_quote.snap",
+      "sha256": "5436e006d2673a2e7eef91c97300d682e79e4d8f25e7a9c5b8677b91d8ece6ae",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_double_quote"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_double_quoted_arithmetic_expression.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_double_quoted_arithmetic_expression.snap",
+      "sha256": "b3298d3672b191a20c65e9eb2245903bfca126e815219fecff711abc020c26b8",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_double_quoted_arithmetic_expression"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_double_quoted_command_substitution.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_double_quoted_command_substitution.snap",
+      "sha256": "487ae53f4c9164db892c16dc792a7829f043a6efc16473a7c973565133406834",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_double_quoted_command_substitution"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_empty_here_doc.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_empty_here_doc.snap",
+      "sha256": "4ddb77a40c51991e1a49597b33a3d7ad0f75bc7809624486ef523dd45ca9e1ff",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_empty_here_doc"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_escaped_whitespace.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_escaped_whitespace.snap",
+      "sha256": "dceb3a066115980df36e4fe0c9f201bf10252d39964dec97f46add82233745e2",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_escaped_whitespace"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_here_doc-2.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_here_doc-2.snap",
+      "sha256": "a6ca3b6286d72c8184c24e99c1a42265d7519cac00b366dbca343e98acd58282",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_here_doc"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_here_doc-3.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_here_doc-3.snap",
+      "sha256": "d5d7f989f7ad2fe4b31199267838db33e92bfc32e8a4e0273d11ab917635a849",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_here_doc"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_here_doc-4.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_here_doc-4.snap",
+      "sha256": "9e2ad7afbc17a7c4d77ce787f5ecf2b9f2cb7e577686e0bc1c4d39747eb1d5eb",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_here_doc"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_here_doc.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_here_doc.snap",
+      "sha256": "7df1c052f101ac57ba4a74e47e83d1585aec44c8c15b37d4bca7fb3c5462c4e1",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_here_doc"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_here_doc_in_command_substitution.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_here_doc_in_command_substitution.snap",
+      "sha256": "63db744310e2da66890e8414d4f9e7a4ae95a4159fa6f18cea28e1d69ef0c91e",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_here_doc_in_command_substitution"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_here_doc_in_double_quoted_command_substitution.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_here_doc_in_double_quoted_command_substitution.snap",
+      "sha256": "582e3a93f1b584a97f45ca6b44ba63d3b90650dcce343c97e0f6685d30551a4f",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_here_doc_in_double_quoted_command_substitution"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_here_doc_in_double_quoted_command_substitution_with_space.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_here_doc_in_double_quoted_command_substitution_with_space.snap",
+      "sha256": "26e027959efdb4b8d00b5880c0bee45473d31042ef0c4923c0a4ad3780f601ae",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_here_doc_in_double_quoted_command_substitution_with_space"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_here_doc_with_other_tokens.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_here_doc_with_other_tokens.snap",
+      "sha256": "5f0327cb355a556227707a1e44414df68353968c205e41252c7cfe853c455b4e",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_here_doc_with_other_tokens"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_here_doc_with_tab_removal.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_here_doc_with_tab_removal.snap",
+      "sha256": "67e6dc388e229541f8b83ee75beb3d3838ab7873251da6a4c9178ca1bdb4fc6d",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_here_doc_with_tab_removal"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_line_continuation.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_line_continuation.snap",
+      "sha256": "4091320538d7cc02a28d2221a39a422553b99078ee79bd3158810356580d93f5",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_line_continuation"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_multiple_here_docs.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_multiple_here_docs.snap",
+      "sha256": "2f8f582dcc850d7d7275bc2069182caab4c6b11be2e4638e64e7d6ebda1aa5fc",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_multiple_here_docs"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_operators.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_operators.snap",
+      "sha256": "9b30389a1dcf5091c3788b454969828b8066e08797668591577cece3c343c17b",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_operators"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_simple_backquote.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_simple_backquote.snap",
+      "sha256": "574fb74fdef27a381c640e977b3f6bf628a491e58310d79355f39d5d27702992",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_simple_backquote"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_single_quote.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_single_quote.snap",
+      "sha256": "e1406924389023233af69ff5127fc873b07e71db004d248547455c0106955384",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_single_quote"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_special_parameters-2.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_special_parameters-2.snap",
+      "sha256": "1e0814b824ceece7906f42788a088c58992f3fdeb28fa758a30ac572ab30f37c",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_special_parameters"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_special_parameters-3.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_special_parameters-3.snap",
+      "sha256": "47a0a120fb6c4f287245b9b2a8bbfa8c42c1a40489d4b93e7faaefd80ca5f91b",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_special_parameters"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_special_parameters-4.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_special_parameters-4.snap",
+      "sha256": "66c14fcf2d02ce52391d196d50d1de40db5f79f374c15ba33de06f9352a4408d",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_special_parameters"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_special_parameters-5.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_special_parameters-5.snap",
+      "sha256": "2ba60ee6e17e1a7988579d29ff416beb8e9bdcf46cfe785bffe1800b940990af",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_special_parameters"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_special_parameters.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_special_parameters.snap",
+      "sha256": "5587d65b0c63b78dcc8ab599ad4f7a540dfa36dae655d09b8897613707397b16",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_special_parameters"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_unbraced_parameter_expansion-2.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_unbraced_parameter_expansion-2.snap",
+      "sha256": "8fec5bef782cfa1d437d7a71ea23d6d4c0b4495e0ae16f38957575f7c96c69f3",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_unbraced_parameter_expansion"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_unbraced_parameter_expansion.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_unbraced_parameter_expansion.snap",
+      "sha256": "40193fb4439c1e0486d088af85e7a7682cc004f31ff976a9f532e746ba973783",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_unbraced_parameter_expansion"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__tokenizer__tests__tokenize_whitespace.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__tokenizer__tests__tokenize_whitespace.snap",
+      "sha256": "4a7a1387fbd8c6d641d7835891033b6b0c7b85952643ae2a796fe68ea6d42036",
+      "live_source": "crates/shell/src/parser/tokenizer.rs",
+      "test": "tokenize_whitespace"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__brace_expansion_parsing-2.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__brace_expansion_parsing-2.snap",
+      "sha256": "217096d445d1b745aa3b17b93df2cf636a2208ae3260c330cbba5e713a7a0842",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "brace_expansion_parsing"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__brace_expansion_parsing.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__brace_expansion_parsing.snap",
+      "sha256": "51330194a9074f5d29f8721c991db7950eb63be83f7f0b9fc5c9b3f4230e3e79",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "brace_expansion_parsing"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_ansi_c_quoted_escape_seq.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_ansi_c_quoted_escape_seq.snap",
+      "sha256": "f3530c8f0339f5a655b429e45eab0b1efb72abdd80e1dfc9cb9f48c55bca1336",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_ansi_c_quoted_escape_seq"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_ansi_c_quoted_text.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_ansi_c_quoted_text.snap",
+      "sha256": "3951e3de6ddfb9951ce0216bcf58af540047c994b0a61e393fd790f7d67997a6",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_ansi_c_quoted_text"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_arithmetic_expansion.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_arithmetic_expansion.snap",
+      "sha256": "5cc6ae1f0aa2dae3aa0010ed68a461808af1b5fe9e8a805152868044bb2e13a8",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_arithmetic_expansion"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_arithmetic_expansion_with_parens.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_arithmetic_expansion_with_parens.snap",
+      "sha256": "db77c75af9e1e8b0e5496330a7ec88428914a6cd9e9e672651a5321148731c93",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_arithmetic_expansion_with_parens"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_backquoted_command.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_backquoted_command.snap",
+      "sha256": "10222c83119b3ffb06de958c4cf6984bd2d9f8d17e6563f840385e441a55c2db",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_backquoted_command"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_backquoted_command_in_double_quotes.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_backquoted_command_in_double_quotes.snap",
+      "sha256": "e6a272d81e3478188a38ea31ca1bd20d37a5118d01d39590201b888fe8496a56",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_backquoted_command_in_double_quotes"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_bare_dollar.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_bare_dollar.snap",
+      "sha256": "f8dc3c9f96e297702111ed264faec23164d62c3aa5e248022223d222d5531276",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_bare_dollar"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_command_sub_with_balanced_backticks.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_command_sub_with_balanced_backticks.snap",
+      "sha256": "826baf7a0616e956b23f15cf02393bbd253eea333d6877cd9b920cb4e9da19ba",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_command_sub_with_balanced_backticks"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_command_sub_with_balanced_double_quotes.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_command_sub_with_balanced_double_quotes.snap",
+      "sha256": "f7bcae282267789b4fba7f426957e3ba46b69e48cba7d17e292350a0313f2135",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_command_sub_with_balanced_double_quotes"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_command_sub_with_balanced_single_quotes.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_command_sub_with_balanced_single_quotes.snap",
+      "sha256": "ccceb57f61566052e8a4855dcb7ffbf724cc47555ef0327d5ab2533e5d0a7136",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_command_sub_with_balanced_single_quotes"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_command_sub_with_unbalanced_backtick.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_command_sub_with_unbalanced_backtick.snap",
+      "sha256": "4b0e83d2d59dc2493af6365faef777e8a9571f2691acfd8b3791fd7f9ef04b87",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_command_sub_with_unbalanced_backtick"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_command_sub_with_unbalanced_single_quote.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_command_sub_with_unbalanced_single_quote.snap",
+      "sha256": "aa337781d552f5f5118db7bc0fa017eed5fa40e71bae728048feedce04294e9a",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_command_sub_with_unbalanced_single_quote"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_command_substitution.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_command_substitution.snap",
+      "sha256": "d8a810f3657dba37c7053cddd5297467b1b55b02b243ca6316e150677e5cd004",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_command_substitution"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_command_substitution_with_embedded_extglob.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_command_substitution_with_embedded_extglob.snap",
+      "sha256": "e3075b198e86e80ed180e12f57f0cb6c2bbf8bfdc005592e0a01d9497caf73a7",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_command_substitution_with_embedded_extglob"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_command_substitution_with_embedded_quotes.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_command_substitution_with_embedded_quotes.snap",
+      "sha256": "a693f181fda1910e7fe9e833ce0650569ecad7c97a0c7716dd76a99ed22ee218",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_command_substitution_with_embedded_quotes"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_double_quoted_text.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_double_quoted_text.snap",
+      "sha256": "56c4761b48d6e1e1e02a2e9cf953d7bd73e04761f521e809f6d3aa53c69af938",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_double_quoted_text"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_extglob_with_embedded_parameter.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_extglob_with_embedded_parameter.snap",
+      "sha256": "5ae78becd071c3e678105c83b076108e6fc82e7222bb1df1d434e9162b15272b",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_extglob_with_embedded_parameter"
+    },
+    {
+      "old": "crates/shell/src/parser/snapshots/omp_shell_engine__parser__word__tests__parse_gettext_double_quoted_text.snap",
+      "new": "crates/shell/src/parser/snapshots/omp_shell__parser__word__tests__parse_gettext_double_quoted_text.snap",
+      "sha256": "28fd69f78d171c99b6d0ad978f0a2e15f84b3f2afc0ec70b873fcdf49e9dbe20",
+      "live_source": "crates/shell/src/parser/word.rs",
+      "test": "parse_gettext_double_quoted_text"
+    }
+  ],
+  "removed_app_orphans": [
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__args_indexed.snap",
+      "sha256": "519cd04eb5053ce8e524204cea921cf840400f0cb26505def24223505a03770d"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__args_raw.snap",
+      "sha256": "7ad6602e40e8e4498517a86ac3fd4f6dd376e6183c3033ae009a8da4b1fb8872"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__codeblock.snap",
+      "sha256": "5554c429667b3ef759d99577a0d581dccc96f43ac8d3b1953c7466f89d0c2487"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__compaction_summary_handoff.snap",
+      "sha256": "a8f930f5230fd4d4bcada2b4942a28acd9bd6ea9d25f108e1a22006b4d97a1f3"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__compaction_summary_ordinary.snap",
+      "sha256": "2ae05d5910a74769696998d70806318b77462e16643e60e737a8df1b5fc8fd08"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__driver_schema_helpers.snap",
+      "sha256": "2dd8b45a71ed8fa9c783cf750a19dd50f3ea0331e21e267abb6c0539d469396b"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__empty_stop_retry.snap",
+      "sha256": "ec7d888b462913a53bf5249409e0077b497ea6b32eedb984a377242e443bc59d"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__join.snap",
+      "sha256": "425595caaf3e93d698679feb7a4553c67f5e7944964b4b3ee0e25d3c76ae9ef2"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__list.snap",
+      "sha256": "be18c6ed65ba7cc7bb876c1c3c2d7546297ec2c095fdd90f9a9928d1e09c1b88"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__parent_irc.snap",
+      "sha256": "0e7c801e20e8bd0bc1e14f8b5069448f70c9fcfde592bca2b04add55e9386e50"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_false_plan_false_eager_always.snap",
+      "sha256": "12387858cea1ae9120c9f5dbe7be71f53078095dabc6596fb112fd38e86b5d66"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_false_plan_false_eager_default.snap",
+      "sha256": "3ec515fff02cc52fe918c712932ea8ba859be89d313b3cef0ecc030b0c35d107"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_false_plan_false_eager_preferred.snap",
+      "sha256": "239bb3d6d54a0c6ff07a97a0253ae528fc9810e47ea9bffed3b9f49ba94d87e8"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_false_plan_true_eager_always.snap",
+      "sha256": "c62087b6233aad1438ed560e67db1eed8db5ba815d909b2d16c28c96a88e2063"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_false_plan_true_eager_default.snap",
+      "sha256": "5dbe8918f86cc023d48940f46e0c5619e5007d5c1474bc226751f0305c7296ab"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_false_plan_true_eager_preferred.snap",
+      "sha256": "80af310728589458aab3df395c87286ea90b1292433c2beec497e7833834aa1b"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_true_plan_false_eager_always.snap",
+      "sha256": "1a467ff13799530c56bdf430b5c382cc7284e0f6af0d64f4ace61514468b7773"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_true_plan_false_eager_default.snap",
+      "sha256": "c20602661043a40e4a7baf38bcd89f4005aab40c1220b5bd31d0df2fde55051a"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_true_plan_false_eager_preferred.snap",
+      "sha256": "3fede5ea7641a4995b32e29e9bfa77bae10fbb126223b525edbfe28dae64b403"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_true_plan_true_eager_always.snap",
+      "sha256": "6d634ff7b1ae4b5c252320e5349176f6b3e04beb97b149d3ea3217d73b964283"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_true_plan_true_eager_default.snap",
+      "sha256": "61771594b01f14ed22e4813c54e3fe13ee465048ac2a7bd815cee989ffb52e9d"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_false_yield_true_plan_true_eager_preferred.snap",
+      "sha256": "b53da46144390059a713eb71b32d9cfc48949434c3495b131a038b25aa31cc01"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_false_plan_false_eager_always.snap",
+      "sha256": "6f79814eeff33449b1b0505caaf2808c8af79e5bda21823ee79d38217e559a9a"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_false_plan_false_eager_default.snap",
+      "sha256": "3c82c60347d8958ee72633066aa520973a2c29794bc2415f548f1bca819e2698"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_false_plan_false_eager_preferred.snap",
+      "sha256": "36c43066b86b98fa3c7943416f36d7a5006319248f480cda02e888ba35d23231"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_false_plan_true_eager_always.snap",
+      "sha256": "464469facb2f7036798f98ed1b6f6d8336f625b772881dd5236c40e967a2010f"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_false_plan_true_eager_default.snap",
+      "sha256": "81c52e9d1aeb611f1e8ac6acfb375987b5a3eecbb227c894d3d0404ab86dc655"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_false_plan_true_eager_preferred.snap",
+      "sha256": "3a205ce1d8514a100773a18112e1ad3a00bd2a9f5fa9ede606d49f690981a950"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_true_plan_false_eager_always.snap",
+      "sha256": "1002996d645b994a6172569e1fdab47dc4dea6fbbe11c8cb35d611bac315580a"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_true_plan_false_eager_default.snap",
+      "sha256": "c88605730ae1ca268f8b47e218af52b87ca6d233b6290d4c22226ad5c920cdb6"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_true_plan_false_eager_preferred.snap",
+      "sha256": "ebc64881231147eede7dc39f6b767395df93f8132c0d43eb455e5d4a16d9ab3d"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_true_plan_true_eager_always.snap",
+      "sha256": "60b26ca55625ac0921a6264eb745c5e802b94f59a6a07eedbae330a282cf38a9"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_true_plan_true_eager_default.snap",
+      "sha256": "89c804aae98a60ea77932b719738ec61832356b53d8a75ce46b7c50c6ebebf9a"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_false_parallel_true_yield_true_plan_true_eager_preferred.snap",
+      "sha256": "f50d7ef0a532147b554ae799a187dca08a8664550ad6eee14c177de28b7230ef"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_false_plan_false_eager_always.snap",
+      "sha256": "e29d51ca0cb8944e26126474649b2ad55f822f02b5201ee2999d1df798297da0"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_false_plan_false_eager_default.snap",
+      "sha256": "967c1a40e4ee2f16f31c4f339e6ea6835e8d338d1dc920d752a311aa65f80445"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_false_plan_false_eager_preferred.snap",
+      "sha256": "13e237fbc9b07757420c3b1a053771875c441960af1bae25cc531782e4171e7e"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_false_plan_true_eager_always.snap",
+      "sha256": "499659a245738ae4a4c395ca112daa824168328beb256a3a5cbda4fb27f07c4f"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_false_plan_true_eager_default.snap",
+      "sha256": "68c0b7094546c44d606e69070c9ca27ef50097558f2fc72e4a92b477e018af58"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_false_plan_true_eager_preferred.snap",
+      "sha256": "4c99c1305806ef05e238ea58198977d405a5d3423f602b4bf826677f62fe1357"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_true_plan_false_eager_always.snap",
+      "sha256": "5ffe518d585f4e09661c6422a22cc224032f57b631410c0b82204b75b8158387"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_true_plan_false_eager_default.snap",
+      "sha256": "95c36887a7cfd568f289210c79d7ed20c447be604c50f93f9179491e0d72aee4"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_true_plan_false_eager_preferred.snap",
+      "sha256": "0d4b1f7c00fe5493649cb77f49aaec92eb4e0f7fc98046044fc21592ce7e5f0c"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_true_plan_true_eager_always.snap",
+      "sha256": "9d93b176c0cf206fb087502118255ef063d9c359ee8f45913e170476236aa759"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_true_plan_true_eager_default.snap",
+      "sha256": "62f2b2534ea545cb6b32c6432a28190f6f33ac714e547dcb603ec8de2d21b793"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_false_yield_true_plan_true_eager_preferred.snap",
+      "sha256": "bf03e025f81e0ba409ca69a02181d7a935c44c75ca90cb7e86355fd74f07a8e3"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_false_plan_false_eager_always.snap",
+      "sha256": "e29d51ca0cb8944e26126474649b2ad55f822f02b5201ee2999d1df798297da0"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_false_plan_false_eager_default.snap",
+      "sha256": "967c1a40e4ee2f16f31c4f339e6ea6835e8d338d1dc920d752a311aa65f80445"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_false_plan_false_eager_preferred.snap",
+      "sha256": "13e237fbc9b07757420c3b1a053771875c441960af1bae25cc531782e4171e7e"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_false_plan_true_eager_always.snap",
+      "sha256": "499659a245738ae4a4c395ca112daa824168328beb256a3a5cbda4fb27f07c4f"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_false_plan_true_eager_default.snap",
+      "sha256": "68c0b7094546c44d606e69070c9ca27ef50097558f2fc72e4a92b477e018af58"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_false_plan_true_eager_preferred.snap",
+      "sha256": "4c99c1305806ef05e238ea58198977d405a5d3423f602b4bf826677f62fe1357"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_true_plan_false_eager_always.snap",
+      "sha256": "5ffe518d585f4e09661c6422a22cc224032f57b631410c0b82204b75b8158387"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_true_plan_false_eager_default.snap",
+      "sha256": "95c36887a7cfd568f289210c79d7ed20c447be604c50f93f9179491e0d72aee4"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_true_plan_false_eager_preferred.snap",
+      "sha256": "0d4b1f7c00fe5493649cb77f49aaec92eb4e0f7fc98046044fc21592ce7e5f0c"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_true_plan_true_eager_always.snap",
+      "sha256": "9d93b176c0cf206fb087502118255ef063d9c359ee8f45913e170476236aa759"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_true_plan_true_eager_default.snap",
+      "sha256": "62f2b2534ea545cb6b32c6432a28190f6f33ac714e547dcb603ec8de2d21b793"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_full_codex_true_parallel_true_yield_true_plan_true_eager_preferred.snap",
+      "sha256": "bf03e025f81e0ba409ca69a02181d7a935c44c75ca90cb7e86355fd74f07a8e3"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__subagent_minimal.snap",
+      "sha256": "5bc2780edb5eae3ccb6cecd768184d0d79c6b5aa574b22222ef43badbd618575"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__table.snap",
+      "sha256": "1ec9f167a19e8b5a0fb99d472fefc1e2f2c57005f5dee2e10160fc543b9209ce"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__tool_call_loop_redirect.snap",
+      "sha256": "4996a6c3e24662b366abd78602410aabaa1c963edd1d6b50c62985d71629ad0f"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__voice_live_instructions.snap",
+      "sha256": "b34cb0ad840ddaf7612987aa26209938ac88be0caba061c264e3fb22998de8ab"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__when_else.snap",
+      "sha256": "d60123e596c4d398095df21f540f1c3a80627cefe5b0dc1c1263730baa12e660"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__when_true.snap",
+      "sha256": "9644eb0883fc0f906d86b3a59e9e97f42d78508782de064567758165ae1d3372"
+    },
+    {
+      "path": "crates/app/tests/snapshots/subagent_prompt_golden__xml.snap",
+      "sha256": "46ecf90ac53ca253c9b03752a041f641ab011c7afa508804d4efce06d9db6437"
+    }
+  ],
+  "removed_shell_orphans": [
+    {
+      "path": "crates/shell/src/parser/program/tests/snapshots/omp_shell_engine__parser__program__tests__parse_program.snap",
+      "sha256": "925195b4cc9fbf28d5dcfab024a841c949d21545c5fabd94ab81474e17fea1ec"
+    }
+  ]
+}

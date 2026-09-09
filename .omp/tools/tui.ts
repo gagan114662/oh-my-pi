@@ -1,23 +1,23 @@
-/**
- * Project-local `tui` tool: run and debug pi-tui apps headlessly. Each session
- * spawns a TypeScript/JavaScript entry or executable on a Bun-native PTY — a
- * real controlling terminal, so capability probes, SIGWINCH resizes, and
- * immediate-mode hosts all behave as in production — with `OMP_TUI_DEBUG`
- * pointed at the unix socket served by an omp/pi-tui host. Injected input
- * rides the app's own input path, while renderer and component queries inspect
- * the last painted frame.
- *
- * kitty's real terminal core (screen.c + vt-parser.c via kitty-vt-wasm)
- * tracks every PTY byte, so `screen` (and the socketless `text` fallback)
- * render any app's display exactly as kitty would — SGR, rewrap-on-resize,
- * scrollback, graphemes/wide chars — and input ops echo an after-screenshot.
- * Query replies the core generates (DA, DECRQSS, XTGETTCAP, OSC color queries)
- * are written back to the child, so capability probes resolve as on a real
- * terminal instead of timing out.
- *
- * Sessions live in this module for the lifetime of the agent session; the
- * child and its terminal are torn down on `stop` or shutdown.
- */
+// Project-local `tui` tool: run and debug omp-tui apps (examples or cargo
+// bins) headlessly. Each session spawns the target on a Bun-native PTY — a
+// real controlling terminal, so capability probes, SIGWINCH resizes, and
+// immediate-mode hosts all behave as in production — with `OMP_TUI_DEBUG`
+// pointed at a unix socket every omp-tui host serves. The wire speaks the
+// crate's `TerminalEvent`: injected input rides the terminal's own event
+// mailbox, screenshots answer from the renderer's last paint, and
+// `frame`/`tree`/`values` are mailbox queries answered by `App` hosts
+// (immediate-mode hosts let them time out server-side).
+//
+// kitty's real terminal core (screen.c + vt-parser.c via kitty-vt-wasm)
+// tracks every PTY byte, so `screen` (and the socketless `text` fallback)
+// render any app's display exactly as kitty would — SGR, rewrap-on-resize,
+// scrollback, graphemes/wide chars — and input ops echo an after-screenshot.
+// Query replies the core generates (DA, DECRQSS, XTGETTCAP, OSC color
+// queries) are written back to the child, so capability probes resolve as on
+// a real terminal instead of timing out.
+//
+// Sessions live in this module for the lifetime of the agent session; the
+// child and its terminal are torn down on `stop` or shutdown.
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as net from "node:net";
@@ -26,7 +26,7 @@ import type * as CanvasModule from "@napi-rs/canvas";
 import type * as KittyVt from "kitty-vt-wasm";
 import type { Color, KittyEvent, KittyTerminal } from "kitty-vt-wasm";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 /** Minimal slice of the host schema builder (`omp.zod`) this tool uses. */
 interface Schema {
@@ -40,10 +40,21 @@ interface SchemaBuilder {
 	number(): Schema;
 	array(item: Schema): Schema;
 }
+interface ExecResult {
+	stdout: string;
+	stderr: string;
+	code: number | null;
+	killed?: boolean;
+}
 /** Minimal slice of `CustomToolAPI` this tool uses. */
 interface ToolHost {
 	cwd: string;
 	zod: SchemaBuilder;
+	exec(
+		command: string,
+		args: string[],
+		options?: { cwd?: string; signal?: AbortSignal },
+	): Promise<ExecResult>;
 }
 interface ToolUpdate {
 	content: { type: "text"; text: string }[];
@@ -78,11 +89,12 @@ export interface TuiParams {
 		| "raw"
 		| "shot";
 	name?: string;
-	file?: string;
+	example?: string;
 	bin?: string;
 	args?: string[];
 	rows?: number;
 	cols?: number;
+	build?: boolean;
 	keys?: string;
 	text?: string;
 	x?: number;
@@ -100,7 +112,6 @@ export interface TuiParams {
 let vtApi: Promise<typeof KittyVt> | null = null;
 
 function loadVt() {
-	// Lazy import: a missing optional install must degrade `start`, not fail tool load.
 	vtApi ??= import("kitty-vt-wasm").catch((error) => {
 		vtApi = null;
 		throw new Error(
@@ -187,7 +198,9 @@ async function loadCanvas() {
 	if (canvasApi) return canvasApi;
 	let mod: typeof CanvasModule;
 	try {
-		// Lazy import: a missing optional install must degrade `shot`, not fail tool load.
+		// Dynamic import: the dependency is optional — a missing
+		// `bun install` in .omp/tools must only disable `shot`, not fail
+		// the whole tool module at load.
 		mod = await import("@napi-rs/canvas");
 	} catch (error) {
 		throw new Error(
@@ -246,11 +259,11 @@ function lerpColor(from: number, to: number, t: number): number {
 export class Screen {
 	/** Sink for terminal→child bytes (query replies); wired to the session PTY. */
 	onReply: ((bytes: Uint8Array) => void) | null = null;
-	#term: KittyTerminal;
+	private term: KittyTerminal;
 	/** Completed image transmissions by image id (insertion order backs eviction). */
-	#images = new Map<number, StoredImage>();
+	private images = new Map<number, StoredImage>();
 	/** In-flight chunked transmission; continuation commands carry no id. */
-	#pending: {
+	private pending: {
 		id: number;
 		format: number;
 		compressed: number;
@@ -259,8 +272,8 @@ export class Screen {
 		chunks: Buffer[];
 	} | null = null;
 
-	constructor(term: KittyTerminal) {
-		this.#term = term;
+	private constructor(term: KittyTerminal) {
+		this.term = term;
 	}
 
 	/** Loads the wasm module (cached process-wide) and allocates a terminal. */
@@ -276,7 +289,7 @@ export class Screen {
 		// Image transmissions are kept for `shot`; the handler also keeps
 		// core logs and other host events off the host's stderr.
 		term.onEvent = (event) => {
-			if (event.type === "graphics_command") screen.#graphics(event);
+			if (event.type === "graphics_command") screen.graphics(event);
 		};
 		return screen;
 	}
@@ -285,11 +298,11 @@ export class Screen {
 	 * arrive as separate commands whose continuations carry no id; pixels are
 	 * stored per image for the `shot` rasterizer.
 	 */
-	#graphics(cmd: GraphicsCommand) {
-		if (!this.#pending) {
+	private graphics(cmd: GraphicsCommand) {
+		if (!this.pending) {
 			// Only transmissions carry pixels; queries/puts/deletes do not.
 			if (cmd.action !== "t" && cmd.action !== "T") return;
-			this.#pending = {
+			this.pending = {
 				id: cmd.id || cmd.image_number,
 				format: cmd.format,
 				compressed: cmd.compressed,
@@ -298,10 +311,10 @@ export class Screen {
 				chunks: [],
 			};
 		}
-		const pending = this.#pending;
+		const pending = this.pending;
 		if (cmd.payload) pending.chunks.push(Buffer.from(cmd.payload, "base64"));
 		if (cmd.more) return;
-		this.#pending = null;
+		this.pending = null;
 		let bytes: Buffer =
 			pending.chunks.length === 1
 				? pending.chunks[0]
@@ -313,41 +326,41 @@ export class Screen {
 				return;
 			}
 		}
-		this.#images.set(pending.id, {
+		this.images.set(pending.id, {
 			bytes,
 			format: pending.format,
 			width: pending.width,
 			height: pending.height,
 		});
 		// Bound retained pixels: drop the oldest transmissions past 128.
-		if (this.#images.size > 128) {
-			const oldest = this.#images.keys().next().value;
-			if (oldest !== undefined) this.#images.delete(oldest);
+		if (this.images.size > 128) {
+			const oldest = this.images.keys().next().value;
+			if (oldest !== undefined) this.images.delete(oldest);
 		}
 	}
 
-	feed(chunk: Uint8Array) {
-		this.#term.write(chunk);
+	feed(chunk: Buffer) {
+		this.term.write(chunk);
 	}
 
 	/** Resize with kitty's real semantics: content rewraps and refills from scrollback. */
 	resize(cols: number, rows: number) {
-		this.#term.resize(cols, rows);
+		this.term.resize(cols, rows);
 	}
 
 	/** Frees the native terminal. */
 	dispose() {
-		this.#term.dispose();
+		this.term.dispose();
 	}
 
 	/** Resolves a decoded color against the palette; null = terminal default. */
-	#rgb(color: Color, fallback: number): number {
+	private rgb(color: Color, fallback: number): number {
 		if (!color) return fallback;
-		return "rgb" in color ? color.rgb : this.#term.paletteColor(color.index);
+		return "rgb" in color ? color.rgb : this.term.paletteColor(color.index);
 	}
 
 	/** Decodes a stored transmission to a drawable: PNG via Skia, raw RGB(A) via ImageData. */
-	async #decodeImage(
+	private async decodeImage(
 		create: typeof CanvasModule.createCanvas,
 		load: typeof CanvasModule.loadImage,
 		image: StoredImage,
@@ -378,7 +391,7 @@ export class Screen {
 
 	/** Plain-text screen: header, optional scrollback tail, then the viewport. */
 	snapshot(history = 0): string {
-		const term = this.#term;
+		const term = this.term;
 		const cursor = term.cursor;
 		const out = [
 			`── screen ${term.columns}x${term.rows}` +
@@ -402,11 +415,11 @@ export class Screen {
 	/** Rasterizes the viewport to a PNG via Skia with real system fonts. */
 	async png(): Promise<Buffer> {
 		const { create, load, stack } = await loadCanvas();
-		const term = this.#term;
+		const term = this.term;
 		const cols = term.columns;
 		const rows = term.rows;
-		const defFg = this.#rgb(term.defaultFg, DEF_FG);
-		const defBg = this.#rgb(term.defaultBg, DEF_BG);
+		const defFg = this.rgb(term.defaultFg, DEF_FG);
+		const defBg = this.rgb(term.defaultBg, DEF_BG);
 		const width = cols * CW;
 		const height = rows * CH;
 		const canvas = create(width, height);
@@ -441,8 +454,8 @@ export class Screen {
 				const cell = term.cell(x, y);
 				// Wide-char continuations are drawn by their lead cell.
 				if (!cell || cell.wideTrail) continue;
-				let fg = this.#rgb(cell.fg, defFg);
-				let bg = cell.bg ? this.#rgb(cell.bg, defBg) : null;
+				let fg = this.rgb(cell.fg, defFg);
+				let bg = cell.bg ? this.rgb(cell.bg, defBg) : null;
 				if (cell.reverse) {
 					const swap = fg;
 					fg = bg ?? defBg;
@@ -483,7 +496,7 @@ export class Screen {
 					py,
 					ch: cell.ch ? cell.ch + cell.combining.join("") : " ",
 					fg,
-					deco: cell.decorationFg ? this.#rgb(cell.decorationFg, fg) : fg,
+					deco: cell.decorationFg ? this.rgb(cell.decorationFg, fg) : fg,
 					bold: cell.bold,
 					italic: cell.italic,
 					underline: cell.underline,
@@ -503,9 +516,9 @@ export class Screen {
 			if (!placement.unicodePlacement) wanted.add(placement.imageId);
 		}
 		for (const id of wanted) {
-			const stored = this.#images.get(id);
+			const stored = this.images.get(id);
 			if (!stored) continue;
-			const image = await this.#decodeImage(create, load, stored);
+			const image = await this.decodeImage(create, load, stored);
 			if (image) drawable.set(id, image);
 		}
 		const direct = placements
@@ -678,11 +691,10 @@ interface Session {
 const sessions = new Map<string, Session>();
 
 /** Appends one PTY chunk to the session's capped raw capture. */
-function capture(session: Session, chunk: Uint8Array) {
+function capture(session: Session, chunk: Buffer) {
 	session.screen.feed(chunk);
-	const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-	session.raw.push(bytes);
-	session.rawBytes += bytes.length;
+	session.raw.push(chunk);
+	session.rawBytes += chunk.length;
 	// Cap the capture at 8 MiB, dropping the oldest chunks.
 	while (session.rawBytes > 8 * 1024 * 1024 && session.raw.length > 1) {
 		session.rawBytes -= session.raw[0].length;
@@ -949,20 +961,31 @@ function unescapeBytes(text: string): Buffer {
 // ─── Tool ────────────────────────────────────────────────────────────────────
 
 const factory = (omp: ToolHost) => {
-	const startSession = async (params: TuiParams): Promise<string> => {
+	const startSession = async (
+		params: TuiParams,
+		onUpdate?: (update: ToolUpdate) => void,
+	): Promise<string> => {
 		const name = params.name ?? "main";
 		if (sessions.has(name)) {
 			throw new Error(`session "${name}" already running; stop it first`);
 		}
-		if (params.file && params.bin) {
-			throw new Error("start takes `file` or `bin`, not both");
+		if (!params.example && !params.bin) {
+			throw new Error("start needs `example` or `bin`");
 		}
-		// Default target: this repo's own TUI, omp itself.
-		const file = params.bin ? undefined : (params.file ?? "packages/coding-agent/src/cli.ts");
-		const target = file ?? params.bin ?? "";
-		const command = file
-			? [process.execPath, resolve(omp.cwd, file), ...(params.args ?? [])]
-			: [target, ...(params.args ?? [])];
+		const target = params.example ?? params.bin ?? "";
+		if (params.build !== false) {
+			onUpdate?.({ content: [{ type: "text", text: `building ${target}…` }] });
+			const kind = params.example ? "--example" : "--bin";
+			const built = await omp.exec("cargo", ["build", kind, target], {
+				cwd: omp.cwd,
+			});
+			if (built.code !== 0) {
+				throw new Error(`cargo build failed:\n${built.stderr.slice(-4000)}`);
+			}
+		}
+		const binary = params.example
+			? join(omp.cwd, "target", "debug", "examples", target)
+			: join(omp.cwd, "target", "debug", target);
 
 		const rows = params.rows ?? 30;
 		const cols = params.cols ?? 100;
@@ -975,7 +998,7 @@ const factory = (omp: ToolHost) => {
 		let session: Session;
 		let proc: Child;
 		try {
-			const spawned = Bun.spawn(command, {
+			proc = Bun.spawn([binary, ...(params.args ?? [])], {
 				cwd: omp.cwd,
 				env: {
 					...process.env,
@@ -986,21 +1009,11 @@ const factory = (omp: ToolHost) => {
 				terminal: {
 					cols,
 					rows,
-					data(_terminal, chunk) {
+					data(_terminal: TerminalHandle, chunk: Buffer) {
 						capture(session, chunk);
 					},
 				},
 			});
-			const terminal = spawned.terminal;
-			if (!terminal) throw new Error("Bun.spawn did not create a PTY");
-			proc = {
-				pid: spawned.pid,
-				exited: spawned.exited,
-				terminal,
-				kill(signal) {
-					spawned.kill(signal);
-				},
-			};
 		} catch (error) {
 			screen.dispose();
 			rmSync(dir, { recursive: true, force: true });
@@ -1072,11 +1085,9 @@ const factory = (omp: ToolHost) => {
 		name: "tui",
 		label: "TUI Debug",
 		description:
-			"Run and debug omp/pi-tui apps headlessly on a real PTY plus the " +
-			"OMP_TUI_DEBUG socket. Start defaults to omp itself " +
-			"(packages/coding-agent/src/cli.ts); override with file (a TS/JS entry, e.g. " +
-			"file: \"packages/tui/examples/debug-demo.ts\") or bin (an executable name/path), plus optional rows/cols and args. Any omp/pi-tui app serves " +
-			"OMP_TUI_DEBUG. Ops: text (viewport screenshot as plain text), screen " +
+			"Run and debug omp-tui apps (cargo examples or bins) headlessly on a real " +
+			"PTY plus the OMP_TUI_DEBUG socket. Ops: start (example|bin, rows/cols, " +
+			"args, build), text (viewport screenshot as plain text), screen " +
 			"(plain-text screen from kitty's real terminal core — works for any app, no " +
 			"debug socket needed; peek=N prepends N scrollback lines), frame (full " +
 			"document), tree (component tree with ids/rects/focus), values (widget " +
@@ -1102,14 +1113,11 @@ const factory = (omp: ToolHost) => {
 				.string()
 				.optional()
 				.describe("session name (default: main)"),
-			file: omp.zod
+			example: omp.zod
 				.string()
 				.optional()
-				.describe("start: TS/JS entry path relative to cwd (default: packages/coding-agent/src/cli.ts — omp itself)"),
-			bin: omp.zod
-				.string()
-				.optional()
-				.describe("start: executable name or path"),
+				.describe("start: cargo example name"),
+			bin: omp.zod.string().optional().describe("start: cargo bin name"),
 			args: omp.zod
 				.array(omp.zod.string())
 				.optional()
@@ -1122,6 +1130,10 @@ const factory = (omp: ToolHost) => {
 				.number()
 				.optional()
 				.describe("start/resize: pty cols (default 100)"),
+			build: omp.zod
+				.boolean()
+				.optional()
+				.describe("start: cargo build first (default true)"),
 			keys: omp.zod
 				.string()
 				.optional()
@@ -1159,7 +1171,7 @@ const factory = (omp: ToolHost) => {
 		async execute(
 			_toolCallId: string,
 			params: TuiParams,
-			_onUpdate?: (update: ToolUpdate) => void,
+			onUpdate?: (update: ToolUpdate) => void,
 		): Promise<ToolResult> {
 			const reply = (
 				text: string,
@@ -1171,7 +1183,7 @@ const factory = (omp: ToolHost) => {
 
 			switch (params.op) {
 				case "start":
-					return reply(await startSession(params));
+					return reply(await startSession(params, onUpdate));
 				case "list": {
 					const rows = [...sessions.values()].map(
 						(session) =>

@@ -1,0 +1,65 @@
+[package]
+name = "omp-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Retained-mode terminal UI components, rendering, input, and terminal integration for omp"
+
+[[example]]
+name = "gallery"
+path = "examples/gallery/main.rs"
+test = true
+
+[[example]]
+name = "diff"
+path = "examples/diff.rs"
+test = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arboard.workspace = true
+bytes.workspace = true
+flume.workspace = true
+image.workspace = true
+im.workspace = true
+layout-rs.workspace = true
+mermaid-text.workspace = true
+omp-core.workspace = true
+omp-macros.workspace = true
+omp-snapcompact.workspace = true
+omp-vocab.workspace = true
+png.workspace = true
+parking_lot.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_bitmap.workspace = true
+smallvec.workspace = true
+strum.workspace = true
+syntect.workspace = true
+similar.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+xutf.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

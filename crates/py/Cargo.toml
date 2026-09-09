@@ -1,0 +1,41 @@
+[package]
+name = "omp-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Self-contained embedded CPython runtime with frozen standard-library and project modules"
+
+[[bin]]
+name = "omp-demo"
+path = "src/bin/demo.rs"
+
+[[bin]]
+name = "stubgen"
+path = "src/bin/stubgen.rs"
+required-features = ["inspect"]
+
+[features]
+default = []
+inspect = ["pyo3/experimental-inspect", "dep:pyo3-introspection"]
+
+[lints]
+workspace = true
+
+[dependencies]
+pyo3.workspace = true
+pyo3-introspection = { workspace = true, optional = true }
+omp-core.workspace = true
+omp-env.workspace = true
+omp-tool.workspace = true
+omp-scribe.workspace = true
+parking_lot.workspace = true
+strum.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true

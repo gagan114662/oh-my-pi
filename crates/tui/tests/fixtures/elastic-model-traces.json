@@ -1,0 +1,461 @@
+{
+  "model": "docs/adr/0034/ElasticSlots.tla",
+  "model_sha256": "54a6c37ca406b53d6d51a2eba3007d77903600fa16142a331819694c573e55d6",
+  "tlc_sha256": "4c7bb1f6b050d56c197ee9ddd6e57fe521eae175f5043c9fb98b169f7b2d5407",
+  "scope": "Wide unwrapped rows; admitted blocks; mutable FIFO and append-only prefix; no resize/failure refinement claim",
+  "cases": [
+    {
+      "name": "mutable_fifo",
+      "height": 2,
+      "steps": [
+        {
+          "action": "Init",
+          "phase": [
+            "Absent",
+            "Absent"
+          ],
+          "mode": [
+            "Undeclared",
+            "Undeclared"
+          ],
+          "want": [
+            [],
+            []
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "Create(\"Mutable\")",
+          "phase": [
+            "Queued",
+            "Absent"
+          ],
+          "mode": [
+            "Mutable",
+            "Undeclared"
+          ],
+          "want": [
+            [],
+            []
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "Admit(1)",
+          "phase": [
+            "Active",
+            "Absent"
+          ],
+          "mode": [
+            "Mutable",
+            "Undeclared"
+          ],
+          "want": [
+            [],
+            []
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "Update(1, <<\"row-a\">>)",
+          "phase": [
+            "Active",
+            "Absent"
+          ],
+          "mode": [
+            "Mutable",
+            "Undeclared"
+          ],
+          "want": [
+            [
+              "row-a"
+            ],
+            []
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "Create(\"Mutable\")",
+          "phase": [
+            "Active",
+            "Queued"
+          ],
+          "mode": [
+            "Mutable",
+            "Mutable"
+          ],
+          "want": [
+            [
+              "row-a"
+            ],
+            []
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "Admit(2)",
+          "phase": [
+            "Active",
+            "Active"
+          ],
+          "mode": [
+            "Mutable",
+            "Mutable"
+          ],
+          "want": [
+            [
+              "row-a"
+            ],
+            []
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "Update(2, <<\"row-b\">>)",
+          "phase": [
+            "Active",
+            "Active"
+          ],
+          "mode": [
+            "Mutable",
+            "Mutable"
+          ],
+          "want": [
+            [
+              "row-a"
+            ],
+            [
+              "row-b"
+            ]
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "FinalizeActive(2, <<\"row-b\">>)",
+          "phase": [
+            "Active",
+            "Finalized"
+          ],
+          "mode": [
+            "Mutable",
+            "Mutable"
+          ],
+          "want": [
+            [
+              "row-a"
+            ],
+            [
+              "row-b"
+            ]
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "FinalizeActive(1, <<\"row-a\">>)",
+          "phase": [
+            "Finalized",
+            "Finalized"
+          ],
+          "mode": [
+            "Mutable",
+            "Mutable"
+          ],
+          "want": [
+            [
+              "row-a"
+            ],
+            [
+              "row-b"
+            ]
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "BeginFlush",
+          "phase": [
+            "Finalized",
+            "Finalized"
+          ],
+          "mode": [
+            "Mutable",
+            "Mutable"
+          ],
+          "want": [
+            [
+              "row-a"
+            ],
+            [
+              "row-b"
+            ]
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "RetireSuccess(2)",
+          "phase": [
+            "Committed",
+            "Committed"
+          ],
+          "mode": [
+            "Mutable",
+            "Mutable"
+          ],
+          "want": [
+            [
+              "row-a"
+            ],
+            [
+              "row-b"
+            ]
+          ],
+          "emitted": [
+            0,
+            0
+          ],
+          "frontier": 2,
+          "history": [
+            {
+              "owner": 1,
+              "row": "row-a"
+            },
+            {
+              "owner": 2,
+              "row": "row-b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "append_prefix",
+      "height": 1,
+      "steps": [
+        {
+          "action": "Init",
+          "phase": [
+            "Absent"
+          ],
+          "mode": [
+            "Undeclared"
+          ],
+          "want": [
+            []
+          ],
+          "emitted": [
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "Create(\"AppendOnly\")",
+          "phase": [
+            "Queued"
+          ],
+          "mode": [
+            "AppendOnly"
+          ],
+          "want": [
+            []
+          ],
+          "emitted": [
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "Admit(1)",
+          "phase": [
+            "Active"
+          ],
+          "mode": [
+            "AppendOnly"
+          ],
+          "want": [
+            []
+          ],
+          "emitted": [
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "Update(1, <<\"row-a\", \"row-b\">>)",
+          "phase": [
+            "Active"
+          ],
+          "mode": [
+            "AppendOnly"
+          ],
+          "want": [
+            [
+              "row-a",
+              "row-b"
+            ]
+          ],
+          "emitted": [
+            0
+          ],
+          "frontier": 0,
+          "history": []
+        },
+        {
+          "action": "AppendStable",
+          "phase": [
+            "Active"
+          ],
+          "mode": [
+            "AppendOnly"
+          ],
+          "want": [
+            [
+              "row-a",
+              "row-b"
+            ]
+          ],
+          "emitted": [
+            1
+          ],
+          "frontier": 0,
+          "history": [
+            {
+              "owner": 1,
+              "row": "row-a"
+            }
+          ]
+        },
+        {
+          "action": "FinalizeActive(1, <<\"row-a\", \"row-b\">>)",
+          "phase": [
+            "Finalized"
+          ],
+          "mode": [
+            "AppendOnly"
+          ],
+          "want": [
+            [
+              "row-a",
+              "row-b"
+            ]
+          ],
+          "emitted": [
+            1
+          ],
+          "frontier": 0,
+          "history": [
+            {
+              "owner": 1,
+              "row": "row-a"
+            }
+          ]
+        },
+        {
+          "action": "BeginFlush",
+          "phase": [
+            "Finalized"
+          ],
+          "mode": [
+            "AppendOnly"
+          ],
+          "want": [
+            [
+              "row-a",
+              "row-b"
+            ]
+          ],
+          "emitted": [
+            1
+          ],
+          "frontier": 0,
+          "history": [
+            {
+              "owner": 1,
+              "row": "row-a"
+            }
+          ]
+        },
+        {
+          "action": "RetireSuccess(1)",
+          "phase": [
+            "Committed"
+          ],
+          "mode": [
+            "AppendOnly"
+          ],
+          "want": [
+            [
+              "row-a",
+              "row-b"
+            ]
+          ],
+          "emitted": [
+            0
+          ],
+          "frontier": 1,
+          "history": [
+            {
+              "owner": 1,
+              "row": "row-a"
+            },
+            {
+              "owner": 1,
+              "row": "row-b"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

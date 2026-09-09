@@ -1,0 +1,816 @@
+{
+  "schema_version": 2,
+  "source_digest": "f6c24b11d18bf036557645be6908f8838b64d54f14420aef36bcd20172ac2321",
+  "inputs": [
+    {
+      "id": "catalog.models.compressed.v1",
+      "path": "fixtures/llm-oracle/catalog/models.json.zst",
+      "sha256": "7773227493fd11ffa3d33946735084321cfa87064f48ec6a8c8e10b9804dc3f0",
+      "source": "oracle:catalog.models.compressed.v1"
+    },
+    {
+      "id": "catalog.oauth.source.v1",
+      "path": "fixtures/llm-oracle/catalog/oauth.toml",
+      "sha256": "3608e8a48097cfd54dfd3203938691fe12705dee8aff0d0604359ff7c2aea56f",
+      "source": "oracle:catalog.oauth.source.v1"
+    },
+    {
+      "id": "catalog.policy.aliases-tiers-deepseek.v1",
+      "path": "fixtures/llm-oracle/catalog-policy/aliases-tiers-and-deepseek.json",
+      "sha256": "5d7db0597e5abe8a1c9b93c14ac9b1dc471f2a387e1504bb1984151eda3e4de4",
+      "source": "oracle:catalog.policy.aliases-tiers-deepseek.v1"
+    },
+    {
+      "id": "catalog.policy.compat-profiles.v1",
+      "path": "fixtures/llm-oracle/catalog-policy/compat-profiles.json",
+      "sha256": "813731312a7bf7624bbc6c331c1d28f4e4c4d1a375e0b599155e2df7fb6afb54",
+      "source": "oracle:catalog.policy.compat-profiles.v1"
+    },
+    {
+      "id": "catalog.policy.effort-tier-classifier.v1",
+      "path": "fixtures/llm-oracle/catalog-policy/effort-tier-classifier.json",
+      "sha256": "5fed1cfa2b2d21c010db99e4c91a3a312e2920f7b0965a8b1e249ceb620ded0b",
+      "source": "oracle:catalog.policy.effort-tier-classifier.v1"
+    },
+    {
+      "id": "catalog.policy.exact-model-overrides.v1",
+      "path": "fixtures/llm-oracle/catalog-policy/exact-model-overrides.json",
+      "sha256": "ec7bfe74ece9d4f24f841e5748017ceb58bf0b8bdfbe6c374e22ca69d44d7097",
+      "source": "oracle:catalog.policy.exact-model-overrides.v1"
+    },
+    {
+      "id": "catalog.policy.family-classifier.v1",
+      "path": "fixtures/llm-oracle/catalog-policy/family-classifier.json",
+      "sha256": "d458d137aefe4905bfb96f3c58c6fbe7d8337293edc484aa2d0c5c0b32f76a2f",
+      "source": "oracle:catalog.policy.family-classifier.v1"
+    },
+    {
+      "id": "catalog.policy.header-policy.v1",
+      "path": "fixtures/llm-oracle/catalog-policy/header-policy.json",
+      "sha256": "f41c0efa40edaeb8d2b3d7cec38e92e53de24481c94309afb9b3b69e3a23cd25",
+      "source": "oracle:catalog.policy.header-policy.v1"
+    },
+    {
+      "id": "catalog.policy.openai-version-aliases.v1",
+      "path": "fixtures/llm-oracle/catalog-policy/openai-version-aliases.json",
+      "sha256": "98d86c519fef3d8ea3f9f0b6878388282b67c477fb3f085fe6dc7e6e8d5c3fdc",
+      "source": "oracle:catalog.policy.openai-version-aliases.v1"
+    },
+    {
+      "id": "catalog.policy.qwen-collapse-cases.v1",
+      "path": "fixtures/llm-oracle/catalog-policy/qwen-collapse-cases.json",
+      "sha256": "91bb72527c20dd0673bb542ddb87ffc2e339336fc9bcf5860982cbf6a1024f52",
+      "source": "oracle:catalog.policy.qwen-collapse-cases.v1"
+    },
+    {
+      "id": "catalog.policy.thinking-profiles.v1",
+      "path": "fixtures/llm-oracle/catalog-policy/thinking-profiles.json",
+      "sha256": "34558a4b1b455b81653d189223ffa5af017ead4d03bca66538f6a3779542323b",
+      "source": "oracle:catalog.policy.thinking-profiles.v1"
+    },
+    {
+      "id": "catalog.providers.source.v1",
+      "path": "fixtures/llm-oracle/catalog/providers.toml",
+      "sha256": "fdaf688fe55ca76297c550d43504b597bb7f944f82bb641f64cd8a819f012c31",
+      "source": "oracle:catalog.providers.source.v1"
+    },
+    {
+      "id": "compat.cascade.classes.amazon.v1",
+      "path": "crates/catalog/compat/classes/amazon.kdl",
+      "sha256": "1d307c2badd5384a89e702a5fae1edca057de17eefed24e3970b65612c3ebbd2",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.anthropic.v1",
+      "path": "crates/catalog/compat/classes/anthropic.kdl",
+      "sha256": "4ad1c1834544583212e05388d704a46eb72c40caee630580ea35b6ad97e994f8",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.baidu.v1",
+      "path": "crates/catalog/compat/classes/baidu.kdl",
+      "sha256": "9c54111b53d099f5a533954fc1cd3a21978779c2f5b1eef2bf8f4080e0c15012",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.bytedance.v1",
+      "path": "crates/catalog/compat/classes/bytedance.kdl",
+      "sha256": "7decc36b6ee46b5ff57541b24bca9c6b999b678273dfbf79c9df2808fd2affac",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.cohere.v1",
+      "path": "crates/catalog/compat/classes/cohere.kdl",
+      "sha256": "5045ebb077769c2cb63bc9a18f50dfe6519f1ee13291ec10abade248dd163aa5",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.deepseek.v1",
+      "path": "crates/catalog/compat/classes/deepseek.kdl",
+      "sha256": "e25a41a3e5e691d0d127b5e5ca95c67a5aef7e989f14d75a7f838cd7484f6df1",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.gemini.v1",
+      "path": "crates/catalog/compat/classes/gemini.kdl",
+      "sha256": "501934fb4450ba062f1362ac267a9dc52e1b2c059d4e2c8ff28a7efd36214e45",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.gemma.v1",
+      "path": "crates/catalog/compat/classes/gemma.kdl",
+      "sha256": "5d1b98be1576e6b9664c6978bdccee38b9f94fc341455fc579d54fca734c7d4e",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.glm.v1",
+      "path": "crates/catalog/compat/classes/glm.kdl",
+      "sha256": "e4cd1d67db7eca91d6c293b5fe0ae28defe73fdf109fb70e114406690a7ca25e",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.gpt-oss.v1",
+      "path": "crates/catalog/compat/classes/gpt-oss.kdl",
+      "sha256": "97531e22dfd86852d8fd408cb752f2a9eaaff49b96a184c90be7ad8c8bafcf85",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.kimi.v1",
+      "path": "crates/catalog/compat/classes/kimi.kdl",
+      "sha256": "0328db8f184c22967afa817e48647311c643177332b972f87d48fb15368d1022",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.meta.v1",
+      "path": "crates/catalog/compat/classes/meta.kdl",
+      "sha256": "fc5b36994afda3e66dec626b50831a6dfa4fc159b25ac766f0f1e024dc31af93",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.mimo.v1",
+      "path": "crates/catalog/compat/classes/mimo.kdl",
+      "sha256": "4f223113dd65c18f46d75a15001c7379763e067c7d57f59282740bd6b2128d60",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.minimax.v1",
+      "path": "crates/catalog/compat/classes/minimax.kdl",
+      "sha256": "f4c06ab99c3976e23d2ad87d56146348cf651ec03106ca0d6cd522e82329a2bb",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.mistral.v1",
+      "path": "crates/catalog/compat/classes/mistral.kdl",
+      "sha256": "8836a5c4d2508e515366d32e590bf6ceaaf38f7afa4068d9a61328bf2fb002ee",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.openai.v1",
+      "path": "crates/catalog/compat/classes/openai.kdl",
+      "sha256": "ca6dfb0385c031f68880f24f863af1f3c6fb5549b1c1684e5ebb7f8194241173",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.qwen.v1",
+      "path": "crates/catalog/compat/classes/qwen.kdl",
+      "sha256": "8f57b1fb8fa117e726118eb7d370e97c500bfdd55726fa2ce0c574438a084458",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.stepfun.v1",
+      "path": "crates/catalog/compat/classes/stepfun.kdl",
+      "sha256": "9e67bc15def795212c3bcac4c1d5ff04f1401cd6bae2a546da51447dbf8c9bf1",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.classes.xai.v1",
+      "path": "crates/catalog/compat/classes/xai.kdl",
+      "sha256": "0df22c033b627606ddfabd4b32c604d7ba015c62f259da5381a05355966dbc9f",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.abliteration.v1",
+      "path": "crates/catalog/compat/providers/abliteration.kdl",
+      "sha256": "be61169916b57c8f0b43fb4359890c803b1fe9a3b0add3b3eaf75734b8930470",
+      "source": "pi upstream compat rules 2026-09-03"
+    },
+    {
+      "id": "compat.cascade.providers.agnes-plan.v1",
+      "path": "crates/catalog/compat/providers/agnes-plan.kdl",
+      "sha256": "7e87033ba02393d840a1bb755bd5cdcdb0006ff1cb43532d383177c167493903",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.agnes.v1",
+      "path": "crates/catalog/compat/providers/agnes.kdl",
+      "sha256": "20acf08d5f0010b357b4ccc340c3757998c3b4407d3f4ab29754a9f7fa6e9d22",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.aiand.v1",
+      "path": "crates/catalog/compat/providers/aiand.kdl",
+      "sha256": "334b27efcec59f80e4ed5a76381aee2d36e54da34d85577b39304c61ea070857",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.aimlapi.v1",
+      "path": "crates/catalog/compat/providers/aimlapi.kdl",
+      "sha256": "f4e4263d25896ecc51230eebe1e6625dbafe4b5deb2c16a26790fb53bf0aaa82",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.alibaba-coding-plan.v1",
+      "path": "crates/catalog/compat/providers/alibaba-coding-plan.kdl",
+      "sha256": "81a04b5aa97c73545e0d7e066762196e4c1f660dd7747068ab28bf86f2c10a12",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.alibaba-token-plan.v1",
+      "path": "crates/catalog/compat/providers/alibaba-token-plan.kdl",
+      "sha256": "bfb803028f35bccedb98f29f355b5dce2bf5b9c47b66c94c000e7dc2d9439b8d",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.amazon-bedrock.v1",
+      "path": "crates/catalog/compat/providers/amazon-bedrock.kdl",
+      "sha256": "03375712d44d09cecbab8d61a69cef0fb71fc6a9bb05d03757bf4750e0ade252",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.anthropic.v1",
+      "path": "crates/catalog/compat/providers/anthropic.kdl",
+      "sha256": "43db64c27b40c211d17b36f3b95dbdb379c625f2eb00f8e9822f27eb3066c592",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.azure.v1",
+      "path": "crates/catalog/compat/providers/azure.kdl",
+      "sha256": "e4d8501329f75c36b81e1d8deb98c0bb7b4d549ced686376afedf332c8dad990",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.baseten.v1",
+      "path": "crates/catalog/compat/providers/baseten.kdl",
+      "sha256": "516c77406163c4d96a267d58c3ac85ee334420c79c63aec998e17afd6c7d8052",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.bedrock-mantle.v1",
+      "path": "crates/catalog/compat/providers/bedrock-mantle.kdl",
+      "sha256": "1fbd2109a995a339c8c04109a2ecf946019251db16b0ae5651ad424856c6d552",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.cerebras.v1",
+      "path": "crates/catalog/compat/providers/cerebras.kdl",
+      "sha256": "88a85ef99286bbf3eaad9eb21afd8313b481f63639b1248aa18d507da2a8f8a8",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.cline-pass.v1",
+      "path": "crates/catalog/compat/providers/cline-pass.kdl",
+      "sha256": "3e7be511fba1af16d9ad0cd435c750fe9f1a2e8f928ba54efe1d235783d03243",
+      "source": "pi upstream compat rules 2026-09-02"
+    },
+    {
+      "id": "compat.cascade.providers.cloudflare-ai-gateway.v1",
+      "path": "crates/catalog/compat/providers/cloudflare-ai-gateway.kdl",
+      "sha256": "a976eb4f676fbb89a2ff558a5d7b0d3f71aacc469b664c22a847e1ec155a6d3a",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.cohere.v1",
+      "path": "crates/catalog/compat/providers/cohere.kdl",
+      "sha256": "b6c8d07ff71fbbd8e5cc94a845c8e73d37f72a46e2d2f2f9f57742035160cbdb",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.coreweave.v1",
+      "path": "crates/catalog/compat/providers/coreweave.kdl",
+      "sha256": "7396dac8d4081adf3b27c43c53c91e6d07e9b223d70f95cf156c5a76454946c4",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.crofai.v1",
+      "path": "crates/catalog/compat/providers/crofai.kdl",
+      "sha256": "e426cf3c0778f1106c537a9ab9c02da15993f401673060afdbb93fe8ac4be58d",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.cursor.v1",
+      "path": "crates/catalog/compat/providers/cursor.kdl",
+      "sha256": "48f4c4d038f403cdeeba7869befbb26a5f0095f51c4e3db2bc92d0bc8d4a0bd1",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.deepseek.v1",
+      "path": "crates/catalog/compat/providers/deepseek.kdl",
+      "sha256": "095cb82fd9c8d82455ae8614c8b545ee535677a0d10632f6578d4ddfead1ed42",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.firepass.v1",
+      "path": "crates/catalog/compat/providers/firepass.kdl",
+      "sha256": "39277aae17ba4d5da487f940846f0e58d9d2cfbb604e2eaf218c2a9c9740c6d7",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.fireworks.v1",
+      "path": "crates/catalog/compat/providers/fireworks.kdl",
+      "sha256": "e61ee5525686215ed6d05cab95d14d34da933f515c7355bdd740fe5a29f9e5bb",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.friendli.v1",
+      "path": "crates/catalog/compat/providers/friendli.kdl",
+      "sha256": "5b45e2f82e33ce1720cf7a477e4fe4dee44f9f157160960e10d8a82a7f89e073",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.github-copilot.v1",
+      "path": "crates/catalog/compat/providers/github-copilot.kdl",
+      "sha256": "fe8d980c4e3dee330b450dd0164124f38949ba41dc1bb63e123e332ad784d73e",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.gitlab-duo.v1",
+      "path": "crates/catalog/compat/providers/gitlab-duo.kdl",
+      "sha256": "f979c65277f3acc1ad8e501020b2da063cc51e58dbc07449721dba33b252dc48",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.gmi-cloud.v1",
+      "path": "crates/catalog/compat/providers/gmi-cloud.kdl",
+      "sha256": "8be0e711d425f95486f63b4ff0e7b805788dd2f75c1031da45fbb6ee6c36b17a",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.google-antigravity.v1",
+      "path": "crates/catalog/compat/providers/google-antigravity.kdl",
+      "sha256": "1e5c3139808bdc6ae9ccab2367bff12de0ad00b0c65089e665b5377fac23260f",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.google-gemini-cli.v1",
+      "path": "crates/catalog/compat/providers/google-gemini-cli.kdl",
+      "sha256": "260a5d2fbae4bbdeeb6106c870eeae30ba6dbefa44bfaa6706272a990d16c840",
+      "source": "pi upstream compat rules 2026-09-03"
+    },
+    {
+      "id": "compat.cascade.providers.google-vertex.v1",
+      "path": "crates/catalog/compat/providers/google-vertex.kdl",
+      "sha256": "3ca3929dc031e80ad1c9098b39f150e93c7a68d6e13734f1c04dcd5e76ba8027",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.google.v1",
+      "path": "crates/catalog/compat/providers/google.kdl",
+      "sha256": "9e2f09ee3393eb2bc2a84de54887922bc612ddcedbce287d0b9c0af464b2d9e6",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.groq.v1",
+      "path": "crates/catalog/compat/providers/groq.kdl",
+      "sha256": "9e450310559fb85bc75f8a6c74860cb552db679429daa0ff457cb384e0039187",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.huggingface.v1",
+      "path": "crates/catalog/compat/providers/huggingface.kdl",
+      "sha256": "5bdc398af5d124a3c75dee2448f2e19247b8d98940995c70ee8bee52830dbd1d",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.inception.v1",
+      "path": "crates/catalog/compat/providers/inception.kdl",
+      "sha256": "dd86304366548f6178a8bed850f072b3aaa60ce9d341ef7abc71d0e16e230069",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.kilo.v1",
+      "path": "crates/catalog/compat/providers/kilo.kdl",
+      "sha256": "340677324e269ea7afafe513a5bcef8eb980715f6e0ea91e44f2582a3af2f3b7",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.kimi-code.v1",
+      "path": "crates/catalog/compat/providers/kimi-code.kdl",
+      "sha256": "9744611ff95f60e6f11aaa0a37faa6e38a0074482cd1f7bf3efb0fdb08f742e9",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.llama.cpp.v1",
+      "path": "crates/catalog/compat/providers/llama.cpp.kdl",
+      "sha256": "897b048b15945f5b9febf15df8e5763c9997027cbaad8e26c5a3c4d603757227",
+      "source": "pi upstream compat rules 2026-09-02"
+    },
+    {
+      "id": "compat.cascade.providers.lm-studio.v1",
+      "path": "crates/catalog/compat/providers/lm-studio.kdl",
+      "sha256": "4d084da271d7ba199f50bf13b2426a041f24a85c6f2a947f75587010d5569ccd",
+      "source": "pi upstream compat rules 2026-09-02"
+    },
+    {
+      "id": "compat.cascade.providers.meta.v1",
+      "path": "crates/catalog/compat/providers/meta.kdl",
+      "sha256": "df5cef121ab1dd43d263983c279b68890b50296ff4717181a747bb49215f3a15",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.minimax-code-cn.v1",
+      "path": "crates/catalog/compat/providers/minimax-code-cn.kdl",
+      "sha256": "5db019d9e4408ecdbe34a71bc89bf93ebef6c663e47646ac67ef3f45ef0e9e42",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.minimax-code.v1",
+      "path": "crates/catalog/compat/providers/minimax-code.kdl",
+      "sha256": "67f078766a18da3995cd896ef970fa70c5f1c2eb52317a9a09549ee650f43915",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.minimax.v1",
+      "path": "crates/catalog/compat/providers/minimax.kdl",
+      "sha256": "0a3f7d678ecb35a56e8127a0aad5296afa56e22c48c36a4330a440c7cea57a88",
+      "source": "pi upstream compat rules 2026-09-02"
+    },
+    {
+      "id": "compat.cascade.providers.mistral.v1",
+      "path": "crates/catalog/compat/providers/mistral.kdl",
+      "sha256": "d1bbe839c77848e772ab28393ff297cd393ff6b8dd9e5b6060d194d9321c4726",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.moonshot.v1",
+      "path": "crates/catalog/compat/providers/moonshot.kdl",
+      "sha256": "d9f42fd80ddae889fdf123840638fed2e7083a76cd21b1368e034799cc8f2158",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.nanogpt.v1",
+      "path": "crates/catalog/compat/providers/nanogpt.kdl",
+      "sha256": "e355ea24d012747297916d92edb7d94691c2fbfc5150c908968673b9e20582f7",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.novita.v1",
+      "path": "crates/catalog/compat/providers/novita.kdl",
+      "sha256": "0f7ef7b8df7a54176c8e0715814f58f5429ee88ff8ed46ab923b54c8a053b3e9",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.nvidia.v1",
+      "path": "crates/catalog/compat/providers/nvidia.kdl",
+      "sha256": "57a5d7b333750bb71e6822bcdf9b9950f023080326e463fec9cfb74c9633ef06",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.ollama-cloud.v1",
+      "path": "crates/catalog/compat/providers/ollama-cloud.kdl",
+      "sha256": "aa07171882e2c594e5801d13d75ad094bf961676b8e00f7cfae3c15f212b8a58",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.ollama.v1",
+      "path": "crates/catalog/compat/providers/ollama.kdl",
+      "sha256": "b2827cb4fc42d6989750733ba5bb0ba218aecb0447fdd2451537d2d4c7efa950",
+      "source": "pi upstream compat rules 2026-09-02"
+    },
+    {
+      "id": "compat.cascade.providers.openai-codex.v1",
+      "path": "crates/catalog/compat/providers/openai-codex.kdl",
+      "sha256": "56b7d3a9ee8b1ca1c387063499728e49bb5680b6abcf7ab06910055992f98381",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.openai.v1",
+      "path": "crates/catalog/compat/providers/openai.kdl",
+      "sha256": "60e1c230afce2877df30e10cd8264a657f990cff499ca4e5978efe557fea0f11",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.opencode-go.v1",
+      "path": "crates/catalog/compat/providers/opencode-go.kdl",
+      "sha256": "32a25731fee35fde019db0d7d01554773d8c8672848f97233a22b51f90b5c99f",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.opencode-zen.v1",
+      "path": "crates/catalog/compat/providers/opencode-zen.kdl",
+      "sha256": "4fc93862c3c6550a3b2f18eb6a0868f5634b61f1f57ce278bc30304f8f9cf95f",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.opencode.v1",
+      "path": "crates/catalog/compat/providers/opencode.kdl",
+      "sha256": "862cd2a57407bfc1a1a2ffa85af66c2524f3bf69731f75c969a5babf838ad946",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.openrouter.v1",
+      "path": "crates/catalog/compat/providers/openrouter.kdl",
+      "sha256": "151157b6c573009b81b8fe98354f39cf83135f64324e58384180e690723e8bb2",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.ovhai.v1",
+      "path": "crates/catalog/compat/providers/ovhai.kdl",
+      "sha256": "0cc0d356e59988e09a5930c3d20c5264bed7ea1f0ea755b6182f4204bc6a0779",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.poolside.v1",
+      "path": "crates/catalog/compat/providers/poolside.kdl",
+      "sha256": "176b5ae976c011eb33cef441c27982979e28e39031c9196471366f45ba677d57",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.qianfan.v1",
+      "path": "crates/catalog/compat/providers/qianfan.kdl",
+      "sha256": "387bab92577d6c81543cf1dfb0af4954d1c0a63e5357b8bb84ef27c3c746b42d",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.sakana.v1",
+      "path": "crates/catalog/compat/providers/sakana.kdl",
+      "sha256": "349d65e4ede084290793111f9afe04b499c453e478710ebee0b2f8ee1ae442de",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.sarvam.v1",
+      "path": "crates/catalog/compat/providers/sarvam.kdl",
+      "sha256": "e7cb085009b37386f0a72d82ceb4bc124c389493f5bb84f5d2fc4a626b6df07f",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.scaleway.v1",
+      "path": "crates/catalog/compat/providers/scaleway.kdl",
+      "sha256": "82437bc2e44fd0c16095204cebc6c63b213b263a6e75eee382ee0af789f7d041",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.stepfun-plan.v1",
+      "path": "crates/catalog/compat/providers/stepfun-plan.kdl",
+      "sha256": "4b876ea703754c596233373b3a84ab9d1e9c971a468025adad6b5537cd036193",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.stepfun.v1",
+      "path": "crates/catalog/compat/providers/stepfun.kdl",
+      "sha256": "19588da09f52e331213862c580740d9dee8933349ec34373ea464df505b00e82",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.synthetic.v1",
+      "path": "crates/catalog/compat/providers/synthetic.kdl",
+      "sha256": "0248c85fb5d00b8432d7697a7096a633a1a51912f90983fb3d22fddae504c722",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.together.v1",
+      "path": "crates/catalog/compat/providers/together.kdl",
+      "sha256": "9246de3949263e03d346bc0988e1870332365e19424b51417592ceb8b53f5806",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.umans.v1",
+      "path": "crates/catalog/compat/providers/umans.kdl",
+      "sha256": "d7f876249348b1c1a4964e505928cb5208d7df76058b51569c0e62828b295d54",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.venice.v1",
+      "path": "crates/catalog/compat/providers/venice.kdl",
+      "sha256": "34213f5391e63241db684a9db841ebc7eb931a06589a1d34e89327cd46b66b02",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.vercel-ai-gateway.v1",
+      "path": "crates/catalog/compat/providers/vercel-ai-gateway.kdl",
+      "sha256": "aa99b8e6cca92877c07251f2940f9c3415a19cfc3659e602778db61b88346561",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.vllm.v1",
+      "path": "crates/catalog/compat/providers/vllm.kdl",
+      "sha256": "0b13ac8764d4213b141a95d8acee5a3907b832561d3680f4cd55ceca9644a537",
+      "source": "pi upstream compat rules 2026-09-02"
+    },
+    {
+      "id": "compat.cascade.providers.wafer-serverless.v1",
+      "path": "crates/catalog/compat/providers/wafer-serverless.kdl",
+      "sha256": "6912e1b16431d087e403addc0e4fd13b1c2fb9a64085168fa7e20267100d9efa",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.xai-oauth.v1",
+      "path": "crates/catalog/compat/providers/xai-oauth.kdl",
+      "sha256": "2d57dea5c846a4bc3de32fc8a0d7953705355cbe086c1fb2a6dddf41ab1d74fb",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.xai.v1",
+      "path": "crates/catalog/compat/providers/xai.kdl",
+      "sha256": "4a2a48dfbde616be0d9b5bcb7e5138d9b7c180d97adeb7b35b74d89647527f2e",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.xiaomi-token-plan-ams.v1",
+      "path": "crates/catalog/compat/providers/xiaomi-token-plan-ams.kdl",
+      "sha256": "11f54fcf0c8c2860bf69a972b0c1d988e353758f6aa9dcf990c4ef341e818d46",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.xiaomi-token-plan-cn.v1",
+      "path": "crates/catalog/compat/providers/xiaomi-token-plan-cn.kdl",
+      "sha256": "210a7bb475ebcef115736cbc3ac31c58fe2ab015fc3033f74ea82350cf171f5f",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.xiaomi-token-plan-sgp.v1",
+      "path": "crates/catalog/compat/providers/xiaomi-token-plan-sgp.kdl",
+      "sha256": "2125b80e80c3eae2d22cafd057778b39cb9ca3f09758cdb9933eef3faa0509fb",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.xiaomi.v1",
+      "path": "crates/catalog/compat/providers/xiaomi.kdl",
+      "sha256": "a1c6e3ed722c4a27e38fc0afc7b5bd950505d7a7744058080fdfb7879ddc00e2",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.yandex.v1",
+      "path": "crates/catalog/compat/providers/yandex.kdl",
+      "sha256": "73c259bf10671af4d4a36dba015051615f0a970d2129128b87bd95d58f94e8d0",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.yolo-auto.v1",
+      "path": "crates/catalog/compat/providers/yolo-auto.kdl",
+      "sha256": "4021e28ea09e6e0d9655631d20694c2235590a105e85e755ef8bc90fdbda9334",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.zai.v1",
+      "path": "crates/catalog/compat/providers/zai.kdl",
+      "sha256": "3a607203cde82574d7bf407e424bb81a9b72cfdf0c36ac0434b72ec880a88e79",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.zenmux.v1",
+      "path": "crates/catalog/compat/providers/zenmux.kdl",
+      "sha256": "47da59c967098885dc28b5c62c88d4e06a0580e51ace2dc3a271f3cbff114147",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.providers.zhipu-coding-plan.v1",
+      "path": "crates/catalog/compat/providers/zhipu-coding-plan.kdl",
+      "sha256": "5da75a3dc24dcc882024a0c1e5cf305663c0ac9ca251ffd957bf696ebdfea256",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.runtime.behavior.v1",
+      "path": "crates/catalog/compat/runtime/behavior.kdl",
+      "sha256": "93b97d60cb8f486255d9e38a74cd4a14c40040c154851aca8c13d0954afa4db5",
+      "source": "pi upstream compat rules 2026-09-03"
+    },
+    {
+      "id": "compat.cascade.taxonomy._collapse.v1",
+      "path": "crates/catalog/compat/taxonomy/_collapse.kdl",
+      "sha256": "2ca39414ba7c4e2cfbc3ccbf49e86d0c7c886484df1c34b24504b030026375a8",
+      "source": "pi upstream compat rules 2026-09-03"
+    },
+    {
+      "id": "compat.cascade.taxonomy._discovery.v1",
+      "path": "crates/catalog/compat/taxonomy/_discovery.kdl",
+      "sha256": "6a0cdc96435b128a435a3881c223f99e402804638bb59d83677bba0e69323d27",
+      "source": "pi upstream compat rules 2026-09-03"
+    },
+    {
+      "id": "compat.cascade.taxonomy.ai21.v1",
+      "path": "crates/catalog/compat/taxonomy/ai21.kdl",
+      "sha256": "1fd1897424280808f1b830bd725c3ed1b673a12589e53811a3357b2a66cc747e",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.amazon.v1",
+      "path": "crates/catalog/compat/taxonomy/amazon.kdl",
+      "sha256": "5591734f638283accc43c46fba05d84660d74a329051a92eb1a51b132599efad",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.anthropic.v1",
+      "path": "crates/catalog/compat/taxonomy/anthropic.kdl",
+      "sha256": "41cd0154bf60f17643e8904d76c02d5670eabb9185d2d4a57ae0a3a272bf118c",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.baidu.v1",
+      "path": "crates/catalog/compat/taxonomy/baidu.kdl",
+      "sha256": "4d257aca00ec14c5d897f40896fb7bb79d3ef9ce0b1d216731aff3bc15066a3d",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.bytedance.v1",
+      "path": "crates/catalog/compat/taxonomy/bytedance.kdl",
+      "sha256": "b0833ac7baf50c9c662b62fe16323b332fabb86e3d0a48b93c3a4b21bed25f72",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.cohere.v1",
+      "path": "crates/catalog/compat/taxonomy/cohere.kdl",
+      "sha256": "0e58745c530c0aa786e0e0f787179b8ba08a84205157522dd3f74fe3f83f3b41",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.deepseek.v1",
+      "path": "crates/catalog/compat/taxonomy/deepseek.kdl",
+      "sha256": "e6b16ad6d53bdfd7f3c824929c980a4988d568d17ca7e506626bac97b4c0475e",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.gemini.v1",
+      "path": "crates/catalog/compat/taxonomy/gemini.kdl",
+      "sha256": "5816ec67816eae916f8bf7bdb9f9a6d53b8a12004527a3ccda73e93d77092cee",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.gemma.v1",
+      "path": "crates/catalog/compat/taxonomy/gemma.kdl",
+      "sha256": "8cf6fd3b0a855662a8f793cf267c45c8f3dfb5cc92c9330dc60b2f11536a8c43",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.glm.v1",
+      "path": "crates/catalog/compat/taxonomy/glm.kdl",
+      "sha256": "ba5c4890ce5513058af746283a6d6cf3974b3f9e3dbb2d09cfe5b24634dbcd90",
+      "source": "pi upstream compat rules 2026-09-03"
+    },
+    {
+      "id": "compat.cascade.taxonomy.gpt-oss.v1",
+      "path": "crates/catalog/compat/taxonomy/gpt-oss.kdl",
+      "sha256": "95e9f2291471b79b738367099af3920dd864aa2e3e2afd9c0494631a97d1e628",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.kimi.v1",
+      "path": "crates/catalog/compat/taxonomy/kimi.kdl",
+      "sha256": "eb84b9c90b623562fabd5d47184e8217d991fa556fbd92ed9fb2e02096cebd8d",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.meta.v1",
+      "path": "crates/catalog/compat/taxonomy/meta.kdl",
+      "sha256": "c6931f770846d67749c726ca1f54e1ffc279797cd728c2b7d6e8896fa4efff0a",
+      "source": "pi upstream compat rules 2026-09-03"
+    },
+    {
+      "id": "compat.cascade.taxonomy.mimo.v1",
+      "path": "crates/catalog/compat/taxonomy/mimo.kdl",
+      "sha256": "2472ada8abcd6bcfd32469192db3dfd61d31032c982e2ba800b8e7ab96e90dc0",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.minimax.v1",
+      "path": "crates/catalog/compat/taxonomy/minimax.kdl",
+      "sha256": "bfd55ff11d82a143afd285bbb7cbcfdeae2e92283e2d9a2b46141493fcd9fa1c",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.mistral.v1",
+      "path": "crates/catalog/compat/taxonomy/mistral.kdl",
+      "sha256": "e0a02d6f41c80cd8c0901426f27afc52aa4148e6d7d6e55bc5fd9e17e21ce4fd",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.openai.v1",
+      "path": "crates/catalog/compat/taxonomy/openai.kdl",
+      "sha256": "8a8e975aaaae738d9ba64f0acb3c437481836bfd36d4c43ef1ccd4a1a5f919ce",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.qwen.v1",
+      "path": "crates/catalog/compat/taxonomy/qwen.kdl",
+      "sha256": "7e892a501e50cbff28e1fa5a7fe1506550290b2abf01a0b80cbd5bd12fcfb5f9",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.stepfun.v1",
+      "path": "crates/catalog/compat/taxonomy/stepfun.kdl",
+      "sha256": "945fd3c61155ee0eeb2b226c4c23827533c10d0a6a59ab3d54be6f0b72b2117f",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.unknown.v1",
+      "path": "crates/catalog/compat/taxonomy/unknown.kdl",
+      "sha256": "6759ec147d30c35ec245881f0933f167b7c1231944cacf020f84a833bf885a27",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy.xai.v1",
+      "path": "crates/catalog/compat/taxonomy/xai.kdl",
+      "sha256": "9c681d19d44bcc883be127a2a487260d01c30ff5ebc70738c8fcb5a607af20da",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    }
+  ]
+}

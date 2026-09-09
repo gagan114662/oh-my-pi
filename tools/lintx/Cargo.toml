@@ -1,0 +1,18 @@
+# Standalone repo lint tool — deliberately NOT a workspace member: its ra_ap_*
+# dependency tree must not enter workspace resolution. Run via `just lintx`.
+[workspace]
+
+[workspace.dependencies]
+ra_ap_syntax = "0.0.348"
+walkdir = "2.5.0"
+
+[package]
+name = "lintx"
+version = "0.1.0"
+edition = "2024"
+description = "omp import/path linter with explicit namespace policy and shared-state diagnostics"
+publish = false
+
+[dependencies]
+ra_ap_syntax.workspace = true
+walkdir.workspace = true

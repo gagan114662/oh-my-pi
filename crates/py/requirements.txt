@@ -1,0 +1,10 @@
+# Pure-Python packages frozen into every omp-py binary next to the repo
+# modules (crates/py/python). scripts/fetch-python.sh (in this crate) resolves them with uv
+# into gitignored vendor/python/bundled/ (skipped while the stamp matches
+# this file) and collects their license texts into the tracked
+# THIRD-PARTY-NOTICES.txt — rerun it after editing this file and commit the
+# notices alongside. Only pure wheels work: the frozen blob carries
+# bytecode, not shared objects; anything native belongs in site-packages.
+# Pin exact versions and wheel hashes: the fetcher uses uv's
+# `--only-binary :all: --require-hashes` gate before freezing bytecode.
+cloudpickle==3.1.2 --hash=sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a

@@ -1,407 +1,245 @@
 [workspace]
-# Explicit, not `crates/pi-*`: a glob member that resolves to a directory
-# without a Cargo.toml (a deleted crate whose dir survives `git reset --hard`
-# because an ignored file stayed behind) is a hard error that fails the whole
-# workspace, not a skipped entry.
-members = [
-   "crates/pi-ast",
-   "crates/pi-builtins",
-   "crates/pi-diff",
-   "crates/pi-edit",
-   "crates/pi-iso",
-   "crates/pi-natives",
-   "crates/pi-shell",
-   "crates/pi-vcs",
-   "crates/pi-voice",
-   "crates/pi-walker",
-   "crates/vendor/brush-core",
-]
+members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "18.1.13"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 authors = ["Stencil Labs, Inc."]
 homepage = "https://omp.sh/"
-repository = "https://github.com/can1357/oh-my-pi"
+repository = "https://github.com/stencil-hq/omp"
 
-[patch.crates-io]
-brush-core = { path = "crates/vendor/brush-core" }
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-strip = true
-# Unwind (not abort) so panics inside vendored code and native tasks stay
-# recoverable at the appropriate boundary: the uutils boundary
-# (pi-shell coreutils) turns a panic into a failed command, and the
-# `task::blocking` wrapper in `crates/pi-natives/src/task.rs` catches unwinds
-# inside `Blocking::compute` before they cross napi-rs's async-work
-# `extern "C"` callback (napi `src/async_work.rs:109`) so they surface as
-# rejected JS Promises instead of forced process aborts under Rust's C-unwind
-# rules (RFC 2945, stable since 1.81). napi-rs does NOT install its own
-# per-call `catch_unwind` on the `Task`/`AsyncTask` path; the tokio-future
-# path (`env.spawn_future`) is guarded upstream. Recoverable uutils panics
-# are kept out of the crash report by the crash hook
-# (see crates/pi-natives/src/crash_handler.rs).
-panic = "unwind"
-
-[profile.ci]
-inherits = "release"
-lto = "thin"
-codegen-units = 16
-debug = false
-strip = "symbols"
-# Safe here only because `debug = false` leaves no debuginfo to lose. Never
-# copy this line into a profile that sets `debug` — see [profile.dev] below.
-split-debuginfo = "off"
-
-[profile.local]
-inherits = "release"
-lto = "thin"
-codegen-units = 16
-incremental = true
-strip = false
-# `release` codegen with symbols kept for `perf`/`samply`/Instruments. Full
-# opt-level so timings match production; only the binary size differs.
-# `cargo build --profile profiling`.
-[profile.profiling]
-inherits = "release"
-debug = "line-tables-only"
-split-debuginfo = "unpacked"
-strip = false
-
-[profile.dev]
-opt-level = 0
-lto = false
-codegen-units = 256
-incremental = true
-debug = "line-tables-only"
-# Mach-O keeps DWARF in the .o files and points at them from the executable's
-# debug map (N_OSO); `unpacked` is what retains those .o files. Setting this to
-# "off" silently strips file:line from backtrace frames in our own crates,
-# because ld64 never merges DWARF into the binary. The `panicked at foo.rs:3`
-# header survives via #[track_caller] and hides the loss. Linux: split DWARF
-# (.dwo) rather than debuginfo packed into every rlib. Windows: no-op (PDB).
-split-debuginfo = "unpacked"
-
-# Deps compile optimized once and cache; your own crates stay fast.
-[profile.dev.package."*"]
-opt-level = 2
-debug = false
-
-[workspace.lints.rust]
-# ──────────────────────────────────────────────────────────────────────────────
-# Rust Lint Levels
-# ──────────────────────────────────────────────────────────────────────────────
-mismatched_lifetime_syntaxes = "allow"
-
-[workspace.lints.clippy]
-# ──────────────────────────────────────────────────────────────────────────────
-# Base Lint Levels
-# ──────────────────────────────────────────────────────────────────────────────
-all = { level = "warn", priority = -1 }
-correctness = { level = "deny", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-perf = { level = "warn", priority = -1 }
-style = { level = "warn", priority = -1 }
-suspicious = { level = "deny", priority = -1 }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Meta: Lint Attributes
-# ──────────────────────────────────────────────────────────────────────────────
-allow_attributes_without_reason = "warn" # Enforce reason for all #[allow]
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Safety & Unsafe Code
-# ──────────────────────────────────────────────────────────────────────────────
-borrow_as_ptr = "allow"
-cast_ptr_alignment = "allow"
-ptr_as_ptr = "allow"
-ref_as_ptr = "allow"
-undocumented_unsafe_blocks = "warn"
-unsafe_derive_deserialize = "allow"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Numeric Casts & Conversions
-# ──────────────────────────────────────────────────────────────────────────────
-cast_lossless = "allow"            # u32 as u64 - 'as' is cleaner than From
-cast_possible_truncation = "allow" # u64 as u32 - often intentional
-cast_possible_wrap = "allow"       # u32 as i32 - can be intentional
-cast_precision_loss = "allow"      # f64 as f32 - sometimes acceptable
-cast_sign_loss = "allow"           # i32 as u32 - sometimes needed
-tuple_array_conversions = "allow"  # Non-Into conversion is more clear
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Floating Point
-# ──────────────────────────────────────────────────────────────────────────────
-float_cmp = "allow" # Tests mostly do this + we know what we're doing
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Functions & Closures
-# ──────────────────────────────────────────────────────────────────────────────
-inline_always = "allow"                      # Needed for performance-critical code
-must_use_candidate = "allow"                 # Not every function needs #[must_use]
-needless_pass_by_value = "allow"
-redundant_closure_for_method_calls = "allow" # .map(ToString::to_string) can be clearer
-return_self_not_must_use = "allow"           # Builder pattern methods
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Structs & Types
-# ──────────────────────────────────────────────────────────────────────────────
-inconsistent_struct_constructor = "allow"
-missing_fields_in_debug = "allow"         # Not every field needs to be in Debug output
-struct_excessive_bools = "allow"          # Usually with builders
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Pattern Matching
-# ──────────────────────────────────────────────────────────────────────────────
-match_same_arms = "allow"                    # Can be intentional for clarity
-match_wildcard_for_single_variants = "allow" # _ can be clearer than listing variants
-option_if_let_else = "allow"                 # match/if-let-else often clearer
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Imports & Module Organization
-# ──────────────────────────────────────────────────────────────────────────────
-enum_glob_use = "allow"
-items_after_statements = "allow" # Sometimes more readable
-wildcard_imports = "allow"       # Cleaner for preludes and test modules
-redundant_pub_crate = "allow"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Variables & Type Inference
-# ──────────────────────────────────────────────────────────────────────────────
-let_underscore_untyped = "allow" # Type obvious from context
-similar_names = "allow"          # 'req' and 'res' together are fine
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Literals & Formatting
-# ──────────────────────────────────────────────────────────────────────────────
-unreadable_literal = "allow" # 10_000_000 vs 0xDEADBEEF is context dependent
-verbose_bit_mask = "allow"   # Explicit bit patterns can be clearer than hex
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Code Style
-# ──────────────────────────────────────────────────────────────────────────────
-default_trait_access = "allow"        # Default::default() sometimes clearer
-significant_drop_tightening = "allow" # We pay attention to this already
-# ──────────────────────────────────────────────────────────────────────────────
-# Tests & Assertions
-# ──────────────────────────────────────────────────────────────────────────────
-assert_is_empty = "allow" # `is_empty()` states intent without brittle type annotations
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Documentation
-# ──────────────────────────────────────────────────────────────────────────────
-missing_errors_doc = "allow" # Documenting every error return is often redundant
-missing_panics_doc = "allow" # Not every panic needs docs, especially assert!
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Complexity
-# ──────────────────────────────────────────────────────────────────────────────
-too_many_arguments = "allow" # Argument count is rarely the real complexity signal
-too_many_lines = "allow"     # Arbitrary limits don't account for necessary complexity
-
+# All dependency versions and feature unions live here; member crates use
+# `dep.workspace = true` and never select dependency features locally.
 [workspace.dependencies]
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Internal Libraries
-# ──────────────────────────────────────────────────────────────────────────────
-pi-ast = { path = "crates/pi-ast" }
-pi-diff = { path = "crates/pi-diff" }
-pi-edit = { path = "crates/pi-edit" }
-pi-iso = { path = "crates/pi-iso" }
-pi-shell = { path = "crates/pi-shell" }
-pi-voice = { path = "crates/pi-voice" }
-pi-walker = { path = "crates/pi-walker" }
-pi-vcs = { path = "crates/pi-vcs" }
-brush-core = { path = "crates/vendor/brush-core" }
-pi-builtins = { path = "crates/pi-builtins" }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Async Runtime & Concurrency
-# ──────────────────────────────────────────────────────────────────────────────
+anyhow = "1"
+ctor = "0.2"
+arc-swap = "1.7"
+anydoc = "0.1.9"
+arboard = { version = "3.6", features = ["wayland-data-control"] }
+ast-grep-core = { version = "0.39", default-features = false, features = ["tree-sitter"] }
+argmax = "0.3"
+async-recursion = "1.1"
+async-stream = "0.3"
 async-trait = "0.1"
-futures = "0.3"
-dashmap = "6.1"
-parking_lot = "0.12.5"
-rayon = "1.12"
-tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["full"] }
-flume = "0.11"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Serialization & Data Formats
-# ──────────────────────────────────────────────────────────────────────────────
-base64 = "0.22"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
-toml = "1.1"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Error Handling
-# ──────────────────────────────────────────────────────────────────────────────
-anyhow = "1.0"
-thiserror = "2"
-bytes = "1"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# CLI & Configuration
-# ──────────────────────────────────────────────────────────────────────────────
-clap = { version = "4", features = ["derive"] }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Text Processing & Parsing
-# ──────────────────────────────────────────────────────────────────────────────
-pdf-inspector = "1"
-regex = "1"
-similar = "3.1.0"
-fontdue = { version = "0.9", default-features = false }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Data Structures - Collections
-# ──────────────────────────────────────────────────────────────────────────────
-phf = { version = "0.13", features = ["macros"] }
-heapless = "0.9"
-smallvec = { version = "1.15.1", features = [
-   "serde",
-   "write",
-   "union",
-   "const_new",
-] }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Hashing
-# ──────────────────────────────────────────────────────────────────────────────
-xxhash-rust = { version = "0.8", features = ["xxh64", "xxh32"] }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Audio & Realtime Media
-# ──────────────────────────────────────────────────────────────────────────────
+ashpd = { version = "=0.11.1", default-features = false, features = ["tokio"] }
+atspi = { version = "=0.30.0", features = ["tokio", "zbus"] }
 audiopus_sys = { version = "0.2.2", features = ["static"] }
-opus = "0.3.1"
-webrtc = "0.17.2"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# System & Platform
-# ──────────────────────────────────────────────────────────────────────────────
-libc = "0.2"
-os_pipe = "1"
-windows-sys = { version = "0.61", features = [
-   "Win32_Foundation",
-   "Win32_Media_Audio",
-   "Win32_Media_Multimedia",
-   "Win32_Security",
-   "Win32_Storage_FileSystem",
-   "Win32_Storage_ProjectedFileSystem",
-   "Win32_System_Com",
-   "Win32_System_LibraryLoader",
-   "Win32_System_IO",
-   "Win32_System_Ioctl",
-   "Win32_System_Threading",
-] }
-winreg = "0.56"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Node.js Bindings (NAPI)
-# ──────────────────────────────────────────────────────────────────────────────
-napi = { version = "3", features = ["napi10", "tokio_rt", "tokio_time"] }
-napi-build = "2"
-napi-derive = "3"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Terminal & PTY
-# ──────────────────────────────────────────────────────────────────────────────
-arboard = { version = "3.6.1", features = ["wayland-data-control"] }
-clipboard-win = "5.4"
-icy_sixel = "0.5"
-portable-pty = "0.9"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Search & File Walking
-# ──────────────────────────────────────────────────────────────────────────────
+bigdecimal = "0.4"
+blake2 = "0.10"
+blake3 = { version = "1.8" }
+brotli = { version = "8", default-features = false, features = ["std"] }
+block2 = "0.6.2"
+bon = "3"
+bstr = "1"
+bytecount = { version = "0.6", features = ["runtime-dispatch-simd"] }
+bytes = { version = "1.12.1", features = ["serde"] }
+bytes-utils = { version = "0.1.4", features = ["serde"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+cap-std = "4"
+cfb = "0.14"
+candle-core = { version = "0.11", features = ["metal"] }
+candle-nn = { version = "0.11", features = ["metal"] }
+candle-transformers = { version = "0.11", features = ["metal"] }
+cfg-if = "1"
+chrono = "0.4.45"
+clap = { version = "4", features = ["derive", "wrap_help"] }
+clap_complete = "4"
+codesnake = "0.2"
+command-fds = "0.3"
+core-graphics = { version = "0.25", features = ["highsierra"] }
+crc32fast = "1.5"
+digest = "0.10"
+dashmap = "6"
+dispatch2 = "0.3"
+encoding_rs = "0.8"
+enigo = { version = "=0.6.1", default-features = false }
+etagere = "0.3"
+fancy-regex = "0.17"
+fastembed = { version = "5.17.4", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend", "zlib-rs"] }
+flume = "0.11"
+foldhash = "0.2"
+foreign-types = "=0.5.0"
+fontdb = "0.24"
+fontdue = "0.9"
+futures = "0.3"
+futures-core = "0.3"
+gix = { version = "0.85", default-features = false, features = ["attributes", "blob-diff", "comfort", "dirwalk", "excludes", "index", "max-performance-safe", "merge", "revision", "sha1", "sha256", "status", "tree-editor", "worktree-mutation", "zlib-rs"] }
 globset = "0.4"
+grep-cli = "0.1"
 grep-matcher = "0.1"
 grep-pcre2 = "0.1"
+grep-printer = "0.3"
 grep-regex = "0.1"
 grep-searcher = "0.1"
+hayro = "0.7.1"
+heapless = { version = "0.9.3", features = ["serde"] }
+hmac = "0.12"
+hifijson = "0.2"
+html-to-markdown-rs = { version = "3.9.2", default-features = false }
+http = "1.5"
+http-body-util = "0.1"
+hyper = { version = "1.11", features = ["client", "http1", "http2", "server"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "ring", "webpki-tokio"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
 ignore = "0.4"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Image Processing & Syntax Highlighting
-# ──────────────────────────────────────────────────────────────────────────────
-image = { version = "0.25", default-features = false, features = [
-   "png",
-   "jpeg",
-   "gif",
-   "webp",
-] }
-resvg = "0.48"
-# Not used directly: activates zune-jpeg's non-default `log` feature so image's
-# JPEG decoder compiles — zune-jpeg 0.5.15's no-log stub macros are not
-# expression-safe and the crate fails to build without it.
-zune-jpeg = { version = "0.5", default-features = false, features = ["log"] }
+im = { version = "15.1", features = ["serde"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "png", "jpeg", "gif", "webp"] }
+indicatif = "0.18"
+insta = { version = "1.47", features = ["glob", "ron", "redactions"] }
+itertools = "0.14"
+jaq-core = "2.1"
+jaq-json = "1.1"
+jaq-std = "2.1"
+jiff = { version = "0.2", features = ["tzdb-bundle-platform"] }
+jj-lib = { version = "0.44", default-features = false, features = ["git"] }
+kdl = "6.3"
+layout-rs = "0.1.3"
+landlock = "0.4.7"
+libc = "0.2"
+linkme = "0.3"
+lscolors = { version = "0.21", default-features = false, features = ["gnu_legacy"] }
+memchr = "2"
+md-5 = "0.10"
+miette = { version = "7.6.0", features = ["fancy"] }
+memmap2 = "0.9"
+mermaid-text = "0.57"
+nix = { version = "0.31", features = ["feature", "fs", "hostname", "poll", "process", "resource", "signal", "term", "user"] }
+objc2-application-services = { version = "=0.3.2", default-features = true }
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-screen-capture-kit = "0.3"
+objc2-web-kit = "0.3"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3"
+notify = { version = "=8.2.0", features = ["macos_kqueue"] }
+num-bigint = "0.4"
+num-traits = "0.2"
+omp-agent = { path = "crates/agent", version = "0.1.0" }
+omp-app = { path = "crates/app", version = "0.1.0" }
+omp-chat = { path = "crates/chat", version = "0.1.0" }
+omp-con = { path = "crates/con", version = "0.1.0" }
+omp-ar = { path = "crates/ar", version = "0.1.0" }
+omp-ast = { path = "crates/ast", version = "0.1.0" }
+omp-audio = { path = "crates/audio", version = "0.1.0" }
+omp-core = { path = "crates/core", version = "0.1.0", features = ["schemars"] }
+omp-dom = { path = "crates/dom", version = "0.1.0" }
+omp-journal = { path = "crates/journal", version = "0.1.0" }
+objc2-core-graphics = "=0.3.2"
+omp-desktop = { path = "crates/desktop", version = "0.1.0" }
+omp-driver = { path = "crates/driver", version = "0.1.0", default-features = false }
+omp-env = { path = "crates/env", version = "0.1.0" }
+omp-envd = { path = "crates/envd", version = "0.1.0" }
+omp-ext = { path = "crates/ext", version = "0.1.0" }
+omp-gui = { path = "crates/gui", version = "0.1.0" }
+omp-edit = { path = "crates/edit", version = "0.1.0" }
+omp-http = { path = "crates/http", version = "0.1.0" }
+omp-catalog = { path = "crates/catalog", version = "0.1.0" }
+omp-ai = { path = "crates/ai", version = "0.1.0", features = ["test-support"] }
+omp-serve = { path = "crates/serve", version = "0.1.0" }
+omp-memory = { path = "crates/memory", version = "0.1.0", default-features = false }
+omp-oauth = { path = "crates/oauth", version = "0.1.0" }
+omp-macros = { path = "crates/macros", version = "0.1.0" }
+omp-proto = { path = "crates/proto", version = "0.1.0", features = ["tonic"] }
+omp-py = { path = "crates/py", version = "0.1.0" }
+omp-rpc = { path = "crates/rpc", version = "0.1.0" }
+omp-collab = { path = "crates/collab", version = "0.1.0" }
+omp-sdk = { path = "crates/sdk", version = "0.1.0" }
+omp-scribe = { path = "crates/scribe", version = "0.1.0" }
+omp-session = { path = "crates/session", version = "0.1.0" }
+omp-snapcompact = { path = "crates/snapcompact", version = "0.1.0" }
+omp-secrets = { path = "crates/secrets", version = "0.1.0" }
+omp-sandbox = { path = "crates/sandbox", version = "0.1.0" }
+omp-shell-builtins = { path = "crates/shell-builtins", version = "0.1.0" }
+omp-shell = { path = "crates/shell", version = "0.1.0" }
+omp-cache = { path = "crates/cache", version = "0.1.0" }
+omp-observability = { path = "crates/observability", version = "0.1.0" }
+omp-tool = { path = "crates/tool", version = "0.1.0" }
+omp-tools = { path = "crates/tools", version = "0.1.0" }
+omp-tui = { path = "crates/tui", version = "0.1.0" }
+omp-vocab = { path = "crates/vocab", version = "0.1.0" }
+omp-vcs = { path = "crates/vcs", version = "0.1.0" }
+omp-webview = { path = "crates/webview", version = "0.1.0" }
+omp-walker = { path = "crates/walker", version = "0.1.0" }
+opentelemetry = "0.32.0"
+opentelemetry-appender-tracing = "0.32.0"
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["http-proto", "logs", "metrics", "reqwest-blocking-client", "trace"] }
+opentelemetry_sdk = { version = "0.32.1", features = ["logs", "metrics", "rt-tokio", "trace"] }
+opus = "0.3.1"
+parking_lot = "0.12"
+parking_lot_core = "0.9.12"
+parse_datetime = "0.14"
+peg = "0.8"
+pep440_rs = "0.7"
+pdf-inspector = "1"
+pin-project-lite = "0.2"
+pipewire = { version = "=0.9.2" }
+png = "0.18"
+pollster = "1"
+postcard = { version = "1.1.3", features = ["alloc"] }
+pretty_assertions = { version = "1", features = ["unstable"] }
+proc-macro2 = "1"
+proptest = "1.11.0"
+prost = "0.14.4"
+prost-build = "0.14.4"
+prost-types = "0.14.4"
+protox = "0.9.1"
+pyo3 = "0.29.2"
+pyo3-introspection = "0.29.2"
+quick-xml = "0.41"
+quote = "1"
+rand = { version = "0.10", features = ["std_rng"] }
+raw-window-handle = "0.6"
+rayon = "1.10"
+reis = { version = "=0.5.0", features = ["tokio"] }
+regex = "1.11"
+resvg = "0.45.1"
+rustc-demangle = "0.1"
+rustix = { version = "1.1", features = ["fs", "pipe", "process", "time"] }
+rusqlite = { version = "0.40", features = ["bundled", "fallible_uint", "hooks", "serialize"] }
+russh = { version = "0.63", default-features = false, features = ["ring", "rsa"] }
+russh-sftp = "2.4"
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+schemars = "1.2.2"
+security-framework = "3.7"
+rustybuzz = "0.20"
+self_cell = "1"
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_json = { version = "1.0.151", features = ["preserve_order", "raw_value"] }
+serde_yaml = "0.9"
+seccompiler = "0.5"
+sha1 = "0.10"
+sha2 = { version = "0.10", features = ["asm"] }
+sha3 = { version = "0.10", features = ["asm"] }
+similar = "3"
+smallvec = { version = "2.0.0-alpha.12", features = ["serde"] }
+smol_bitmap = { version = "0.3.2", features = ["serde"] }
+strum = { version = "0.28", features = ["derive"] }
+syn = { version = "2", features = ["full"] }
+syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy", "yaml-load"] }
+swash = "0.2"
+tempfile = "3"
+thiserror = "2.0.20"
 # Not used directly: pins tinyvec to 1.12.0 because 1.13.0 was published broken
 # (cannot find macro `vec` in alloc-only context).
 tinyvec = "=1.12.0"
-png = "0.18"
-inferno = { version = "0.12", default-features = false }
-syntect = { version = "5.3", default-features = false, features = [
-   "default-syntaxes",
-   "default-themes",
-   "regex-fancy",
-   "yaml-load",
-] }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Markup Conversion
-# ──────────────────────────────────────────────────────────────────────────────
-html-to-markdown-rs = { version = "3.9.2", default-features = false }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Tokenization
-# ──────────────────────────────────────────────────────────────────────────────
-xutf = "1.4"
-zstd = "0.13"
-fancy-regex = "0.16"
-tiktoken-rs = "0.11"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Shell Parsing
-# ──────────────────────────────────────────────────────────────────────────────
-brush-parser = "0.3"
-# ──────────────────────────────────────────────────────────────────────────────
-# Version Control (in-process git + jujutsu)
-# ──────────────────────────────────────────────────────────────────────────────
-# gix is pinned to the minor jj-lib depends on so both VCS backends share one
-# gitoxide stack in the binary. No transport/credential features: network ops
-# (clone/fetch/push) deliberately shell out to the git CLI for auth parity.
-gix = { version = "0.85", default-features = false, features = [
-   "attributes",
-   "blob-diff",
-   "dirwalk",
-   "excludes",
-   "index",
-   "max-performance-safe",
-   "merge",
-   "revision",
-   "sha1",
-   "sha256",
-   "status",
-   "tree-editor",
-   "worktree-mutation",
-   "zlib-rs",
-] }
-jj-lib = { version = "0.44", default-features = false, features = ["git"] }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# AST & Tree-Sitter
-# ──────────────────────────────────────────────────────────────────────────────
-ast-grep-core = { version = "0.39", default-features = false, features = [
-   "tree-sitter",
-] }
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+tokio-util = "0.7"
+toml = "1.1"
+tonic = { version = "0.14.6", features = ["tls-ring"] }
+tonic-health = "0.14.6"
+tonic-prost = "0.14.6"
+tonic-prost-build = "0.14.6"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parking_lot"] }
 tree-sitter = "0.25"
 tree-sitter-astro = { version = "0.1.1", package = "tree-sitter-astro-next" }
 tree-sitter-bash = "0.25"
@@ -459,7 +297,209 @@ tree-sitter-vue = { version = "0.1.0", package = "tree-sitter-vue-next" }
 tree-sitter-xml = "0.7"
 tree-sitter-yaml = "0.7"
 tree-sitter-zig = "1.1"
+tokenizers = { version = "0.22", default-features = false, features = ["unstable_wasm"] }
+uiautomation = "=0.25.0"
+url = "2.5"
+voice-g2p = "0.2.2"
+webrtc = "0.17.2"
+wgpu = "30"
+winit = "0.30"
+windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_Media_Multimedia", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+x11rb = { version = "=0.13.2", features = ["randr", "xinput", "xtest"] }
+xcap = { version = "=0.9.6", default-features = false }
+xkeysym = "=0.2.1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
+zerocopy = { version = "0.8", features = ["derive"] }
+zune-jpeg = "0.5"
+zeroize = { version = "1.9", features = ["derive"] }
+zstd = "0.13"
+xutf = "1.4"
+xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
+
+[workspace.metadata.omp.dependency-lints.omp-agent]
+# D2: the agent reaches the world through omp-env; implementation crates stay
+# behind env/v1.
+allowed-world-boundary = ["omp-env"]
+denied-direct = ["omp-envd", "omp-shell", "omp-walker"]
+
+[workspace.lints.rust]
+# ──────────────────────────────────────────────────────────────────────────────
+# Rust Lint Levels
+# ──────────────────────────────────────────────────────────────────────────────
+mismatched_lifetime_syntaxes = "allow"
+missing_docs = "warn"                  # Every public symbol documented
+
+[workspace.lints.clippy]
+# ──────────────────────────────────────────────────────────────────────────────
+# Base Lint Levels
+# ──────────────────────────────────────────────────────────────────────────────
+all = { level = "warn", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Unsorted (added by `cargo add` - move into a section above)
+# Synchronization Policy
 # ──────────────────────────────────────────────────────────────────────────────
+disallowed_methods = "deny"
+disallowed_types = "deny"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Meta: Lint Attributes
+# ──────────────────────────────────────────────────────────────────────────────
+allow_attributes_without_reason = "warn" # Enforce reason for all #[allow]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Safety & Unsafe Code
+# ──────────────────────────────────────────────────────────────────────────────
+borrow_as_ptr = "allow"
+cast_ptr_alignment = "allow"
+ptr_as_ptr = "allow"
+ref_as_ptr = "allow"
+undocumented_unsafe_blocks = "warn"
+unsafe_derive_deserialize = "allow"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Numeric Casts & Conversions
+# ──────────────────────────────────────────────────────────────────────────────
+cast_lossless = "allow"            # u32 as u64 - 'as' is cleaner than From
+cast_possible_truncation = "allow" # u64 as u32 - often intentional
+cast_possible_wrap = "allow"       # u32 as i32 - can be intentional
+cast_precision_loss = "allow"      # f64 as f32 - sometimes acceptable
+cast_sign_loss = "allow"           # i32 as u32 - sometimes needed
+tuple_array_conversions = "allow"  # Non-Into conversion is more clear
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Floating Point
+# ──────────────────────────────────────────────────────────────────────────────
+float_cmp = "allow" # Tests mostly do this + we know what we're doing
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Functions & Closures
+# ──────────────────────────────────────────────────────────────────────────────
+inline_always = "allow"                      # Needed for performance-critical code
+must_use_candidate = "allow"                 # Only lifecycle guards opt into #[must_use]
+needless_pass_by_value = "allow"
+redundant_closure_for_method_calls = "allow" # .map(ToString::to_string) can be clearer
+return_self_not_must_use = "allow"           # Builder chains do not require #[must_use]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Structs & Types
+# ──────────────────────────────────────────────────────────────────────────────
+inconsistent_struct_constructor = "allow"
+missing_fields_in_debug = "allow"         # Not every field needs to be in Debug output
+struct_excessive_bools = "allow"          # Usually with builders
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pattern Matching
+# ──────────────────────────────────────────────────────────────────────────────
+match_same_arms = "allow"                    # Can be intentional for clarity
+match_wildcard_for_single_variants = "allow" # _ can be clearer than listing variants
+option_if_let_else = "allow"                 # match/if-let-else often clearer
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Imports & Module Organization
+# ──────────────────────────────────────────────────────────────────────────────
+enum_glob_use = "allow"
+items_after_statements = "allow" # Sometimes more readable
+wildcard_imports = "allow"       # Cleaner for preludes and test modules
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Variables & Type Inference
+# ──────────────────────────────────────────────────────────────────────────────
+let_underscore_untyped = "allow" # Type obvious from context
+similar_names = "allow"          # 'req' and 'res' together are fine
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Literals & Formatting
+# ──────────────────────────────────────────────────────────────────────────────
+tabs_in_doc_comments = "allow" # rustfmt (hard_tabs + format_code_in_doc_comments) emits them
+unreadable_literal = "allow"   # 10_000_000 vs 0xDEADBEEF is context dependent
+verbose_bit_mask = "allow"     # Explicit bit patterns can be clearer than hex
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Code Style
+# ──────────────────────────────────────────────────────────────────────────────
+assert_is_empty = "allow"             # assert!(x.is_empty()) is fine; assert_eq! vs `[] as [T; 0]` is noise
+default_trait_access = "allow"        # Default::default() sometimes clearer
+significant_drop_tightening = "allow" # We pay attention to this already
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Documentation
+# ──────────────────────────────────────────────────────────────────────────────
+missing_errors_doc = "allow" # Documenting every error return is often redundant
+missing_panics_doc = "allow" # Not every panic needs docs, especially assert!
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Complexity
+# ──────────────────────────────────────────────────────────────────────────────
+too_many_arguments = "allow" # Argument count is rarely the real complexity signal
+too_many_lines = "allow"     # Arbitrary limits don't account for necessary complexity
+
+# No debuginfo in dev builds. With Mach-O split debug maps, file:line
+# backtraces require retaining every .rcgu.o — ~1 GB per linked test binary
+# (static CPython), >100 GB target dirs. Panic locations survive via
+# #[track_caller] and symbol names via the symbol table; use the
+# `release-profiling` profile when line-level debug info is actually needed.
+# Mirrored in .cargo/config.toml so user-global [profile.dev] config cannot
+# override it.
+[profile.dev]
+debug = false
+split-debuginfo = "off"
+# Cold builds do not benefit from incremental bookkeeping. Disabling it also
+# makes workspace crates cacheable by sccache; 256 CGUs preserve parallel
+# backend codegen rather than falling back to the non-incremental default.
+incremental = false
+codegen-units = 256
+
+# Extension artifact verification and the b3sum builtin stay hot in debug
+# builds; sha2 (Hash32) gets speed from the "*" glob below plus aarch64 asm.
+[profile.dev.package.blake3]
+opt-level = 3
+# Keep dependencies at the compile-first dev level. Runtime-critical hashes are
+# overridden above; release profiles retain production optimization.
+[profile.dev.package."*"]
+opt-level = 0
+# Generated/broad APIs where omp consumes only a narrow slice. Rustc defers
+# unused function codegen instead of building code the linker later discards.
+[profile.dev.package.objc2-app-kit]
+hint-mostly-unused = true
+[profile.dev.package.objc2-av-foundation]
+hint-mostly-unused = true
+[profile.dev.package.objc2-foundation]
+hint-mostly-unused = true
+[profile.dev.package.objc2-web-kit]
+hint-mostly-unused = true
+[profile.dev.package.pdf-inspector]
+hint-mostly-unused = true
+[profile.dev.package.mermaid-text]
+hint-mostly-unused = true
+[profile.dev.package.gix]
+hint-mostly-unused = true
+
+[profile.release]
+opt-level = 2
+debug = false
+incremental = true
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
+# Fast local release iteration: same codegen as `release` but split across 16
+# codegen units so a one-crate edit does not re-optimize the world.
+# `cargo build --profile release-dev`.
+[profile.release-dev]
+inherits = "release"
+codegen-units = 16
+
+# `release` with symbols kept for `perf`/`samply`/Instruments. Same opt-level,
+# so timings match production; the binary is just larger.
+# `cargo build --profile release-profiling`.
+[profile.release-profiling]
+inherits = "release"
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+strip = "none"

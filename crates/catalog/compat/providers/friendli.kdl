@@ -1,0 +1,9 @@
+// Provider-wire compat for "friendli"; regenerated from the frozen census using deployment contract selectors.
+
+provider "friendli" {
+	thinking-mode "effort"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "LGAI-EXAONE/K-EXAONE-236B-A23B" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+}

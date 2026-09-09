@@ -1,0 +1,232 @@
+name: Package feature isolation
+
+on:
+  push:
+    branches: [fix/build-feature-isolation-20260908]
+  pull_request:
+    branches: [main, omp2]
+    paths:
+      - .cargo/config.toml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**/Cargo.toml
+      - scripts/check-feature-isolation.py
+      - scripts/build-doctor*
+      - scripts/pristine-host/**
+      - rust-toolchain.toml
+      - justfile
+      - .github/workflows/build-isolation.yml
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source revision to test (empty tests the workflow revision)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  isolated:
+    name: Isolated packages and retained application voice
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Install documented prerequisites
+        working-directory: source
+        run: |
+          brew install just cmake ninja lld@22 uv zstd
+          rustup show active-toolchain
+      - uses: taiki-e/install-action@nextest
+      - name: Exercise archive stage failures and prerequisite diagnostics
+        working-directory: source
+        run: |
+          python3 crates/py/scripts/test-fetch-python-archive.py
+          just doctor-test
+      - name: Prepare embedded Python and diagnose prerequisites
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/feature-isolation
+          just setup-python 2>&1 | tee target/feature-isolation/python-setup.log
+          just doctor 2>&1 | tee target/feature-isolation/doctor.log
+          df -h . | tee target/feature-isolation/free-space.txt
+          rustc --version --verbose | tee target/feature-isolation/toolchain.txt
+          /opt/homebrew/opt/lld@22/bin/ld64.lld --version | tee target/feature-isolation/linker.txt
+      - name: Assert package graphs
+        working-directory: source
+        run: python3 ../proof-tools/scripts/check-feature-isolation.py --root . --output target/feature-isolation/graphs
+      - name: Check full workspace type compatibility
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          just --command cargo check --locked --workspace --lib --bins --tests 2>&1 | tee target/feature-isolation/workspace-check.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'workspace-check=%s log_write=%s\n' "${codes[0]}" "${codes[1]}" > target/feature-isolation/workspace-exit.txt || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Check and test each package independently
+        if: ${{ !cancelled() }}
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          suite_status=0
+          for package in omp-core omp-dom omp-journal omp-session omp-con omp-secrets omp-catalog; do
+            just --command cargo check --locked -p "$package" --lib 2>&1 | tee "target/feature-isolation/$package-check.log"
+            check_status=("${PIPESTATUS[@]}")
+            just --command cargo nextest run --all-targets --locked --profile ci --no-fail-fast -p "$package" 2>&1 | tee "target/feature-isolation/$package-tests.log"
+            test_status=("${PIPESTATUS[@]}")
+            just --command cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/feature-isolation/$package-doctests.log"
+            doc_status=("${PIPESTATUS[@]}")
+            printf '%s check=%s tests=%s doctests=%s log_writes=%s,%s,%s\n' "$package" "${check_status[0]}" "${test_status[0]}" "${doc_status[0]}" "${check_status[1]}" "${test_status[1]}" "${doc_status[1]}" >> target/feature-isolation/exits.txt || suite_status=1
+            for code in "${check_status[@]}" "${test_status[@]}" "${doc_status[@]}"; do
+              if [ "$code" -ne 0 ]; then suite_status=1; fi
+            done
+          done
+          exit "$suite_status"
+      - name: Publish observed results
+        if: always()
+        working-directory: source
+        shell: bash
+        run: |
+          {
+            echo '### Isolated check, complete package tests, and doctests'
+            echo 'Fresh runner checkout with documented prerequisites installed; no Cargo build cache restored.'
+            echo 'This run does not replace the full workspace/E2E acceptance gates.'
+            echo '```text'
+            git rev-parse HEAD
+            if [ -f target/feature-isolation/exits.txt ]; then cat target/feature-isolation/exits.txt; else echo 'Package execution evidence missing'; fi
+            if [ -f target/feature-isolation/workspace-exit.txt ]; then cat target/feature-isolation/workspace-exit.txt; else echo 'Workspace compatibility evidence missing'; fi
+            grep -hE 'Summary|test result:' target/feature-isolation/*-tests.log target/feature-isolation/*-doctests.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test -f target/feature-isolation/exits.txt
+          test -f target/feature-isolation/workspace-exit.txt
+      - name: Retain source-bound evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: package-feature-isolation
+          path: source/target/feature-isolation/
+          if-no-files-found: error
+
+  pristine-prerequisites:
+    name: Actual prerequisite failure in a fresh minimal Linux container
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proof-tools
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Prepare clean source and checker provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pristine-evidence pristine-source pristine-image
+          git -C source rev-parse HEAD > pristine-evidence/source-sha.txt
+          git -C proof-tools rev-parse HEAD > pristine-evidence/checker-sha.txt
+          git -C source status --porcelain=v1 > pristine-evidence/source-status.txt
+          git -C source archive HEAD | tar -x -C pristine-source
+          cp proof-tools/scripts/pristine-host/Dockerfile pristine-image/Dockerfile
+          cp pristine-source/rust-toolchain.toml pristine-image/rust-toolchain.toml
+          sha256sum proof-tools/scripts/pristine-host/check.py pristine-image/Dockerfile pristine-image/rust-toolchain.toml > pristine-evidence/checker-files.sha256
+          test ! -e pristine-source/vendor/python
+          test ! -e pristine-source/target
+      - name: Build minimal diagnostic environment without native build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --no-cache --progress plain -t omp-pristine-doctor pristine-image 2>&1 | tee pristine-evidence/image-build.log
+          docker image inspect omp-pristine-doctor > pristine-evidence/image.json
+          docker history --no-trunc omp-pristine-doctor > pristine-evidence/image-history.txt
+      - name: Observe actual entrypoint with no network or host tool mounts
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          docker run --rm --network none \
+            --mount "type=bind,src=$PWD/pristine-source,dst=/source,readonly" \
+            --mount "type=bind,src=$PWD/proof-tools/scripts/pristine-host,dst=/checker,readonly" \
+            --mount "type=bind,src=$PWD/pristine-evidence,dst=/evidence" \
+            omp-pristine-doctor 2>&1 | tee pristine-evidence/container.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'container=%s log_write=%s\n' "${codes[0]}" "${codes[1]}" > pristine-evidence/exit.txt || exit 1
+          for code in "${codes[@]}"; do if [ "$code" -ne 0 ]; then exit 1; fi; done
+      - name: Prove checker rejects a disabled prerequisite diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a pristine-source pristine-negative-source
+          mkdir -p pristine-evidence/negative
+          python3 - <<'PY'
+          import difflib, hashlib
+          from pathlib import Path
+          original = Path('pristine-source/scripts/build-doctor.py').read_text()
+          disabled = '# Deliberate negative control in a disposable source copy.\nraise SystemExit(0)\n'
+          Path('pristine-negative-source/scripts/build-doctor.py').write_text(disabled)
+          Path('pristine-evidence/negative/mutation.diff').write_text(''.join(difflib.unified_diff(original.splitlines(True), disabled.splitlines(True), fromfile='original/scripts/build-doctor.py', tofile='disabled/scripts/build-doctor.py')))
+          Path('pristine-evidence/negative/checker.sha256').write_text(hashlib.sha256(Path('proof-tools/scripts/pristine-host/check.py').read_bytes()).hexdigest() + '\n')
+          PY
+          set +e
+          docker run --rm --network none \
+            --mount "type=bind,src=$PWD/pristine-negative-source,dst=/source,readonly" \
+            --mount "type=bind,src=$PWD/proof-tools/scripts/pristine-host,dst=/checker,readonly" \
+            --mount "type=bind,src=$PWD/pristine-evidence/negative,dst=/evidence" \
+            omp-pristine-doctor 2>&1 | tee pristine-evidence/negative/container.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'checker=%s log_write=%s\n' "${codes[0]}" "${codes[1]}" > pristine-evidence/negative/exit.txt
+          set -e
+          test "${codes[0]}" -eq 1
+          test "${codes[1]}" -eq 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('pristine-evidence/negative/result.json').read_text())
+          assert result['exit_code'] == 0, 'Disabled doctor must actually execute and return success'
+          for tool in ('cmake', 'ninja'):
+              assert f'missing actionable real {tool} diagnostic' in result['violations']
+          Path('pristine-evidence/negative/control-result.json').write_text(json.dumps({'status': 'passed', 'meaning': 'Unchanged checker rejected a successfully executed disabled doctor; raw checker failure retained.'}) + '\n')
+          PY
+      - name: Observe bootstrap with only Rust installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum proof-tools/scripts/pristine-host/Dockerfile.rust-only proof-tools/scripts/pristine-host/check-rust-only.py >> pristine-evidence/checker-files.sha256
+          docker build --no-cache --progress plain --file proof-tools/scripts/pristine-host/Dockerfile.rust-only --build-arg RUST_SOURCE_IMAGE=omp-pristine-doctor -t omp-rust-only pristine-image 2>&1 | tee pristine-evidence/rust-only-image-build.log
+          python3 proof-tools/scripts/pristine-host/check-rust-only.py --image omp-rust-only --source pristine-source --out pristine-evidence/rust-only
+      - name: Publish minimal-container evidence and scope
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo 'Source and checker revisions:'
+            echo '```text'
+            cat pristine-evidence/source-sha.txt pristine-evidence/checker-sha.txt
+            if [ -f pristine-evidence/exit.txt ]; then cat pristine-evidence/exit.txt; fi
+            echo '```'
+            if [ -s pristine-evidence/summary.md ]; then cat pristine-evidence/summary.md; else echo '**Proof incomplete: no observed diagnostic report.**'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          test -s pristine-evidence/result.json
+          test -s pristine-evidence/summary.md
+      - name: Retain pristine prerequisite evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pristine-prerequisites
+          path: pristine-evidence/
+          if-no-files-found: error

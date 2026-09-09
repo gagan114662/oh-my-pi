@@ -1,0 +1,222 @@
+name: Settings roster invariant
+
+on:
+  push:
+    branches: [fix/settings-roster-55]
+  pull_request:
+    branches: [main, omp2]
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .cargo/**
+      - rust-toolchain.toml
+      - justfile
+      - scripts/settings-roster/**
+      - scripts/qa/cases/settings_roster_pty.py
+      - scripts/qa/harness.py
+      - scripts/qa/pty_debug.py
+      - scripts/qa/test_pty_debug.py
+      - .github/workflows/settings-roster.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: settings-roster-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # macOS keeps the original complete affected suites and real PTY proof.
+  # Linux is additional coverage; it does not excuse or replace macOS failures.
+  settings-roster:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify PTY pump and cleanup mechanics
+        run: python3 scripts/qa/test_pty_debug.py
+      - name: Record source and install documented prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/settings-roster
+          git rev-parse HEAD > target/settings-roster/source-revision.txt
+          git status --porcelain=v1 > target/settings-roster/source-status.txt
+          shasum -a 256 scripts/qa/pty_debug.py scripts/qa/test_pty_debug.py scripts/qa/cases/settings_roster_pty.py scripts/qa/harness.py > target/settings-roster/pty-checker.sha256
+          brew install just cmake ninja lld@22 uv 2>&1 | tee target/settings-roster/install.log
+          rustup show active-toolchain 2>&1 | tee target/settings-roster/toolchain.log
+      - uses: taiki-e/install-action@nextest
+      - name: Set up embedded Python and validate prerequisites
+        id: setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          just setup-python 2>&1 | tee target/settings-roster/python-setup.log
+          just doctor 2>&1 | tee target/settings-roster/doctor.log
+      - name: Prove actual roster mutation fails the unchanged product invariant
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          python3 scripts/settings-roster/prove.py 2>&1 | tee target/settings-roster/proof-run.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'invariant,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/settings-roster/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Build actual production application
+        id: build
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          just build 2>&1 | tee target/settings-roster/build.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'build,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/settings-roster/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Real PTY settings navigation, input, resize and cleanup
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          OMP_SETTINGS_ROSTER_PROOF_DIR: ${{ github.workspace }}/target/settings-roster
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          uv run --with pyte==0.8.2 python scripts/qa/cases/settings_roster_pty.py 2>&1 | tee target/settings-roster/pty-run.log
+          codes=("${PIPESTATUS[@]}")
+          printf 'pty,%s,%s\n' "${codes[0]}" "${codes[1]}" >> target/settings-roster/exits.csv || exit 1
+          [ "${codes[0]}" -eq 0 ] && [ "${codes[1]}" -eq 0 ]
+      - name: Complete affected app and chat tests and doctests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          failed=0
+          for package in omp-app omp-chat; do
+            just --command cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/settings-roster/$package-tests.log"
+            tests=("${PIPESTATUS[@]}")
+            just --command cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/settings-roster/$package-docs.log"
+            docs=("${PIPESTATUS[@]}")
+            printf '%s-tests,%s,%s\n' "$package" "${tests[0]}" "${tests[1]}" >> target/settings-roster/exits.csv || failed=1
+            printf '%s-docs,%s,%s\n' "$package" "${docs[0]}" "${docs[1]}" >> target/settings-roster/exits.csv || failed=1
+            for code in "${tests[@]}" "${docs[@]}"; do
+              if [ "$code" -ne 0 ]; then failed=1; fi
+            done
+          done
+          exit "$failed"
+      - name: Publish structural proof and missing checks
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root = Path('target/settings-roster')
+          root.mkdir(parents=True, exist_ok=True)
+          exits = root / 'exits.csv'
+          observed = {row[0]: row[1:] for row in csv.reader(exits.open())} if exits.exists() else {}
+          required = ('invariant', 'build', 'pty', 'omp-app-tests', 'omp-app-docs', 'omp-chat-tests', 'omp-chat-docs')
+          lines = ['## Settings roster checks', '', 'Complete macOS suites are required below; Linux provides additional coverage in settings-roster-tests.', '', '| Check | Command/log exits | Complete |', '|---|---|---|']
+          failed = False
+          for name in required:
+              values = observed.get(name)
+              passed = values == ['0', '0']
+              failed |= not passed
+              lines.append(f"| {name} | {values or 'missing'} | {passed} |")
+          summary = root / 'summary.md'
+          lines += ['', summary.read_text() if summary.exists() else 'Structural proof is missing. No acceptance claim.']
+          pty_summary = root / 'live-pty/summary.md'
+          lines += ['', pty_summary.read_text() if pty_summary.exists() else 'Real PTY proof is missing.']
+          failed |= not pty_summary.exists()
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write('\n'.join(lines) + '\n')
+          raise SystemExit(1 if failed or not summary.exists() else 0)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: settings-roster-${{ github.sha }}
+          path: target/settings-roster
+          if-no-files-found: error
+
+  settings-roster-tests:
+    name: complete omp-app and omp-chat suites (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select pinned Rust toolchain
+        run: |
+          test "$(uname -m)" = x86_64
+          rustup show active-toolchain
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pipx zstd
+          command -v uv >/dev/null || pipx install uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache embedded Python
+        id: python-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: vendor/python
+          key: python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/py/scripts/fetch-python.sh', 'crates/py/scripts/pack-pymodules.py', 'crates/py/scripts/gen-py-notices.py', 'crates/py/requirements.txt') }}
+
+      - name: Prepare embedded Python
+        if: steps.python-cache.outputs.cache-hit != 'true'
+        run: crates/py/scripts/fetch-python.sh
+
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-check-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-check-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
+            cargo-check-${{ runner.os }}-${{ runner.arch }}-
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Complete affected app and chat tests and doctests
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p target/settings-roster-tests
+          failed=0
+          for package in omp-app omp-chat; do
+            cargo nextest run --locked --profile ci --no-fail-fast --all-targets -p "$package" 2>&1 | tee "target/settings-roster-tests/$package-tests.log"
+            tests=("${PIPESTATUS[@]}")
+            cargo test --locked --doc --no-fail-fast -p "$package" 2>&1 | tee "target/settings-roster-tests/$package-docs.log"
+            docs=("${PIPESTATUS[@]}")
+            printf '%s-tests,%s,%s\n' "$package" "${tests[0]}" "${tests[1]}" >> target/settings-roster-tests/exits.csv || failed=1
+            printf '%s-docs,%s,%s\n' "$package" "${docs[0]}" "${docs[1]}" >> target/settings-roster-tests/exits.csv || failed=1
+            for code in "${tests[@]}" "${docs[@]}"; do
+              if [ "$code" -ne 0 ]; then failed=1; fi
+            done
+          done
+          {
+            echo '## Complete omp-app and omp-chat suites (Linux)'
+            echo '```text'
+            cat target/settings-roster-tests/exits.csv
+            grep -hE '^\s+(Summary|FAIL)' target/settings-roster-tests/*-tests.log
+            grep -hE '^test result' target/settings-roster-tests/*-docs.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$failed"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: settings-roster-tests-${{ github.sha }}
+          path: target/settings-roster-tests
+          if-no-files-found: error

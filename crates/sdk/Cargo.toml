@@ -1,0 +1,30 @@
+[package]
+name = "omp-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Stable native embedding facade for journal-first OMP sessions"
+readme = "README.md"
+
+[dependencies]
+flume.workspace = true
+omp-agent.workspace = true
+omp-core.workspace = true
+omp-dom.workspace = true
+omp-session.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+omp-catalog.workspace = true
+omp-ai.workspace = true
+omp-journal.workspace = true
+omp-tool.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

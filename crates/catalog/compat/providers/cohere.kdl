@@ -1,0 +1,15 @@
+// Provider-wire compat for "cohere"; regenerated from the frozen census using deployment contract selectors.
+
+provider "cohere" {
+	max-tokens-field "max_tokens"
+	supports-usage-in-streaming #true
+	thinking-mode "effort"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "command-a-reasoning-08-2025" {
+		thinking-requires-effort #true
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "north-mini-code-1-0" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+}
