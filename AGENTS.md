@@ -78,7 +78,11 @@ all recipes.
 
 CI (`.github/workflows/ci.yml`): authoritative Cargo-only gate. Format on
 Linux; lint/tests/P1-P10/baseline on `macos-15` arm64 (CPython bundle
-`aarch64-apple-darwin`-only).
+`aarch64-apple-darwin`-only). `.github/workflows/check.yml`'s one job, named
+`cargo check (all targets)`, is a fast per-push gate on `fix/**`/`feat/**`/etc:
+despite the name it also runs `cargo fmt --check` then nextest for
+branch-touched crates (clippy is `continue-on-error`) — a red status there can
+be a nextest failure, not a compile error; read the actual failed step.
 
 ## Conventions
 
@@ -395,6 +399,13 @@ House rules, proven in sibling codebase (tetra). Not suggestions.
 - Channels: `flume`, never `tokio::sync::mpsc`/`std::sync::mpsc`. Actor loops:
   single flume mailbox; priority signals (resize, shutdown) ride
   `tokio::watch` + `select!`, not a second queue.
+- Any deadline/grace `Instant` compared against or scheduled through
+  `tokio::time::sleep`/`sleep_until`/`select!` MUST be `tokio::time::Instant`,
+  never `std::time::Instant` converted via `from_std` (a transparent,
+  non-translating wrapper) — under `#[tokio::test(start_paused = true)]` the two
+  clocks diverge once anything fast-forwards the paused one, so a
+  std-Instant-derived deadline can look already-elapsed and fire a `select!`
+  branch prematurely (see `crates/agent/src/dispatch.rs`, PR #155).
 
 ### TUI Rendering Doctrine (crates/tui, CRITICAL)
 Port exists because pi's `string[]`+ANSI+`render()` contract was per-frame
@@ -640,3 +651,10 @@ master stream to a VT emulator (e.g. `pyte`) for screen assertions.
 - No numeric coverage target. Coverage = changed observable behavior defended:
   branch edges, precedence, state transitions, malformed input, cancellation,
   recovery. Narrow test → affected crate → relevant E2E proof.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
